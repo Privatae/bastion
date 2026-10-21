@@ -479,6 +479,7 @@ func rootExecAudit(dir string, rec map[string]any) {
 	rec["ts"] = time.Now().UTC().Format(time.RFC3339)
 	rec["op"] = sessionOpRootExec
 	raw, _ := json.Marshal(rec)
+	auditToSystemLog(auditFilePairingD, auditPairingOfDir(dir), raw)
 	fh, err := os.OpenFile(filepath.Join(dir, "audit.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

@@ -311,12 +311,9 @@ func pipeClientOf(h windows.Handle) (pipeClient, error) {
 		return c, fmt.Errorf("cannot read the connecting process's account (pid %d): %w", c.PID, err)
 	}
 	c.UserSID = u.User.Sid.String()
-	if name, dom, _, err := u.User.Sid.LookupAccount(""); err == nil {
-		c.UserName = name
-		if dom != "" {
-			c.UserName = dom + `\` + name
-		}
-	}
+	// Bounded and cached (sidnames.go): a directory that does not answer
+	// leaves NameTimedOut set, and pipeApprove refuses.
+	pipeClientName(&c, winAccounts, pipeSIDLane)
 	var sess, n uint32
 	if err := windows.GetTokenInformation(tok, windows.TokenSessionId, (*byte)(unsafe.Pointer(&sess)), uint32(unsafe.Sizeof(sess)), &n); err != nil {
 		return c, fmt.Errorf("cannot read the connecting process's session (pid %d): %w", c.PID, err)

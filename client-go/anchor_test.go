@@ -658,14 +658,58 @@ func TestClaimAnchorWithNoToken(t *testing.T) {
 		}
 	})
 
-	t.Run("already anchored — still refused without --rotate", func(t *testing.T) {
+	t.Run("already anchored to that host — success, and nothing changes", func(t *testing.T) {
+		// `pair` anchors a networked box by itself, and an installer that runs
+		// claim-anchor afterwards must find that done, not an error.
 		freshBox(t, true)
 		writePairing(t, tMember)
 		if err := writeAnchor("Acme", tMember); err != nil {
 			t.Fatal(err)
 		}
-		if err := cmdClaimAnchor("", false, "", ""); err == nil || !contains(err.Error(), "already anchored") {
-			t.Fatalf("dropping the token must not let a second claim through: %v", err)
+		if err := cmdClaimAnchor("", false, "", ""); err != nil {
+			t.Fatalf("claim-anchor on a box already anchored to its host must succeed: %v", err)
+		}
+		if err := cmdClaimAnchor("", false, "", tMember); err != nil {
+			t.Fatalf("naming the anchor host itself must succeed: %v", err)
+		}
+		if err := cmdClaimAnchor("", false, "", handleOf(tMember)); err != nil {
+			t.Fatalf("naming the anchor host by its handle (as --host accepts) must succeed: %v", err)
+		}
+		if a := currentAnchor(); a == nil || a.AnchorHost != tMember || a.Owner != "Acme" {
+			t.Fatalf("the anchor must be untouched: %+v", a)
+		}
+	})
+
+	t.Run("anchored to a host whose pairing is pending or revoked — not reported done", func(t *testing.T) {
+		// A success here would tell an installer the anchor holds while its
+		// host has no active lanes on this box.
+		for _, st := range []string{pairingPending, pairingRevoked} {
+			freshBox(t, true)
+			writePairingState(t, tMember, st)
+			if err := writeAnchor("Acme", tMember); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmdClaimAnchor("", false, "", ""); err == nil {
+				t.Fatalf("anchor pairing %s: claim-anchor must not report the anchor done", st)
+			}
+			if got := loadState(t, tMember); got != st {
+				t.Fatalf("anchor pairing %s: state changed to %q", st, got)
+			}
+		}
+	})
+
+	t.Run("already anchored — another host is still refused without --rotate", func(t *testing.T) {
+		freshBox(t, true)
+		writePairing(t, tMember)
+		writePairing(t, tAnchor)
+		if err := writeAnchor("Acme", tMember); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmdClaimAnchor("", false, "", tAnchor); err == nil || !contains(err.Error(), "already anchored") {
+			t.Fatalf("naming a different host must not move the anchor without --rotate: %v", err)
+		}
+		if a := currentAnchor(); a == nil || a.AnchorHost != tMember {
+			t.Fatalf("the anchor must be untouched: %+v", a)
 		}
 	})
 

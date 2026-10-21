@@ -98,15 +98,13 @@ func faResolveDropOwner(root, stateDir string) (*faOwner, error) {
 	if err != nil || sid == nil {
 		return nil, fmt.Errorf("cannot read the folder's owner: %v", err)
 	}
-	name, domain, typ, err := sid.LookupAccount("")
+	// Bounded and cached (sidnames.go); no answer in time refuses the start.
+	acct, err := faWinDropOwnerAccount(sid.String(), winAccounts, faDropSIDLane)
 	if err != nil {
-		return nil, fmt.Errorf("refusing to run the agent: the granted folder's owner (%s) has no account on this machine", sid.String())
+		return nil, err
 	}
-	full := name
-	if domain != "" {
-		full = domain + `\` + name
-	}
-	if why := faWinOwnerRefusal(sid.String(), typ, full); why != "" {
+	name, full := acct.Account, sidAccountLabel(acct)
+	if why := faWinOwnerRefusal(sid.String(), acct.Type, full); why != "" {
 		return nil, errors.New(why)
 	}
 	home := faWinProfileDir(sid.String())

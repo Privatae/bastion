@@ -5,7 +5,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-lightgrey.svg)](#supported-platforms)
 [![ci](https://git.privatae.ai/privatae/privatae-bastion/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.privatae.ai/privatae/privatae-bastion/actions)
 
-**One static Go binary that turns your own machine into a bastion in your Privatae network.**
+**One static Go binary that gives your AI Host access to a machine without SSH keys: it dials out, checks every signed grant on the machine itself, and keeps its own audit log.**
 
 No Docker, no Python, no database, no separate WireGuard install. You pair the
 binary with a short token from your host, and from then on your host can reach
@@ -20,23 +20,26 @@ binary can be rebuilt from this source and compared
 ([Verify a release](#verify-a-release)). See [CHANGELOG.md](CHANGELOG.md).
 
 ```sh
-# macOS / Linux (a home machine, running as you)
+# A server (macOS / Linux, as root): networked, anchored to the first host you pair
 curl -fsSL https://privatae.ai/bastion/install.sh | sudo sh
-privatae-bastion pair <token>        # token from your host's "Set up a bastion"
-privatae-bastion run                 # tunnel + lanes up
-privatae-bastion add-folder ~/docs   # hand a folder to your network; you approve on your host
+sudo -H privatae-bastion pair <token>       # token from your host's "Set up a bastion"
+sudo -H privatae-bastion stepup-enroll      # your second factor, so you can approve here
+
+# Your own computer (macOS / Linux, as you)
+curl -fsSL https://privatae.ai/bastion/install.sh | sh
+privatae-bastion pair <token>
+privatae-bastion run                        # tunnel + lanes up
 ```
 
 ```powershell
-# Windows
+# Windows, your own computer
 irm https://privatae.ai/bastion/install.ps1 | iex
 privatae-bastion pair <token>
 privatae-bastion run
 ```
 
-On a Linux server installed as root, the installer also enables a service that
-runs the daemon for you, so it is `sudo -H privatae-bastion pair <token>` and
-nothing else. See [Install](#install).
+A Windows server installs from an Administrator PowerShell with `-Networked`.
+See [Install](#install).
 
 ---
 
@@ -46,6 +49,7 @@ nothing else. See [Install](#install).
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Local and networked modes](#local-and-networked-modes)
+- [Replacing an agent's SSH keys](#replacing-an-agents-ssh-keys)
 - [A Host on this machine](#a-host-on-this-machine)
 - [What the bastion does](#what-the-bastion-does)
 - [Command reference](#command-reference)
@@ -80,41 +84,59 @@ trust, and why.
 
 ## Install
 
-The installer downloads the binary for your OS and architecture, verifies its
-SHA-256 against the release manifest, and only then moves it into place. A
-failed check installs nothing.
+There are two ways to run the bastion, and the installer picks by who runs it.
 
-**macOS / Linux**
+**On a server** (run the installer as root). The bastion is installed as the
+machine's system service in **networked** mode (Linux with systemd, or macOS;
+on Linux without systemd a root install stays local, with no service), and
+the first host you pair becomes its **anchor**. From then on, every terminal and every write on the
+machine waits for your approval, and any other host that pairs waits for your
+host to approve it.
 
 ```sh
 curl -fsSL https://privatae.ai/bastion/install.sh | sudo sh
+sudo -H privatae-bastion pair <token>       # token: your host's Network app → Set up a bastion
+sudo -H privatae-bastion stepup-enroll      # your second factor, so you can approve here
 ```
 
-On Linux, running the installer as root also installs an always-on `systemd`
-service (`privatae-bastion.service`), so a server is onboarded in two commands:
-install, then `sudo -H privatae-bastion pair <token>`.
+On Windows, from an Administrator PowerShell:
 
-**Windows (PowerShell)**
+```powershell
+& ([scriptblock]::Create((irm https://privatae.ai/bastion/install.ps1))) -Networked
+privatae-bastion pair <token>
+privatae-bastion stepup-enroll
+```
+
+**On your own computer** (run the installer as yourself). The bastion runs
+as your user in **local** mode and serves one host. The pairing's
+capabilities are the authorization, and approvals work once you enrol a
+second factor.
+
+```sh
+curl -fsSL https://privatae.ai/bastion/install.sh | sh
+privatae-bastion pair <token>
+privatae-bastion run
+```
 
 ```powershell
 irm https://privatae.ai/bastion/install.ps1 | iex
 ```
 
-**Networked bastion** (a shared machine serving several hosts, see
-[modes](#local-and-networked-modes)):
+A root install that should stay local passes `--local`
+(`… | sudo sh -s -- --local`). Reinstalling over a machine already paired in
+local mode keeps it local unless you pass `--networked`. [Local and networked modes](#local-and-networked-modes)
+sets out the difference, and [Replacing an agent's SSH keys](#replacing-an-agents-ssh-keys)
+how to run a fleet of servers this way.
 
-```sh
-curl -fsSL https://privatae.ai/bastion/install.sh | sudo sh -s -- --networked
-```
+The installer downloads the binary for your OS and architecture, checks its
+SHA-256 against the release manifest, and only then moves it into place; a
+failed check installs nothing. That manifest comes from the same place as the
+binary. To check its signature too, see [Verify a release](#verify-a-release).
 
-```powershell
-& ([scriptblock]::Create((irm https://privatae.ai/bastion/install.ps1))) -Networked
-```
+A networked install runs as the operating system's own service, whoever is
+signed in, and only the machine's administrator can stop it:
 
-A networked install runs as the operating system's own service, so it runs
-whoever is signed in, and only the machine's administrator can stop it:
-
-- **Linux:** the `systemd` unit above, as root.
+- **Linux:** the `systemd` unit `privatae-bastion.service`, as root.
 - **macOS:** a `launchd` daemon (`ai.privatae.bastion`) running as root. The
   program goes in `/Library/Application Support/privatae/bin`, which only root
   can change, with a link on `PATH`.
@@ -143,6 +165,9 @@ manifest's sha256, made on the key holder's own computer with
 
 ## Quick start
 
+On your own computer. For a server, see [Install](#install): the installer
+run as root sets it up networked, and `run` is the service's job.
+
 1. In your Privatae host, choose **Set up a bastion**. It gives you a one-time
    pairing token.
 2. Pair this machine. The binary generates its own keys locally and pulls only
@@ -152,7 +177,16 @@ manifest's sha256, made on the key holder's own computer with
    privatae-bastion pair <token>
    ```
 
-3. Bring the tunnel and lanes up.
+3. Enrol a second factor on this machine, straight away. Until you do, folder grants and
+   file moves are gated by the signed grant alone (the host verifies its own
+   factor), and model downloads and root shells are refused outright. After
+   you do, every one of those waits for your approval here.
+
+   ```sh
+   privatae-bastion stepup-enroll
+   ```
+
+4. Bring the tunnel and lanes up.
 
    ```sh
    privatae-bastion run
@@ -161,20 +195,11 @@ manifest's sha256, made on the key holder's own computer with
    Each paired host gets its own loopback control port, starting at
    `127.0.0.1:7878`. One daemon serves every host you pair.
 
-4. Check on it, or open the local console.
+5. Check on it, or open the local console.
 
    ```sh
    privatae-bastion status
    privatae-bastion ui
-   ```
-
-5. Enrol a second factor on this machine. Until you do, folder grants and
-   file moves are gated by the signed grant alone (the host verifies its own
-   factor), and model downloads and root shells are refused outright. After
-   you do, every one of those waits for your approval here.
-
-   ```sh
-   privatae-bastion stepup-enroll
    ```
 
 6. Share a folder. Your files stay on this machine. The host keeps only an
@@ -186,18 +211,23 @@ manifest's sha256, made on the key holder's own computer with
 
 ## Local and networked modes
 
-| | **local** (default) | **networked** |
+| | **local** | **networked** |
 |---|---|---|
-| Who it serves | one host | several hosts on one shared machine |
+| Where | your own computer | a server, or a machine several people share |
+| Installed by | the installer run as yourself | the installer run as root (Windows: `-Networked`), or `sudo -H privatae-bastion set-mode networked` |
 | Runs as | your user is fine | the system's service: root under systemd or launchd, LocalSystem on Windows |
+| A terminal the host opens | opens on the pairing's capabilities | waits for your approval, for that one session |
+| A write (an op, a ship step) | runs on the pairing's capabilities | waits for your approval, bound to that op and its arguments |
 | Second pairing | refused | waits for the **anchor** host's approval |
-| Set with | nothing to do | `install.sh --networked` or `sudo -H privatae-bastion set-mode networked` |
+| The anchor | none | the first host paired, or `claim-anchor` |
 
 In networked mode one host is the **anchor**: the one host that approves every
 later pairing on this machine. Claiming the anchor requires root, because there
-is no authority above the box to ask. The ordinary flow is `pair`, then
-`set-mode networked`, then `claim-anchor` with no token: it is a choice among
-pairings the box already holds. A token is needed only to name a host this box
+is no authority above the box to ask. On a networked machine with no anchor,
+the first `pair` run as root anchors it to that host by itself. A machine
+paired first and switched to networked afterwards is anchored with
+`claim-anchor` and no token: it is a choice among pairings the box already
+holds, and running it again for the same host changes nothing. A token is needed only to name a host this box
 does not serve yet (a fresh machine, or `--rotate`). The anchor can be moved to
 another host only with the current anchor's signed consent, or after 14 days of
 silence from it.
@@ -212,6 +242,38 @@ sudo -H privatae-bastion claim-owner <name>                              # state
 
 `claim-owner` is optional. The name shows on this machine's card in every host
 it serves, and it grants nothing anywhere.
+
+## Replacing an agent's SSH keys
+
+An agent with an SSH key has a shell on every server the key opens, and the
+server's log says only that the key was used. Paired through the bastion, the
+agent holds no key that opens anything: each server dials out to its host,
+decides what the host may do, and records every decision.
+
+For a fleet of servers:
+
+1. **Install each server as networked** (the installer as root) and pair it
+   to your host, which anchors it there. Enrol a second factor on each one.
+2. **Make one approval device** that is not the host's machine
+   (`device-init` on your own computer, `pin-device <key>` on each server).
+   Approvals then come from it, in each server's own words.
+3. **Start with reads.** Observe ops (`observe:*`) are read-only and give the
+   host the view of each server it needs.
+4. **Turn recurring jobs into ops**, not shell sessions. An op is a program
+   your host wrote, run in a sandbox first; you approve its terms once, with
+   bounds, an expiry and a use count (see [Ops](#ops-programs-your-host-wrote-run-in-a-sandbox-first)).
+   A change across several servers is one [ship plan](#ship-plans-one-approval-for-a-whole-ship):
+   one approval, and each server runs only its own lines.
+5. **Keep terminals off** where nobody needs them:
+   `sudo -H privatae-bastion switch <host> session off`. That also stops
+   root commands. Do not grant `root-exec` on a server you would not hand a
+   standing root shell.
+6. **Send the audit somewhere the host cannot write.** Every audit row also
+   goes to the system log (see [Audit](#audit-on-this-machine-and-in-its-system-log));
+   point your log collector at it.
+
+When the agent cannot do something without a shell, that is the op to write
+next, not the shell to open.
 
 ## A Host on this machine
 
@@ -667,7 +729,30 @@ Read-only, and reported so the host can show **why** rather than a verdict.
   (`interactive`, `remote`, `scheduler`, `service`, `agent`) and a typed
   evidence list with a confidence tier. Tools that drive the machine with no
   model of their own are inventoried as `automation` and promoted to `agent`
-  only when model traffic joins them.
+  only when model traffic joins them. Each also says who owns the account it
+  runs as: `owner_class` (`domain_user`, `local_user`, `service`, `system`),
+  `owner_admin` and `owner_interactive` (each `yes`, `no` or `unknown`; a
+  group list or token that could not be read is `unknown`, never `no`).
+- **Declared tool servers.** The files where Claude Desktop, Claude Code,
+  Cursor, VS Code, Windsurf, Codex and Zed declare their MCP servers, per
+  account and for the projects Claude Code lists, read and never written or
+  connected to. Per server: client, scope, path, name, transport, whether it is
+  a local process or a URL (and the URL's host), the launch command truncated
+  like an agent's, the package and whether it is pinned, the **names** of the
+  environment variables it gets, whether a value looked like a secret (the
+  value is dropped where it is read), whether a remote server has
+  authentication configured, and whether it is running, declared but not
+  running, or running with no declaration. A command line keeps a URL's
+  scheme and host only, and every flag, header or `NAME=value` that names a
+  secret is replaced. A file is opened only once it is known to be a regular
+  file (on Windows: a reparse point, directory or device at the path is
+  refused, checked on the open handle), and in an account's home or project
+  only when that account or root owns it (on Windows: the account whose
+  profile it is, SYSTEM or the Administrators group; `files_foreign_owner`
+  counts the rest). The files are read at most every ten minutes, and a read
+  that does not finish holds the beats for at most 20 seconds in total
+  (`timed_out` says it did not finish; until one read has finished, no server
+  is reported).
 - **Scheduler inventory.** Crontabs, `systemd` timers, `launchd` jobs and
   Windows scheduled tasks whose command would run an agent or automation.
 - **Baseline and delta.** `observe:baseline` records what is normal on this
@@ -705,8 +790,9 @@ platform **withholds** the capability, so the host can tell a machine that is
 quiet apart from one that is blind.
 
 ### Heartbeat and self-update
-Each check-in carries the machine's capabilities, posture, agent scan and
-scheduler inventory. The host can direct endpoint rotation and a self-update.
+Each check-in carries the machine's capabilities, posture, agent scan,
+scheduler inventory and declared tool servers (the last three only to a
+pairing granted `observe`). The host can direct endpoint rotation and a self-update.
 The update is fetched from the release manifest; the manifest's signature is
 checked against the release keys compiled into this binary and the binary's
 digest against the manifest before it is swapped. On an anchored machine a
@@ -860,6 +946,35 @@ needs infrastructure that is not part of this program, and not built yet:
 - the certificate authority that issues the host its identity, and the
   services a host reaches when it starts, or replacements for them;
 - a place the new host can fetch the backup from, as above.
+
+### Audit: on this machine and in its system log
+Every decision the bastion makes is written as one JSON line to an audit
+file on this machine: what was asked of the management lane, allowed or
+refused (`mgmt_audit.jsonl`), pairing changes (`pairing_audit.jsonl`), and
+each pairing's terminals, root commands, store ops and op runs (that
+pairing's `audit.jsonl`). A host can fetch these files over the tunnel but
+cannot change or remove them.
+
+Each line is also written to the machine's own system log, so whatever
+already collects that log can take it to a store no host can write:
+
+| System | Where | Name |
+|---|---|---|
+| Linux | syslog, facility `auth`; on systemd, the journal | `privatae-bastion-audit` (`journalctl -t privatae-bastion-audit`) |
+| macOS | syslog | `privatae-bastion-audit` |
+| Windows | Application event log, event id 1 | source `PrivataeBastionAudit`, registered when the system service is installed |
+
+The system-log line is the file's line with two fields added: `audit`, which
+file it went to, and `pairing`, the pairing it belongs to (empty for a
+machine-wide file). One field is left out: a root command's text, which can
+hold a password typed on a command line and stays in the file only. The line
+keeps the command's `command_sha256` and `command_bytes`, so it can still be
+matched to the file and the transcript.
+
+The file stays the record. Lines go to the system log through a queue, so a
+system log that is missing, slow or stuck never holds up the op being
+audited; if the queue fills, lines are dropped, and the next line queued
+carries `system_log_dropped`, how many were lost just before it.
 
 ### Local console
 `privatae-bastion ui` opens a page served by the running daemon on `127.0.0.1`
@@ -1123,7 +1238,8 @@ says so. Those parts are enforced only by the code as written.
 | | `local_host_linux_test.go`: `TestARunSocketOpensOnlyForALiveRunOfThePairing` | No socket is made for a run with no record, another pairing's run or a run the watchdog stopped; another pairing reusing the run_id gets its own. |
 | | `local_host_linux_test.go`: `TestAUnixPairingsRunStillCannotReachThisMachine` | A run a unix pairing owns gets 403 from its egress proxy for loopback, this machine's public address and a name for it. |
 | | `local_host_linux_test.go`: `TestTheOwnersImagePrefix`, `TestALocalImageRunsByItsIDWithoutAPull` | Run-up takes only `<prefix>harness-<engine>@sha256:<digest>` under the owner's prefix, and pull credentials only for its registry. A local image runs by its ID with no pull only when the image with that ID carries a tag of the named repository. |
-| No MCP endpoint | `claims_static_test.go`: `TestNoRouteOpOrDependencySpeaksMCP` | Every HTTP route on every listener is in a fixed table and none names MCP; no management op, import, module or string in the code names MCP, an `/mcp` path or JSON-RPC. |
+| No MCP endpoint | `claims_static_test.go`: `TestNoRouteOpOrDependencySpeaksMCP` | Every HTTP route on every listener is in a fixed table and none names MCP; no management op, import or module names MCP; no string in the code is a URL or route with an `/mcp` path, or names JSON-RPC. The agent clients' tool-server config files are named only in `mcpconfig.go`, which reads them, and nothing in the config reader imports or can reach a dialler, an HTTP client, a websocket or a process start. |
+| | `claims_static_test.go`: `TestMCPReaderCheckCatchesADialAndAStrayBasename` | The check above reports a config reader that starts a process, imports `net/http` or reaches a dialler through another function, a Windows reader that starts a process, opens a socket, loads a DLL by name or opens a remote registry, and a second file that names a client's config file, the servers key, an `/mcp` URL or an `/mcp` route. |
 | Grants are verified here | `anchor_test.go`: `TestPairingGrantSyncWalls` | A pairing grant signed by another key, for another machine, naming another anchor, or expired is refused, and the pairing stays pending. |
 | | `fuzz_grants_test.go`: `FuzzAChangedSignedByteNeverVerifies` | For every kind of signed record, changing any byte of the record or its signature makes it fail to verify. |
 | | `session_test.go`: `TestSessionPinsTheHostKeyWithoutAStoreGrant` | The first key offered is pinned; a different key later is refused and the pin is kept. |
@@ -1222,6 +1338,14 @@ says so. Those parts are enforced only by the code as written.
 | | `ownaddr_test.go`: `TestBackupLanesRefuseThisMachinesOwnAddresses` | The backup lanes' URL check refuses an address on this machine's interface and one a `local` route delivers here, in every spelling and through a name, and their dial wall refuses those addresses; a failed lookup refuses both; a neighbour on the subnet passes. With the kernel's answer supplied. |
 | | `backupfetch_test.go`: `TestBackupWallJudgesTheIPv4InsideAndTheReservedRanges` | The backup lanes' classifier, address wall and URL check refuse 10.0.0.1 and 127.0.0.1 inside NAT64, 10.0.0.1 inside 6to4 and in the IPv4-compatible and IPv4-translated forms, the metadata address inside 6to4, a local-use NAT64 address, `fec0::1`, `198.18.0.0/15` (also inside an IPv4-mapped address), `240.0.0.0/4` (also inside NAT64) and `255.255.255.255`; public addresses in the NAT64, 6to4 and IPv4-mapped forms, and the addresses either side of `198.18.0.0/15`, pass the classifier. |
 | | not covered by a test | A public address that reaches this machine only through a 1:1 NAT in front of it. Nothing refuses it. |
+| Audit rows also reach the system log | `auditlog_test.go`: `TestAuditRowsReachTheSystemLog` | The management lane, pairing changes, store ops, terminals and root commands each send the row they write to their file to the system log too, unchanged, with `audit` and `pairing` added. |
+| | `auditlog_test.go`: `TestAuditFileRowStandsWithoutASystemLog` | A system log that takes nothing costs only that copy; the row is still written to its file. |
+| | `auditlog_syslog_test.go`: `TestAuditRowsDoNotWaitOnAStuckSyslogSocket` | A real syslog writer on a socket nobody reads blocks; 5000 rows queued in front of it all return at once and the excess is counted as dropped. |
+| | `auditlog_queue_test.go`: `TestAuditSinkIsTheQueue`, `TestAuditQueueNeverWaitsOnAStuckWriter` | The shipped sink is the queue, not the writer; with a writer that never returns, 1000 rows are taken at once, and every row is either written or counted in `system_log_dropped` on a later line. |
+| | `auditlog_queue_test.go`: `TestAuditSystemLogOmitsTheRootCommandText` | A root command's text is not in the system-log line; its digest and length are. |
+| A networked machine is anchored to its first host | `pair_anchor_test.go`: `TestPairAnchorsANetworkedMachineToItsFirstHost` | On a networked machine with no anchor, the first pairing made with machine authority anchors it and is active; a local machine, an anchored one (a new host stays pending), a second pairing, and a caller without machine authority are left as they were. `claim-anchor` afterwards succeeds and changes nothing. Called directly, not through `pair`'s redeem. |
+| | `anchor_test.go`: `TestClaimAnchorWithNoToken` | `claim-anchor` with no token on a machine anchored to that host succeeds and changes nothing, the host named in full, by handle or not at all; when the anchor's pairing is pending or revoked it is refused and the state is left as it was; another host is refused without `--rotate`. |
+| A root reinstall keeps a paired local machine local | `install_sh_test.go`: `TestInstallShKeepsAPairedLocalMachineLocal` | `install.sh`'s check finds a pairing in a folder whose mode is local (or unset), in either folder it looks in; a networked folder, or one with no pairing, gets the networked default. The rest of the installer is not run by a test. |
 | A terminal is checked here and logged | `session_test.go`: `TestSessionOpensWithoutAGrantOnALocalBox` | On a local machine a terminal with no grant and no approval opens and is audited. The same test calls `sessionPinOfferedKey` directly: the first key offered is pinned and a different one is refused. |
 | | `session_test.go`: `TestSessionRefusedWithoutGrantIs126` | A grant that is sent is verified: a bad signature, an op not listed, or an op the grant denies is refused and audited. |
 | | `fuzz_grants_test.go`: `FuzzEachOpIsAllowedOnlyByItsOwnFamily` | On an anchored machine the family check (`capsAllow`) lets a host other than the anchor run an op, the session ops included, only if its pairing grant names that op's family. Called directly, not through the terminal handler. |
@@ -1422,6 +1546,7 @@ client-go/        the bastion: one Go package, one binary
   coder_socket.go a coder run's socket for a Host on this machine
   anchor.go       networked-mode anchor
   mgmt*.go        management lane, allowlist and audit
+  auditlog*.go    every audit row also written to the system log
   writes.go       which management ops are writes (and need an approval)
   device*.go      the approval device
   quarantine.go   closing a pairing's write lanes after repeated refusals

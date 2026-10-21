@@ -34,3 +34,11 @@ func procEnvToken(pid int) string              { return "" }
 func procExe(pid int) string      { return "" }
 func procParent(pid int) int      { return 0 }
 func processParents() map[int]int { return map[int]int{} }
+
+// ownerFactsReader: no reader here, so every owner fact is unknown.
+func ownerFactsReader() func(pid int, user string) ownerFacts {
+	return func(int, string) ownerFacts { return unknownOwner }
+}
+
+// scanMCPProcesses: no enumerator, so running state is never measured here.
+func scanMCPProcesses(map[string]bool) ([]mcpProc, error) { return nil, errNoEnumerator }

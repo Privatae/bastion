@@ -189,6 +189,7 @@ func dcnAudit(dir, op string, storeID int64, path, decision string) {
 		"ts": time.Now().UTC().Format(time.RFC3339), "op": op,
 		"store_id": storeID, "path": path, "decision": decision,
 	})
+	auditToSystemLog(auditFilePairingD, auditPairingOfDir(dir), rec)
 	fh, err := os.OpenFile(filepath.Join(dir, "audit.jsonl"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {

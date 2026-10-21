@@ -42,6 +42,7 @@ func pairingAudit(op, subject, decision string) {
 		"ts": time.Now().UTC().Format(time.RFC3339), "op": op,
 		"subject": subject, "decision": decision,
 	})
+	auditToSystemLog(auditFilePairing, "", rec)
 	fh, err := os.OpenFile(filepath.Join(d, "pairing_audit.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

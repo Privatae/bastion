@@ -306,6 +306,7 @@ func processParents() map[int]int {
 // scanProcesses: an error is a snapshot that did not happen (Toolhelp can
 // fail transiently), never an empty box; the heartbeat withholds `agents`.
 func scanProcesses() (map[int]agentObs, error) {
+	winBeginSIDScan()
 	out := map[int]agentObs{}
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
@@ -390,6 +391,50 @@ func scanProcesses() (map[int]agentObs, error) {
 	return out, nil
 }
 
+// scanMCPProcesses is the process list mcpconfig.go correlates declared tool
+// servers against. Every process comes from one Toolhelp snapshot with its
+// parent; the command line, which costs a handle and a memory read, is read
+// only for a program in want (interpreters, package runners, and every
+// program a declared server names) or whose own name carries the word mcp.
+// The rest keep their parent link with no command line, which is all the
+// correlation needs from them. An error is a snapshot that did not happen.
+func scanMCPProcesses(want map[string]bool) ([]mcpProc, error) {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, fmt.Errorf("process snapshot: %w", err)
+	}
+	defer windows.CloseHandle(snap)
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	self := os.Getpid()
+	var out []mcpProc
+	for err = windows.Process32First(snap, &e); err == nil; err = windows.Process32Next(snap, &e) {
+		pid := int(e.ProcessID)
+		if pid <= 0 || pid == self {
+			continue
+		}
+		p := mcpProc{PID: pid, PPID: int(e.ParentProcessID)}
+		exe := windows.UTF16ToString(e.ExeFile[:])
+		if base := binBase(exe); want[base] || mcpWord(base) {
+			cmdline := ""
+			if h, herr := winOpenForRead(pid); herr == nil {
+				cmdline = winCmdline(h)
+				windows.CloseHandle(h)
+			}
+			if argv, derr := windows.DecomposeCommandLine(cmdline); derr == nil && len(argv) > 0 {
+				p.Argv = argv
+			} else {
+				p.Argv = []string{exe}
+			}
+		}
+		out = append(out, p)
+	}
+	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+		return nil, fmt.Errorf("process walk: %w", err)
+	}
+	return out, nil
+}
+
 // ── connections: GetExtendedTcpTable ────────────────────────────────────────
 
 var (
@@ -463,14 +508,133 @@ func winTokenUser(h windows.Handle) string {
 	if err != nil || tu.User.Sid == nil {
 		return ""
 	}
-	account, domain, _, err := tu.User.Sid.LookupAccount("")
+	return winAccountLabel(tu.User.Sid.String(), winScanSIDNames())
+}
+
+// winSIDScan is the current scan's account-name cache (sidnames.go), shared
+// by winTokenUser and ownerFactsReader so a SID is looked up once per scan
+// and the scan's lookups stay within sidLookupBudget. scanProcesses starts a
+// new one; the readers that run after it in scanAgents use that one.
+var winSIDScan struct {
+	sync.Mutex
+	names *sidNames
+}
+
+func winBeginSIDScan() *sidNames {
+	n := newSIDNames(winLookupSID, sidLookupBudget, sidLookupSlots)
+	winSIDScan.Lock()
+	winSIDScan.names = n
+	winSIDScan.Unlock()
+	return n
+}
+
+func winScanSIDNames() *sidNames {
+	winSIDScan.Lock()
+	n := winSIDScan.names
+	winSIDScan.Unlock()
+	if n == nil {
+		return winBeginSIDScan()
+	}
+	return n
+}
+
+// winLookupSID is LookupAccountSid on this machine for one SID string.
+func winLookupSID(s string) (string, string, error) {
+	a, err := winLookupSIDAccount(s)
+	return a.Account, a.Domain, err
+}
+
+// winLookupSIDAccount is LookupAccountSid with the SID's type. Unbounded:
+// callers go through sidNames or winAccounts.
+func winLookupSIDAccount(s string) (sidAccount, error) {
+	sid, err := windows.StringToSid(s)
 	if err != nil {
-		return tu.User.Sid.String()
+		return sidAccount{}, err
 	}
-	if domain != "" {
-		return domain + `\` + account
+	account, domain, typ, err := sid.LookupAccount("")
+	return sidAccount{Account: account, Domain: domain, Type: typ}, err
+}
+
+// winAccounts is the process-wide account cache for lookups made outside a
+// scan: the approvals pipe and the folder agent's drop (sidnames.go).
+var winAccounts = newSIDDirectory(winLookupSIDAccount)
+
+// ownerFactsReader answers the three owner facts agentowner.go decides on,
+// from each process's own token: its user SID and that SID's domain, and its
+// group SIDs (deny-only ones included, which is how an administrator running
+// without elevation still reads as an administrator account). The session
+// list is read once per scan and needs LocalSystem, which the system service
+// is; elsewhere it is left unknown and the token's own logon type answers
+// what it can (classifyWinOwner). The domain comes from the scan's shared
+// account-name cache (winScanSIDNames), so a SID winTokenUser already looked
+// up is not asked again, and an unreachable domain controller leaves the
+// class unknown instead of holding the scan.
+func ownerFactsReader() func(pid int, user string) ownerFacts {
+	computer, _ := windows.ComputerName()
+	names := winScanSIDNames()
+	var sessions map[string]bool
+	sessionsOK, sessionsRead := false, false
+	return func(pid int, _ string) ownerFacts {
+		if !sessionsRead {
+			sessionsRead = true
+			sessions, sessionsOK = winSessionSIDs()
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+		if err != nil {
+			return unknownOwner
+		}
+		defer windows.CloseHandle(h)
+		var tok windows.Token
+		if err := windows.OpenProcessToken(h, windows.TOKEN_QUERY, &tok); err != nil {
+			return unknownOwner
+		}
+		defer tok.Close()
+		o := winOwner{Computer: computer, SessionSIDs: sessions, SessionsKnown: sessionsOK}
+		if tu, err := tok.GetTokenUser(); err == nil && tu.User.Sid != nil {
+			o.SID = tu.User.Sid.String()
+			o.Domain = winAccountDomain(o.SID, names)
+		}
+		if tg, err := tok.GetTokenGroups(); err == nil {
+			o.Groups, o.GroupsKnown = map[string]bool{}, true
+			for _, g := range tg.AllGroups() {
+				if g.Sid != nil {
+					o.Groups[g.Sid.String()] = true
+				}
+			}
+		}
+		return classifyWinOwner(o)
 	}
-	return account
+}
+
+// winSessionSIDs is the set of user SIDs with an active or disconnected
+// Remote Desktop Services session (the console is one). ok is false when the
+// list could not be read: WTSQueryUserToken needs LocalSystem's privilege.
+func winSessionSIDs() (map[string]bool, bool) {
+	var info *windows.WTS_SESSION_INFO
+	var count uint32
+	if err := windows.WTSEnumerateSessions(0, 0, 1, &info, &count); err != nil {
+		return nil, false
+	}
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(info)))
+	list := unsafe.Slice(info, count)
+	out := map[string]bool{}
+	for _, s := range list {
+		if s.State != windows.WTSActive && s.State != windows.WTSDisconnected {
+			continue
+		}
+		var tok windows.Token
+		if err := windows.WTSQueryUserToken(s.SessionID, &tok); err != nil {
+			if errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD) || errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+				return nil, false
+			}
+			continue // a session with no user (the services session, a login screen)
+		}
+		if tu, err := tok.GetTokenUser(); err == nil && tu.User.Sid != nil {
+			out[tu.User.Sid.String()] = true
+		}
+		tok.Close()
+	}
+	return out, true
 }
 
 func procUser(pid int) string {

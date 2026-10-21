@@ -213,9 +213,17 @@ type agentObs struct {
 	// what makes a service RESTART the same entry rather than a new one
 	// (baseline.go). Empty where the platform does not supply one: darwin and
 	// windows never populate procFacts.Unit, so those fall back to the origin.
-	Unit     string     `json:"unit,omitempty"`
-	Evidence []evidence `json:"evidence,omitempty"`
-	raw      string     // the UNTRUNCATED command line, for classification only; never reported
+	Unit string `json:"unit,omitempty"`
+	// The account behind User (agentowner.go): domain_user, local_user,
+	// service, system or unknown; whether it administers this machine; and
+	// whether it has a login session now. yes, no or unknown each — unknown
+	// is what an unreadable token or group list says, never no. Empty only on
+	// an observation made outside scanAgents.
+	OwnerClass       string     `json:"owner_class,omitempty"`
+	OwnerAdmin       string     `json:"owner_admin,omitempty"`
+	OwnerInteractive string     `json:"owner_interactive,omitempty"`
+	Evidence         []evidence `json:"evidence,omitempty"`
+	raw              string     // the UNTRUNCATED command line, for classification only; never reported
 	// automation: the signature came from the automation tables, so the
 	// classifier gives this kind `automation` unless model traffic promotes it.
 	automation bool
@@ -304,6 +312,7 @@ func scanAgents() ([]agentObs, error) {
 	}
 	extra := originExtras()
 	facts := procFactsReader()
+	owners := ownerFactsReader()
 	out := make([]agentObs, 0, len(byPid))
 	for pid, a := range byPid {
 		if faIsOwnChild(pid) {
@@ -317,6 +326,11 @@ func scanAgents() ([]agentObs, error) {
 		if f, ok := facts(pid); ok {
 			a.Unit = f.Unit
 		}
+		// Who the owning account is, beside who it is called. Read here
+		// rather than in each platform's walk so a process the network
+		// signal alone caught (mergeConnections) gets the same answer.
+		o := owners(pid, a.User)
+		a.OwnerClass, a.OwnerAdmin, a.OwnerInteractive = o.Class, o.Admin, o.Interactive
 		a.Evidence = append([]evidence{signatureEvidence(a)}, endpointEvidence(a.LLMEndpoints)...)
 		if a.DelegationToken != "" {
 			a.Evidence = append(a.Evidence, evidence{Signal: "delegation-tag", Tier: tierKnown, Value: "present"})
@@ -325,6 +339,133 @@ func scanAgents() ([]agentObs, error) {
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// scanMCPProcessesFn is the seam a test uses to hand the correlation a
+// process list; production never reassigns it.
+var scanMCPProcessesFn = scanMCPProcesses
+
+// mcpServersReport reads the declared tool servers and correlates them with
+// the process list. It lives here, not in mcpconfig.go, because reading the
+// process list runs `ps` on macOS: the config reader itself starts nothing,
+// and the claims test holds it to that.
+func mcpServersReport() ([]mcpServerObs, mcpConfigScan) {
+	declared, scan, read := cachedMCPConfigs()
+	if !scan.Supported {
+		scan.ProcessScan = "unsupported"
+		return []mcpServerObs{}, scan
+	}
+	procs, err := scanMCPProcessesFn(mcpWantedBases(declared))
+	switch {
+	case err == nil:
+		scan.ProcessScan = "ok"
+	case agentScanSupported:
+		scan.ProcessScan = "failed"
+	default:
+		scan.ProcessScan = "unsupported"
+	}
+	if !read {
+		// No read of the files has finished yet (timed_out says so). With
+		// nothing known to be declared, every tool-server-looking process
+		// would read as running_not_declared, which nobody has checked.
+		return []mcpServerObs{}, scan
+	}
+	out := correlateMCP(declared, procs, err == nil)
+	if out == nil {
+		out = []mcpServerObs{}
+	}
+	if len(out) >= mcpMaxServers {
+		scan.Truncated = true
+	}
+	return out, scan
+}
+
+// mcpCache holds the last complete read of the config files. The heartbeat
+// is every 60 s and the read is up to a thousand files across every account;
+// like the scheduler inventory (schedCacheFor) it is redone every ten
+// minutes, while the process correlation above runs on every beat. One read
+// runs at a time, and the beats wait for it at most mcpReadTimeout IN TOTAL,
+// counted from when it started: a home on a network mount that stopped
+// answering holds that one goroutine, delays one beat by at most that much,
+// never the beats after it, and never starts a second read.
+var mcpCache struct {
+	sync.Mutex
+	at       time.Time
+	have     bool
+	declared []mcpServerObs
+	scan     mcpConfigScan
+	inflight chan struct{}
+	started  time.Time // when the read in flight began
+	gen      int
+}
+
+const mcpCacheFor = 10 * time.Minute
+
+// mcpReadTimeout is how long one beat waits for a read in progress.
+var mcpReadTimeout = 20 * time.Second
+
+// cachedMCPConfigs is the last complete read. read is false when no read has
+// finished yet, so the list says nothing about what is declared.
+func cachedMCPConfigs() (declared []mcpServerObs, scan mcpConfigScan, read bool) {
+	mcpCache.Lock()
+	if mcpCache.have && time.Since(mcpCache.at) < mcpCacheFor {
+		d, s := mcpCache.declared, mcpCache.scan
+		mcpCache.Unlock()
+		return d, s, true
+	}
+	done := mcpCache.inflight
+	if done == nil {
+		done = make(chan struct{})
+		mcpCache.inflight, mcpCache.started = done, time.Now()
+		gen := mcpCache.gen
+		go func() {
+			d, s := readMCPConfigs()
+			mcpCache.Lock()
+			if mcpCache.gen == gen {
+				mcpCache.declared, mcpCache.scan, mcpCache.at, mcpCache.have = d, s, time.Now(), true
+				mcpCache.inflight = nil
+			}
+			mcpCache.Unlock()
+			close(done)
+		}()
+	}
+	wait := mcpReadTimeout - time.Since(mcpCache.started)
+	mcpCache.Unlock()
+	timedOut := false
+	if wait <= 0 {
+		// An earlier beat already waited the whole time for this read.
+		select {
+		case <-done:
+		default:
+			timedOut = true
+		}
+	} else {
+		t := time.NewTimer(wait)
+		select {
+		case <-done:
+		case <-t.C:
+			timedOut = true
+		}
+		t.Stop()
+	}
+	mcpCache.Lock()
+	defer mcpCache.Unlock()
+	if !mcpCache.have {
+		// Nothing read yet: say so, rather than "no servers".
+		return nil, mcpConfigScan{Supported: true, TimedOut: true}, false
+	}
+	s := mcpCache.scan
+	s.TimedOut = timedOut
+	return mcpCache.declared, s, true
+}
+
+// resetMCPConfigCache forgets the last read; a read still running is
+// ignored when it finishes. Tests use it to start clean.
+func resetMCPConfigCache() {
+	mcpCache.Lock()
+	defer mcpCache.Unlock()
+	mcpCache.gen++
+	mcpCache.have, mcpCache.declared, mcpCache.scan, mcpCache.inflight = false, nil, mcpConfigScan{}, nil
 }
 
 var (
@@ -554,10 +695,20 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 	// done for nothing, on the user's own hardware.
 	var schedEntries []schedEntry
 	var schedScan schedScanReport
+	// Declared tool servers (mcpconfig.go): the agent clients' own config
+	// files, correlated with the process list. Same gate and same
+	// quiet-vs-blind rule as the schedulers: read only for a pairing entitled
+	// to observe, and the capability travels only from a build that can.
+	var mcpServers []mcpServerObs
+	var mcpScan mcpConfigScan
 	if observing {
 		schedEntries, schedScan = scanSchedulers()
 		if schedScan.Supported {
 			caps = append(caps, "scheduler-observe")
+		}
+		mcpServers, mcpScan = mcpServersReport()
+		if mcpScan.Supported {
+			caps = append(caps, "tool-server-observe")
 		}
 	}
 	// Context preparation (contextprep.go): the tools on this box that
@@ -674,6 +825,13 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 		// that read 0 crontabs is visibly different from one that read 40.
 		body["schedulers"] = schedEntries
 		body["scheduler_scan"] = schedScan
+		// The tool servers each agent client declares, and which are running
+		// (or running with no declaration). Paths, server names and command
+		// lines, so inside this gate with the agent list; env values and
+		// header values never leave mcpconfig.go, only their names and
+		// whether one looked like a secret.
+		body["tool_servers"] = mcpServers
+		body["tool_server_scan"] = mcpScan
 		// Where this machine keeps its own record — the findings journal and
 		// the signed accounting (machinestore.go, baselinesign.go). The host
 		// drafts a machine store at this root for the user to approve, once;

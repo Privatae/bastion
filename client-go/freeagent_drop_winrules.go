@@ -5,11 +5,37 @@ package main
 // that gather their inputs are in the tagged file.
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
+
+// faDropSIDLane bounds the lookup of the granted folder's owner (sidnames.go).
+// The start runs on the store's own goroutine and nothing waits on it, so the
+// budget is generous enough for a slow directory that does answer. It is a
+// bound all the same: the store is marked as ensuring for as long as the start
+// runs, and every reconcile skips it while it is, so a lookup that never
+// returned would hold the store as "installing" for good. Timed out, the store
+// is failed with the reason and the reconcile tries again
+// (faReconcileEvery), by when a late answer is in the cache.
+var faDropSIDLane = sidLane{slots: make(chan struct{}, 1), budget: 10 * time.Second}
+
+// faWinDropOwnerAccount is the folder owner's account from the directory. It
+// fails closed: no account, or no answer in time, and no agent is started.
+func faWinDropOwnerAccount(sid string, dir *sidDirectory, lane sidLane) (sidAccount, error) {
+	acct, outcome := dir.resolve(sid, lane)
+	switch outcome {
+	case sidTimedOut:
+		return sidAccount{}, fmt.Errorf("refusing to run the agent for now: this machine's account directory did not answer "+
+			"for the granted folder's owner (%s) within %v; it is tried again at the next check", sid, lane.budget)
+	case sidUnmapped:
+		return sidAccount{}, fmt.Errorf("refusing to run the agent: the granted folder's owner (%s) has no account on this machine", sid)
+	}
+	return acct, nil
+}
 
 // winSidTypeUser is SidTypeUser: the SID names a person's account rather than
 // a group, an alias or a well-known identity.

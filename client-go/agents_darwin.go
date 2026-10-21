@@ -101,6 +101,79 @@ func scanProcesses() (map[int]agentObs, error) {
 	return out, nil
 }
 
+// ownerFactsReader answers the three owner facts agentowner.go decides on.
+// macOS keeps accounts in Open Directory, not /etc/passwd, so it asks the
+// system's own tools, each a fixed argv under runTimed's timeout: `dscl .`
+// (the LOCAL node only) for the uid and whether the account is a mobile copy
+// of a directory account, `id -Gn` for its groups (nested groups resolved by
+// the system), and `who` once per scan for who is logged in. Answers are kept
+// per account for the scan, so ten agents of one person cost three commands.
+func ownerFactsReader() func(pid int, user string) ownerFacts {
+	var sessions map[string]bool
+	sessionsOK, sessionsRead := false, false
+	cache := map[string]ownerFacts{}
+	return func(pid int, user string) ownerFacts {
+		if user == "" || strings.ContainsAny(user, "/ \t\n") {
+			return unknownOwner
+		}
+		if f, ok := cache[user]; ok {
+			return f
+		}
+		if !sessionsRead {
+			sessionsRead = true
+			if out, err := runTimed("who"); err == nil {
+				sessions, sessionsOK = parseWhoUsers(string(out)), true
+			}
+		}
+		o := unixOwner{UID: -1, Name: user, LocalRecord: ownerUnknown,
+			SystemUIDMax: darwinSystemUIDMax, AdminGroups: darwinAdminGroups,
+			Sessions: sessions, SessionsKnown: sessionsOK}
+		out, err := runTimed("dscl", ".", "-read", "/Users/"+user, "UniqueID", "OriginalNodeName")
+		if err == nil {
+			if uid, mobile, ok := parseDsclUser(string(out)); ok {
+				o.UID = uid
+				o.LocalRecord = ownerYes
+				if mobile {
+					o.LocalRecord, o.DirectorySource = ownerNo, true
+				}
+			}
+		} else if dsclRecordMissing(err) {
+			// dscl ran and has no such record in the local node: the account
+			// comes from a directory. The uid then has to come from id.
+			o.LocalRecord, o.DirectorySource = ownerNo, true
+			if out, err := runTimed("id", "-u", "--", user); err == nil {
+				if n, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil {
+					o.UID = n
+				}
+			}
+		}
+		if out, err := runTimed("id", "-Gn", "--", user); err == nil {
+			o.Groups, o.GroupsKnown = parseIDGroups(string(out)), true
+		}
+		f := classifyUnixOwner(o)
+		cache[user] = f
+		return f
+	}
+}
+
+// scanMCPProcesses is the process list mcpconfig.go correlates declared tool
+// servers against: one `ps` sweep, every process with its parent and
+// arguments. An error is a sweep that did not happen.
+func scanMCPProcesses(want map[string]bool) ([]mcpProc, error) {
+	_, argvs, parents, err := psSweep()
+	if err != nil {
+		return nil, err
+	}
+	self := os.Getpid()
+	out := make([]mcpProc, 0, len(argvs))
+	for pid, argv := range argvs {
+		if pid != self {
+			out = append(out, mcpProc{PID: pid, PPID: parents[pid], Argv: argv})
+		}
+	}
+	return out, nil
+}
+
 // procParent answers from the sweep scanProcesses just took.
 func procParent(pid int) int {
 	psCache.Lock()

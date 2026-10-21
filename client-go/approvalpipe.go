@@ -138,6 +138,30 @@ type pipeClient struct {
 	// "" when nobody is.
 	SessionUserSID string
 	SessionActive  bool // WTSActive: the session someone is in front of
+	// NameTimedOut: the account directory did not answer for UserSID within
+	// pipeSIDLane's budget, so UserName is empty and nobody can say whose
+	// account approved. pipeApprove refuses; list and deny go on, by SID.
+	NameTimedOut bool
+}
+
+// pipeSIDLane bounds the client's account-name lookup (sidnames.go). The tray
+// waits 2*pipeIOTimeout for its answer, and the name is looked up before the
+// request is read, so the lookup gets well under that: a directory that does
+// not answer costs one connection 2 s, and holds at most one goroutine for
+// the pipe however many connections come.
+var pipeSIDLane = sidLane{slots: make(chan struct{}, 1), budget: 2 * time.Second}
+
+// pipeClientName fills c.UserName from the account directory, or sets
+// c.NameTimedOut when the directory did not answer in time. A SID with no
+// account leaves UserName empty: the log shows the SID, as before.
+func pipeClientName(c *pipeClient, dir *sidDirectory, lane sidLane) {
+	acct, outcome := dir.resolve(c.UserSID, lane)
+	switch outcome {
+	case sidResolved:
+		c.UserName = sidAccountLabel(acct)
+	case sidTimedOut:
+		c.NameTimedOut = true
+	}
 }
 
 // purposeDigest is the sha256 of a purpose as the tray carries it back.
@@ -330,6 +354,14 @@ func pipeTarget(req pipeRequest) (dir string, r stepupRequest, err error) {
 var pipeApproveMu sync.Mutex
 
 func pipeApprove(req pipeRequest, c pipeClient, now time.Time) pipeResponse {
+	// FAILS CLOSED ON A SLOW DIRECTORY. The rules above decide by SID, but an
+	// approval's audit line names the account that gave it, and when the
+	// directory could not say whose account this is, nothing is approved.
+	// Before the throttle and the code, so this counts as no wrong code.
+	if c.NameTimedOut {
+		return pipeResponse{Error: "not approved: this machine's account directory did not answer for " + c.UserSID +
+			" in time; try again in a minute, or approve from an Administrator terminal"}
+	}
 	pipeApproveMu.Lock()
 	defer pipeApproveMu.Unlock()
 	code := strings.TrimSpace(req.Code)

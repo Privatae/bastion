@@ -23,6 +23,35 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.54.0
+
+- **Every audit row also goes to the system log.** The rows written to
+  `mgmt_audit.jsonl`, `pairing_audit.jsonl` and each pairing's `audit.jsonl`
+  (terminals, root commands, store ops, op runs) are also written to the
+  machine's system log, so a log collector can keep them where no host can
+  write: syslog facility `auth`, tag `privatae-bastion-audit` (the journal on
+  systemd) on Linux and macOS, and the Application event log, source
+  `PrivataeBastionAudit`, on Windows, registered when the system service is
+  installed and removed with it. Each line is the file's row with `audit`
+  (the file) and `pairing` added, and a root command's text left out (its
+  digest and length stay). The lines go through a bounded queue, so a slow or
+  stuck system log never holds up the audited op; a full queue drops lines and
+  the next line carries `system_log_dropped`. The file stays the record.
+- **A server is networked and anchored by default.** `install.sh` run as root
+  now installs the networked bastion (systemd on Linux, launchd on macOS);
+  `--local` keeps a root install local, a reinstall over a machine already
+  paired in local mode keeps it local unless `--networked` is passed, and run
+  as your own user it is local as before. On a networked machine with no anchor, the first `pair` run with
+  machine authority anchors it to that host. Before, such a machine refused
+  every op until `claim-anchor` was run by hand; now it is anchored at once:
+  every terminal and every write waits for the person's approval, and any
+  later host for the anchor's. `pair` then says to
+  enrol the second factor. `claim-anchor` with no token on a machine already
+  anchored to that host now succeeds and changes nothing (an installer that
+  anchors after pairing finds the work done); naming another host is still
+  refused without `--rotate`. The Windows installer is unchanged: `-Networked`
+  as before.
+
 ## 0.53.2
 
 - **No change to what the bastion does.** Two code comments named source files

@@ -818,6 +818,12 @@ func TestTheObservePlanesPayloadIsGatedOnObserve(t *testing.T) {
 	priv := setupBox(t)
 	writePairingState(t, tMember, pairingPending)
 	t.Setenv("OLLAMA_ADDR", "127.0.0.1:1")
+	// The tool-server reader looks in an empty home, not this machine's.
+	oldHomes, oldSys := mcpHomesFn, mcpSystemFn
+	t.Cleanup(func() { mcpHomesFn, mcpSystemFn = oldHomes, oldSys })
+	empty := t.TempDir()
+	mcpHomesFn = func() ([]mcpHome, bool) { return []mcpHome{{Dir: empty, ConfigDir: empty}}, true }
+	mcpSystemFn = func() []mcpSource { return nil }
 
 	beat := func(self string) map[string]any {
 		t.Helper()
@@ -846,13 +852,16 @@ func TestTheObservePlanesPayloadIsGatedOnObserve(t *testing.T) {
 		// The store root names the operator's OS account; it is path material
 		// like the rest and travels only with `observe`. The holes map travels
 		// with it: absent must mean "not entitled", and only that.
-		"machine_record_root", "machine_record_dropped"} {
+		"machine_record_root", "machine_record_dropped",
+		// The tool servers agent clients declare name files, servers and
+		// command lines: observe material like the agent list.
+		"tool_servers", "tool_server_scan"} {
 		if _, present := m[k]; present {
 			t.Fatalf("%q travelled to a pairing that cannot observe — that is the machine's "+
 				"process list going to a host approved for one model", k)
 		}
 	}
-	if hasCap(m, "agent-observe") || hasCap(m, "scheduler-observe") {
+	if hasCap(m, "agent-observe") || hasCap(m, "scheduler-observe") || hasCap(m, "tool-server-observe") {
 		t.Fatalf("the observe capabilities were advertised to a pairing outside the family: %v",
 			m["capabilities"])
 	}
@@ -868,6 +877,9 @@ func TestTheObservePlanesPayloadIsGatedOnObserve(t *testing.T) {
 	}
 	if _, present := m["schedulers"]; !present {
 		t.Fatal("a pairing granted observe must still get the scheduler inventory")
+	}
+	if _, present := m["tool_servers"]; !present || !hasCap(m, "tool-server-observe") {
+		t.Fatal("a pairing granted observe must get the declared tool servers and their capability")
 	}
 
 	// The anchor holds every family, and an unanchored box gates nothing — the

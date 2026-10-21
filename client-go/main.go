@@ -229,6 +229,7 @@ func main() {
 	// Started by the Windows Service Control Manager: the service runs `run`
 	// itself and never reaches the argument parsing below.
 	if maybeRunAsWindowsService() {
+		auditFlush(auditFlushOnExit)
 		return
 	}
 	if len(os.Args) < 2 {
@@ -618,6 +619,9 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	// The command's audit rows reach the system log before the process ends
+	// (auditlog.go queues them off the op's own path).
+	auditFlush(auditFlushOnExit)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

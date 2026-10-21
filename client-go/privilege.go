@@ -138,3 +138,14 @@ func restartHintFor(goos string) string {
 	}
 	return "Restart the service so the change takes:  systemctl restart privatae-bastion"
 }
+
+// stepupEnrollHint is the stepup-enroll line to print after a networked
+// machine is anchored: approvals on it need a second factor or a device.
+func stepupEnrollHint() string { return stepupEnrollHintFor(runtime.GOOS) }
+
+func stepupEnrollHintFor(goos string) string {
+	if goos == "windows" {
+		return "privatae-bastion stepup-enroll   (from this Administrator terminal)"
+	}
+	return "sudo -H privatae-bastion stepup-enroll"
+}

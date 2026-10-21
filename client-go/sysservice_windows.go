@@ -249,6 +249,13 @@ func installSystemService() error {
 		return fmt.Errorf("the %s service is registered but did not start: %w", winServiceName, err)
 	}
 	fmt.Printf("System service installed: %s, running %s as LocalSystem.\n", winServiceName, self)
+	// Audit rows go to the Application event log under their own source as
+	// well as to their files (auditlog.go). A failure costs that copy only.
+	if err := registerAuditEventSource(); err != nil {
+		fmt.Printf("  Audit rows will not reach the event log (%v); they are still written to their files.\n", err)
+	} else {
+		fmt.Printf("  Every audit row is also written to the Application event log, source %s.\n", auditEventSource)
+	}
 	fmt.Println("  It starts at boot, before anyone signs in, and restarts five seconds after any failure.")
 	// The person's tray, at every sign-in (tray.go trayFor). A failure here
 	// leaves the service serving; approvals still work from this terminal.
@@ -294,6 +301,7 @@ func uninstallSystemService() error {
 		return fmt.Errorf("cannot remove the %s service: %w", winServiceName, err)
 	}
 	removeTrayLogonEntry()
+	removeAuditEventSource()
 	fmt.Printf("System service removed: %s is no longer registered.\n", winServiceName)
 	fmt.Printf("  The bastion's state under %s is left in place.\n", windowsSystemAppData(os.Getenv("SystemRoot")))
 	return nil

@@ -148,6 +148,7 @@ func mgmtAudit(self, op, family, verdict, why string, exit int, args []string, a
 		line["approval"] = approval
 	}
 	rec, _ := json.Marshal(line)
+	auditToSystemLog(mgmtAuditFile, self, rec)
 	mgmtAuditMu.Lock()
 	defer mgmtAuditMu.Unlock()
 

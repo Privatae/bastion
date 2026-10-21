@@ -64,6 +64,35 @@ func scanProcesses() (map[int]agentObs, error) {
 	return out, nil
 }
 
+// scanMCPProcesses is the process list mcpconfig.go correlates declared tool
+// servers against: every process, with its parent and command line, from one
+// /proc walk. The want set only matters on Windows, where reading a command
+// line costs a handle per process. An error is a walk that did not happen,
+// and then no running state is guessed.
+func scanMCPProcesses(want map[string]bool) ([]mcpProc, error) {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", procRoot, err)
+	}
+	self := os.Getpid()
+	var out []mcpProc
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid == self || !e.IsDir() {
+			continue
+		}
+		p := mcpProc{PID: pid}
+		if raw, err := os.ReadFile(procRoot + "/" + e.Name() + "/stat"); err == nil {
+			p.PPID = parseProcStatPPID(string(raw))
+		}
+		if raw, err := os.ReadFile(procRoot + "/" + e.Name() + "/cmdline"); err == nil {
+			p.Argv = splitNul(raw)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // procParent reads one process's parent pid from /proc/<pid>/stat.
 func procParent(pid int) int {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
@@ -124,6 +153,109 @@ func procUser(pid int) string {
 		}
 	}
 	return ""
+}
+
+// ownerFactsReader answers, per process, the three facts about its owner that
+// agentowner.go decides on. The machine-wide tables (/etc/passwd, /etc/group,
+// login.defs, nsswitch.conf, the sudo rules, who is logged in) are read once
+// per scan, on first use, and every process looks itself up in them.
+//
+// The uid and groups come from /proc/<pid>/status, so they are what the
+// PROCESS holds, the same source procUser names it from.
+func ownerFactsReader() func(pid int, user string) ownerFacts {
+	var (
+		loaded      bool
+		groupNames  map[int]string
+		groupsOK    bool
+		passwd      map[int]bool
+		passwdOK    bool
+		sysMax      int
+		directory   bool
+		sudoers     map[string]bool
+		sudoKnown   bool
+		sessions    map[string]bool
+		sessionsOK  bool
+		logindUsers = identityPath("/run/systemd/users")
+	)
+	load := func() {
+		loaded = true
+		if b, err := os.ReadFile(identityPath("/etc/group")); err == nil {
+			groupNames, groupsOK = parseGroupNames(string(b)), true
+		}
+		if b, err := os.ReadFile(identityPath("/etc/passwd")); err == nil {
+			passwd, passwdOK = parsePasswdUIDs(string(b)), true
+		}
+		sysMax = linuxSystemUIDMax
+		if b, err := os.ReadFile(identityPath("/etc/login.defs")); err == nil {
+			sysMax = parseLoginDefsSysMax(string(b))
+		}
+		if b, err := os.ReadFile(identityPath("/etc/nsswitch.conf")); err == nil {
+			directory = nsswitchHasDirectory(string(b))
+		}
+		var partial string
+		sudoers, partial = sudoPrincipals()
+		sudoKnown = partial == ""
+		// Who has a session: logind's own record when it runs, else utmp.
+		// Neither readable leaves the answer unknown rather than "nobody".
+		if _, err := os.Stat(logindUsers); err != nil {
+			if b, err := os.ReadFile(identityPath("/var/run/utmp")); err == nil {
+				sessions, sessionsOK = parseUtmpUsers(b), true
+			}
+		}
+	}
+	return func(pid int, user string) ownerFacts {
+		if !loaded {
+			load()
+		}
+		raw, err := os.ReadFile(procRoot + "/" + strconv.Itoa(pid) + "/status")
+		if err != nil {
+			return unknownOwner
+		}
+		realUID, effUID, gids, ok := parseStatusIDs(string(raw))
+		if !ok {
+			return unknownOwner
+		}
+		o := unixOwner{UID: realUID, Name: user, LocalRecord: ownerUnknown, DirectorySource: directory,
+			SystemUIDMax: sysMax, AdminGroups: linuxAdminGroups, SudoApplies: true,
+			SudoNamed: sudoers[user], SudoKnown: sudoKnown}
+		if passwdOK {
+			o.LocalRecord = yesNo(passwd[realUID])
+		}
+		if groupsOK {
+			o.GroupsKnown = true
+			for _, g := range gids {
+				if n, ok := groupNames[g]; ok {
+					o.Groups = append(o.Groups, n)
+				}
+			}
+		}
+		switch {
+		case sessionsOK:
+			o.Sessions, o.SessionsKnown = sessions, true
+		default:
+			b, err := os.ReadFile(logindUsers + "/" + strconv.Itoa(realUID))
+			switch {
+			case err == nil:
+				if live, ok := parseLogindUserState(string(b)); ok {
+					o.Sessions, o.SessionsKnown = map[string]bool{user: live}, true
+				}
+			case os.IsNotExist(err):
+				// logind keeps a file for every user it tracks; none means
+				// this account has no session and no lingering services.
+				if _, derr := os.Stat(logindUsers); derr == nil {
+					o.Sessions, o.SessionsKnown = map[string]bool{}, true
+				}
+			}
+		}
+		f := classifyUnixOwner(o)
+		if effUID == 0 {
+			// A process running with effective uid 0 holds root whatever
+			// account started it: that is the administrator answer that
+			// matters, while the class stays the account's own.
+			f.Admin = ownerYes
+		}
+		return f
+	}
 }
 
 func procCmdline(pid int) string {

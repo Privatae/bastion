@@ -1,9 +1,10 @@
 #!/bin/sh
-# privatae-bastion installer (macOS / Linux). Installs the binary AND — on Linux as root —
-# the always-on systemd service, and with --networked on macOS a launchd daemon
-# running as root, so onboarding a node is two commands:
+# privatae-bastion installer (macOS / Linux). Run as root (a server), it installs the
+# NETWORKED bastion as a system service (systemd on Linux, launchd on macOS), and the
+# first host paired anchors it, so onboarding a server is two commands:
 #   curl -fsSL https://privatae.ai/bastion/install.sh | sudo sh
 #   sudo -H privatae-bastion pair <token>
+# Run as your own user (a desktop), it installs the LOCAL bastion for that user.
 #
 set -e
 # dl.privatae.ai, not privatae.ai/bastion: the download host is served from each
@@ -20,17 +21,57 @@ arch=$(uname -m); case "$arch" in x86_64|amd64) arch=amd64;; aarch64|arm64) arch
 if [ "$(id -u)" = 0 ]; then bindir=/usr/local/bin; root=1; else bindir="${HOME}/.local/bin"; root=0; mkdir -p "$bindir"; fi
 bin="$bindir/privatae-bastion"
 
-# --networked: install the NETWORKED bastion — a root-owned
-# service on a machine several people share, anchored to one host that approves
-# every further pairing. Everything else is the LOCAL bastion: one host, and on a
-# home machine it runs as the user. Usage:  curl ... | sudo sh -s -- --networked
+# As root the default is the NETWORKED bastion: a root-owned service, anchored to
+# the host it is first paired with, so every terminal and every write waits for the
+# person's approval and every later host for the anchor's. A server left in local
+# mode would serve its host with no approval at all. --local keeps a root install
+# local (one host, the pairing's caps are the authorization); run as your own user
+# it is always local. --networked is accepted and is the root default.
 networked=0
+local=0
 for a in "$@"; do
   case "$a" in
     --networked) networked=1 ;;
+    --local) local=1 ;;
     *) echo "unknown option: $a" >&2; exit 2 ;;
   esac
 done
+if [ "$networked" = 1 ] && [ "$local" = 1 ]; then
+  echo "ERROR: --networked and --local contradict each other; pass one" >&2; exit 2
+fi
+asked_networked=$networked
+
+# paired_local DIR...: 0 when one of these state folders holds a pairing and
+# its mode is not networked (no mode.json reads as local, mode.go boxMode).
+# The service's own folder goes first.
+paired_local() {
+  for d in "$@"; do
+    [ -d "$d" ] || continue
+    if [ -f "$d/mode.json" ] && grep -q '"networked"' "$d/mode.json"; then return 1; fi
+    [ -f "$d/config.json" ] && return 0
+    for f in "$d"/pairings/*.json; do [ -f "$f" ] && return 0; done
+  done
+  return 1
+}
+
+if [ "$root" = 1 ] && [ "$local" != 1 ]; then
+  case "$(uname -s)" in
+    Linux) if command -v systemctl >/dev/null 2>&1; then networked=1; fi ;;
+    Darwin) networked=1 ;;
+  esac
+fi
+# A reinstall (an upgrade) of a machine already paired in local mode keeps
+# local mode unless --networked is passed. Switched by default, its pairing
+# would sit on an unanchored networked machine, which refuses every op until
+# claim-anchor is run, and `pair` would accept a second host.
+kept_local=0
+if [ "$networked" = 1 ] && [ "$asked_networked" != 1 ]; then
+  case "$(uname -s)" in
+    Darwin) state_dirs="/var/root/Library/Application Support/privatae-bastion|${HOME}/Library/Application Support/privatae-bastion" ;;
+    *) state_dirs="/root/.config/privatae-bastion|${XDG_CONFIG_HOME:-$HOME/.config}/privatae-bastion" ;;
+  esac
+  if paired_local "${state_dirs%%|*}" "${state_dirs#*|}"; then networked=0; kept_local=1; fi
+fi
 if [ "$networked" = 1 ] && [ "$root" != 1 ]; then
   echo "ERROR: --networked needs root — a networked bastion is a root-owned service (run with sudo)" >&2; exit 1
 fi
@@ -159,10 +200,19 @@ UNIT
   echo "Service installed + enabled (it restarts until you pair, then connects automatically)."
   echo ""
   if [ "$networked" = 1 ]; then
-    echo "Networked bastion. Anchor it to YOUR host first (root, one step):"
+    echo "Networked bastion. Pair it with YOUR host; the first host paired becomes its anchor:"
+    echo "  sudo -H privatae-bastion pair <token>"
+    echo "Then enrol your second factor, so you can approve here:"
+    echo "  sudo -H privatae-bastion stepup-enroll"
+    echo "Every terminal and write waits for your approval, and every later host for your host's."
+    echo "(Already paired before this install? Anchor with: sudo -H privatae-bastion claim-anchor)"
+  elif [ "$kept_local" = 1 ]; then
+    echo "This machine is already paired as a LOCAL bastion, and reinstalling keeps it local."
+    echo "To make it a networked server, anchored to the host it serves:"
+    echo "  sudo -H privatae-bastion set-mode networked"
     echo "  sudo -H privatae-bastion claim-anchor"
-    echo "  (add --host <name> if this machine already serves several Hosts)"
-    echo "Every host paired after that waits, pending, until your host approves it."
+    echo "  sudo -H privatae-bastion stepup-enroll"
+    echo "  sudo systemctl restart privatae-bastion"
   else
     echo "Now pair:   sudo -H privatae-bastion pair <token>"
   fi
@@ -175,18 +225,24 @@ elif [ "$darwin_service" = 1 ]; then
   "$bin" service install || die "could not register the system service"
   echo ""
   echo "Networked bastion, running as a system service (launchd, as root)."
-  echo "Anchor it to YOUR host first (root, one step):"
+  echo "Pair it with YOUR host; the first host paired becomes its anchor:"
   # The full path, not the name on PATH: /usr/local/bin may belong to the
   # signed-in user, who could point the link at their own program, and this
   # line is run as root.
-  echo "  sudo -H '$bin' claim-anchor"
-  echo "  (add --host <name> if this machine already serves several Hosts)"
-  echo "Every host paired after that waits, pending, until your host approves it."
+  echo "  sudo -H '$bin' pair <token>"
+  echo "Then enrol your second factor, so you can approve here:"
+  echo "  sudo -H '$bin' stepup-enroll"
+  echo "Every terminal and write waits for your approval, and every later host for your host's."
+  echo "(Already paired before this install? Anchor with: sudo -H '$bin' claim-anchor)"
 elif [ "$networked" = 1 ]; then
   die "--networked needs a system service manager: systemd on Linux, launchd on macOS"
 else
   case ":$PATH:" in *":$bindir:"*) ;; *) echo "Add to PATH:  export PATH=\"\$PATH:$bindir\"" ;; esac
   echo ""
+  if [ "$kept_local" = 1 ]; then
+    echo "This machine is already paired as a LOCAL bastion, and reinstalling keeps it local."
+    echo "To make it a networked server instead, run the installer again with --networked."
+  fi
   echo "Now pair:   privatae-bastion pair <token>"
   echo "Run it:     privatae-bastion run    (Linux non-root: 'loginctl enable-linger \$USER' + a --user unit for boot persistence)"
 fi

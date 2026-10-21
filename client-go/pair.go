@@ -210,6 +210,31 @@ func cmdPair(token, redeemURL, hostCAFile string, replace bool) error {
 	if err != nil {
 		return err
 	}
+	// A networked machine is a server. Left unanchored it refuses every op to
+	// every host (capsAllowIn: unanchoredNetworkedRefusal) until someone runs
+	// claim-anchor, a step people missed. So the first pairing on a networked
+	// box with no anchor anchors it, as `claim-anchor` with no token would, and
+	// from then on every terminal and write waits for the person's approval and
+	// every later pairing for this host's. Only with machine authority, which
+	// claim-anchor needs anyway.
+	// The pairing itself succeeded, so a failed anchor is reported, not
+	// returned: `pair` failing here would read as "could not pair" to a caller
+	// (npx cseries exits on it) when the pairing exists. claim-anchor, which
+	// such a caller runs next, reports the anchor's own failure.
+	anchored, err := anchorFirstNetworkedPairing(cfg, all)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
+	if anchored {
+		if fresh, lerr := loadPairings(); lerr == nil {
+			if c := pairingFor(fresh, cfg.HostName); c != nil {
+				cfg, all = c, fresh
+			}
+		}
+		fmt.Printf("\nThis machine is networked and anchored to %s: every terminal and every write\n", cfg.HostName)
+		fmt.Println("waits for your approval, and any later host waits for this one to approve it.")
+		fmt.Printf("Enrol your second factor now, so you can approve here:\n  %s\n\n", stepupEnrollHint())
+	}
 	if cfg.tcpTransport() && cfg.active() {
 		fmt.Printf("Paired with %s over TCP.\n\n", cfg.HostName)
 		fmt.Printf("  lanes:     %s (mutual TLS, the Host's CA pinned, name %s)\n  coder runs: none over TCP\n", cfg.LaneAddr, tcpServerName)
@@ -240,6 +265,19 @@ func cmdPair(token, redeemURL, hostCAFile string, replace bool) error {
 	fmt.Printf("\nStart (or restart) the tunnels:\n  privatae-bastion run\n")
 	fmt.Printf("\ngit to your forge goes through this bastion — one-time setup:\n  privatae-bastion git-setup\n")
 	return nil
+}
+
+// anchorFirstNetworkedPairing anchors a networked machine that has no anchor
+// to the pairing just made, when it is the machine's only one and the caller
+// holds machine authority (see cmdPair). Reports whether it anchored.
+func anchorFirstNetworkedPairing(cfg *Config, all []*Config) (bool, error) {
+	if boxMode() != modeNetworked || currentAnchor() != nil || len(all) != 1 || !machineAuthorityHeld() {
+		return false, nil
+	}
+	if err := cmdClaimAnchor("", false, "", cfg.HostName); err != nil {
+		return false, fmt.Errorf("paired with %s, but anchoring this networked machine to it failed: %w\n  anchor it with: %s", cfg.HostName, err, anchorCommandHint())
+	}
+	return true, nil
 }
 
 // redeemURLBase is the platform's enrollment ingress. A variable so a test can

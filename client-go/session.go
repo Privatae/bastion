@@ -254,6 +254,7 @@ func sessionAudit(dir, op, sessionID, user, event string, exit int, detail strin
 		"ts": time.Now().UTC().Format(time.RFC3339), "op": op, "session_id": sessionID,
 		"user": user, "event": event, "exit": exit, "decision": detail,
 	})
+	auditToSystemLog(auditFilePairingD, auditPairingOfDir(dir), rec)
 	fh, err := os.OpenFile(filepath.Join(dir, "audit.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return

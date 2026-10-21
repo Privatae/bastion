@@ -11,6 +11,7 @@ package main
 // runs) is driven in claims_unix_test.go and beside each lane's own tests.
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -49,28 +50,52 @@ func parseSources(t *testing.T) *srcPkg {
 		if err != nil {
 			t.Fatalf("parse %s: %v", n, err)
 		}
-		p.files[n] = f
-		for _, d := range f.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			key := funcKey(fd)
-			// The same name in two platform files (processIsRoot, …) is kept
-			// once per file so neither body is lost to the other.
-			if _, dup := p.funcs[key]; dup {
-				key = key + "@" + n
-			}
-			p.funcs[key] = fd
-			if fd.Recv != nil {
-				p.methods[fd.Name.Name] = append(p.methods[fd.Name.Name], key)
-			}
-		}
+		p.addFile(n, f)
 	}
 	if len(p.files) < 50 {
 		t.Fatalf("parsed only %d source files — is the test running in the package directory?", len(p.files))
 	}
 	return p
+}
+
+// addFile registers one parsed file and its functions. A test that proves a
+// check can fail adds a synthetic file through here, so it is indexed exactly
+// as a real one would be.
+func (p *srcPkg) addFile(n string, f *ast.File) {
+	p.files[n] = f
+	for _, d := range f.Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		key := funcKey(fd)
+		// The same name in two platform files (processIsRoot, …) is kept
+		// once per file so neither body is lost to the other.
+		if _, dup := p.funcs[key]; dup {
+			key = key + "@" + n
+		}
+		p.funcs[key] = fd
+		if fd.Recv != nil {
+			p.methods[fd.Name.Name] = append(p.methods[fd.Name.Name], key)
+		}
+	}
+}
+
+// funcKeysIn is the p.funcs key of every function declared in file n.
+func (p *srcPkg) funcKeysIn(n string) []string {
+	var out []string
+	for _, d := range p.files[n].Decls {
+		fd, ok := d.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		key := funcKey(fd)
+		if p.funcs[key] != fd {
+			key = key + "@" + n
+		}
+		out = append(out, key)
+	}
+	return out
 }
 
 // funcKey is "name" for a function and "Type.name" for a method.
@@ -488,10 +513,30 @@ func TestListenAddressesAreOnlyEverAllocatedOnLoopback(t *testing.T) {
 	}
 }
 
-// No MCP endpoint. Every HTTP route the binary registers, on any listener,
-// is in this table; none of them, and no op name on the management lane,
-// names MCP; no string in the code addresses an /mcp path or speaks JSON-RPC,
-// the protocol MCP is carried on; and no dependency is an MCP library.
+// No MCP endpoint: the bastion never speaks the protocol. Every HTTP route
+// the binary registers, on any listener, is in this table; none of them, and
+// no op name on the management lane, names MCP; no string in the code is a
+// URL or route with an /mcp path, or speaks JSON-RPC, the protocol MCP is
+// carried on; and no dependency is an MCP library.
+//
+// WHAT CHANGED, AND WHY THE GUARANTEE DID NOT. This test used to refuse any
+// string containing "/mcp" at all. The connection-config reader
+// (mcpconfig.go) has to name the files agent clients declare their tool
+// servers in — .cursor/mcp.json, claude_desktop_config.json, an mcpServers
+// key — and READING A FILE SPEAKS NO PROTOCOL. So the check now targets the
+// protocol instead of the word (mcpReaderViolations):
+//
+//   - no literal anywhere is a URL or route with an mcp path segment;
+//   - the config basenames and keys may appear in mcpconfig.go and nowhere
+//     else, so a second file that starts reading (or writing) them is a
+//     change a reviewer sees here;
+//   - nothing declared in a config-reader file (mcpconfig*.go) imports, or
+//     can reach through this package's call graph, net.Dial or net.Listen,
+//     net/http, os/exec, TLS dialling or the websocket client. The reader is
+//     handed its process list by agents.go; it starts and dials nothing.
+//
+// TestMCPReaderCheckCatchesADialAndAStrayBasename proves each of those can
+// fail.
 func TestNoRouteOpOrDependencySpeaksMCP(t *testing.T) {
 	p := parseSources(t)
 	// A route served by more than one surface names each file, "a.go|b.go":
@@ -547,14 +592,10 @@ func TestNoRouteOpOrDependencySpeaksMCP(t *testing.T) {
 		}
 	}
 
+	for _, v := range mcpReaderViolations(p) {
+		t.Error(v)
+	}
 	for name, f := range p.files {
-		for _, s := range stringLits(f) {
-			l := strings.ToLower(s)
-			if strings.Contains(l, "/mcp") || strings.Contains(l, "jsonrpc") ||
-				strings.Contains(l, "modelcontextprotocol") || strings.Contains(l, "tools/call") {
-				t.Errorf("%s carries %q: nothing in the bastion addresses an MCP endpoint or speaks JSON-RPC", name, s)
-			}
-		}
 		for _, imp := range f.Imports {
 			if strings.Contains(strings.ToLower(imp.Path.Value), "mcp") {
 				t.Errorf("%s imports %s", name, imp.Path.Value)
@@ -575,6 +616,346 @@ func TestNoRouteOpOrDependencySpeaksMCP(t *testing.T) {
 	}
 }
 
+// mcpConfigNames are the file basenames and keys agent clients declare tool
+// servers under. Only mcpconfig.go may name them. settings.json and
+// config.toml are left out on purpose: many programs use those names (the
+// coder lane reads the NVIDIA runtime's config.toml), so they say nothing
+// about tool servers; the keys beside them do.
+var mcpConfigNames = []string{"claude_desktop_config", "mcp.json", "mcp_config.json", ".claude.json",
+	"mcpservers", "context_servers", "mcp_servers",
+	// The clients' own directories, which name a settings.json or
+	// config.toml as surely as the basename would.
+	".cursor", ".codex", ".zed", ".codeium", ".vscode"}
+
+// mcpURLOrRoute reports whether a string literal is a URL or route that
+// addresses an mcp path. Outside a URL, every "/mcp" counts (/mcp, /mcp/x,
+// /mcp-proxy) except a client's config FILE name: /mcp.json and
+// /mcp_config.json.
+func mcpURLOrRoute(l string) bool {
+	l = strings.ToLower(l)
+	if i := strings.Index(l, "://"); i >= 0 {
+		rest := l[i+3:]
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			return strings.Contains(rest[j:], "/mcp")
+		}
+		return false
+	}
+	for i := 0; ; {
+		j := strings.Index(l[i:], "/mcp")
+		if j < 0 {
+			return false
+		}
+		rest := l[i+j+len("/mcp"):]
+		if !strings.HasPrefix(rest, ".json") && !strings.HasPrefix(rest, "_config.json") {
+			return true
+		}
+		i += j + len("/mcp")
+	}
+}
+
+// mcpReaderSink: a package-level function or type that opens a connection,
+// resolves a name, or starts a process — named as a call or as a value.
+func mcpReaderSink(recv, sel string) bool {
+	switch {
+	case recv == "net" && (strings.HasPrefix(sel, "Dial") || strings.HasPrefix(sel, "Listen") ||
+		strings.HasPrefix(sel, "Lookup") || strings.HasPrefix(sel, "Resolve") || sel == "Dialer" || sel == "Resolver"):
+		return true
+	case strings.Contains(recv, "net.Dialer") || strings.Contains(recv, "net.Resolver"):
+		return true
+	case recv == "http" || recv == "exec" || recv == "websocket" || recv == "rpc" || recv == "jsonrpc":
+		return true
+	case recv == "tls" && strings.HasPrefix(sel, "Dial"):
+		return true
+	case (recv == "os" || recv == "syscall" || recv == "unix" || recv == "windows") &&
+		(sel == "StartProcess" || sel == "ForkExec" || sel == "Exec" || strings.HasPrefix(sel, "CreateProcess") ||
+			strings.HasPrefix(sel, "ShellExecute") || sel == "WinExec"):
+		return true
+	case (recv == "syscall" || recv == "unix" || recv == "windows") && (sel == "Socket" || sel == "Connect" || sel == "Bind" ||
+		sel == "Listen" || sel == "Sendto" || sel == "Sendmsg" || sel == "SendmsgN" || strings.HasPrefix(sel, "WSA") ||
+		sel == "ConnectEx" || sel == "GetAddrInfoW" || sel == "GetHostByName" || strings.HasPrefix(sel, "DnsQuery")):
+		return true
+	case (recv == "syscall" || recv == "windows") && (strings.HasPrefix(sel, "LoadLibrary") || sel == "LoadDLL" ||
+		sel == "MustLoadDLL" || sel == "NewLazyDLL" || sel == "NewLazySystemDLL"):
+		// A DLL loaded by name reaches any function in it, past every check here.
+		return true
+	case recv == "registry" && sel == "OpenRemoteKey":
+		return true
+	}
+	return false
+}
+
+// mcpReaderMethodSink: a METHOD call that connects, resolves or starts,
+// whatever the receiver is called — d.Dial on a net.Dialer variable,
+// c.Get on an http.Client, cmd.Run on an exec.Cmd. Over-approximate on
+// purpose: it only applies to code the reader can reach.
+var mcpReaderMethodSink = map[string]bool{"Dial": true, "DialContext": true, "DialTCP": true, "DialUDP": true,
+	"DialUnix": true, "DialIP": true, "Listen": true, "ListenPacket": true, "LookupHost": true, "LookupIP": true,
+	"LookupIPAddr": true, "LookupAddr": true, "LookupNetIP": true, "Do": true, "Get": true, "Post": true,
+	"PostForm": true, "Head": true, "RoundTrip": true, "Start": true, "Run": true, "Output": true,
+	"CombinedOutput": true, "Connect": true}
+
+// mcpReaderAllowedImports is every package a config-reader file may import:
+// parsing, strings, and opening files. Anything else is a change a reviewer
+// has to see here first. x/sys/windows and its registry package are the
+// Windows open (CreateFile and the handle's own type, attributes and owner)
+// and the profile list it checks owners against; each can also start a
+// process, open a socket, load a DLL or open a remote registry, and those
+// calls are sinks in mcpReaderSink like their unix equivalents.
+var mcpReaderAllowedImports = map[string]bool{"bytes": true, "encoding/json": true, "errors": true, "io": true,
+	"io/fs": true, "net": true, "net/url": true, "os": true, "path/filepath": true, "regexp": true,
+	"runtime": true, "sort": true, "strconv": true, "strings": true, "syscall": true, "unicode": true,
+	"unicode/utf8": true, "golang.org/x/sys/unix": true, "golang.org/x/sys/windows": true,
+	"golang.org/x/sys/windows/registry": true}
+
+// mcpValueSink: a sink named as a VALUE rather than called (f := net.Dial).
+// The http, exec and websocket packages also export constants and types
+// (http.StatusOK, websocket.BinaryMessage), which name no connection; only
+// their functions count here.
+func mcpValueSink(recv, sel string) bool {
+	switch recv {
+	case "http", "exec", "websocket", "rpc", "jsonrpc":
+		switch sel {
+		case "Get", "Post", "Head", "PostForm", "Command", "CommandContext", "Dial", "DialContext",
+			"DialHTTP", "DefaultClient", "DefaultDialer", "DefaultTransport", "NewClient":
+			return true
+		}
+		return false
+	}
+	return mcpReaderSink(recv, sel)
+}
+
+// mcpSinksIn lists the network and process calls inside one declaration.
+func mcpSinksIn(n ast.Node) []string {
+	var out []string
+	called := map[*ast.SelectorExpr]bool{}
+	ast.Inspect(n, func(x ast.Node) bool {
+		if c, ok := x.(*ast.CallExpr); ok {
+			if sel, ok := c.Fun.(*ast.SelectorExpr); ok {
+				called[sel] = true
+			}
+		}
+		return true
+	})
+	ast.Inspect(n, func(x ast.Node) bool {
+		switch v := x.(type) {
+		case *ast.SelectorExpr:
+			recv := exprText(v.X)
+			if (called[v] && mcpReaderSink(recv, v.Sel.Name)) || (!called[v] && mcpValueSink(recv, v.Sel.Name)) {
+				out = append(out, recv+"."+v.Sel.Name)
+			}
+		case *ast.CallExpr:
+			if sel, ok := v.Fun.(*ast.SelectorExpr); ok && mcpReaderMethodSink[sel.Sel.Name] {
+				out = append(out, exprText(sel.X)+"."+sel.Sel.Name+"()")
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// mcpReaderViolations is every way the package breaks the guarantee above.
+func mcpReaderViolations(p *srcPkg) []string {
+	var out []string
+	names := make([]string, 0, len(p.files))
+	for n := range p.files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var readerFiles []string
+	for _, name := range names {
+		if strings.HasPrefix(name, "mcpconfig") {
+			readerFiles = append(readerFiles, name)
+		}
+		for _, s := range stringLits(p.files[name]) {
+			l := strings.ToLower(s)
+			if mcpURLOrRoute(s) || strings.Contains(l, "jsonrpc") || strings.Contains(l, "tools/call") {
+				out = append(out, fmt.Sprintf("%s carries %q: nothing in the bastion addresses an MCP endpoint or speaks JSON-RPC", name, s))
+			}
+			// The protocol's namespace. The reader may name the npm scope
+			// its reference servers are published under, to recognise one
+			// running; nothing else may name it at all.
+			if strings.Contains(l, "modelcontextprotocol") && !(name == "mcpconfig.go" && l == "@modelcontextprotocol/") {
+				out = append(out, fmt.Sprintf("%s carries %q: only the config reader may name the reference servers' npm scope", name, s))
+			}
+			if name == "mcpconfig.go" {
+				continue
+			}
+			for _, b := range mcpConfigNames {
+				if strings.Contains(l, b) {
+					out = append(out, fmt.Sprintf("%s names %q (%s): only mcpconfig.go reads agent clients' tool-server config", name, s, b))
+				}
+			}
+		}
+	}
+	if len(readerFiles) == 0 {
+		return append(out, "no mcpconfig*.go file: the reader moved, so this check is no longer checking it")
+	}
+	var roots []string
+	for _, name := range readerFiles {
+		for _, imp := range p.files[name].Imports {
+			path, _ := strconv.Unquote(imp.Path.Value)
+			if !mcpReaderAllowedImports[path] {
+				out = append(out, fmt.Sprintf("%s imports %s: the config reader reads files and nothing else", name, path))
+			}
+		}
+		roots = append(roots, p.funcKeysIn(name)...)
+	}
+	// Package-level variables are nodes too ("var:name"): a function held in
+	// one (var f = net.Dial, var g = func() { ... }) is reached by whoever
+	// reads the variable, and a reader file's own variables are roots, since
+	// their initialisers run with the package.
+	g := p.callGraph()
+	vars := map[string][]ast.Expr{}
+	for _, name := range names {
+		for _, d := range p.files[name].Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+			for _, sp := range gd.Specs {
+				vs := sp.(*ast.ValueSpec)
+				for _, id := range vs.Names {
+					key := "var:" + id.Name
+					vars[key] = append(vars[key], vs.Values...)
+					if strings.HasPrefix(name, "mcpconfig") {
+						roots = append(roots, key)
+					}
+				}
+			}
+		}
+	}
+	refs := func(n ast.Node) []string {
+		var out []string
+		ast.Inspect(n, func(x ast.Node) bool {
+			if id, ok := x.(*ast.Ident); ok {
+				if _, isVar := vars["var:"+id.Name]; isVar {
+					out = append(out, "var:"+id.Name)
+				}
+				if _, isFn := p.funcs[id.Name]; isFn {
+					out = append(out, id.Name)
+				}
+			}
+			return true
+		})
+		return out
+	}
+	sinks := map[string][]string{}
+	for key, fd := range p.funcs {
+		g[key] = append(g[key], refs(fd)...)
+		if s := mcpSinksIn(fd); len(s) > 0 {
+			sinks[key] = s
+		}
+	}
+	for key, vals := range vars {
+		for _, v := range vals {
+			g[key] = append(g[key], refs(v)...)
+			sinks[key] = append(sinks[key], mcpSinksIn(v)...)
+		}
+	}
+	seen := reach(g, roots, nil)
+	for fn, path := range seen {
+		if what := sinks[fn]; len(what) > 0 {
+			out = append(out, fmt.Sprintf("the config reader can reach %s, which reaches a network or process call (%s): %s",
+				fn, strings.Join(what, ", "), path))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// THE CHECK ABOVE CAN FAIL. A reader that starts a process, imports a
+// network package, reaches a dialler through another function, or a second
+// file that names a client's config file or an /mcp URL: each one is added
+// as a synthetic source and must be reported. The real tree must report
+// nothing, and the scan must have found sinks and roots to compare, so a
+// broken extraction cannot pass by finding nothing.
+func TestMCPReaderCheckCatchesADialAndAStrayBasename(t *testing.T) {
+	clean := parseSources(t)
+	if v := mcpReaderViolations(clean); len(v) != 0 {
+		t.Fatalf("the real tree must be clean: %v", v)
+	}
+	if len(clean.funcKeysIn("mcpconfig.go")) < 10 {
+		t.Fatal("found almost no functions in mcpconfig.go; the root extraction is broken")
+	}
+	add := func(p *srcPkg, name, src string) {
+		t.Helper()
+		f, err := parser.ParseFile(p.fset, name, src, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.addFile(name, f)
+	}
+	cases := []struct {
+		name, want string
+		files      map[string]string
+	}{
+		{"the reader execs", "can reach mcpSneakRun", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakRun() { _ = exec.Command(\"x\") }\n"}},
+		{"the reader dials through a helper elsewhere", "can reach sneakDialHelper", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakCall() { sneakDialHelper() }\n",
+			"sneak_helper.go":    "package main\nfunc sneakDialHelper() { net.Dial(\"tcp\", \"x\") }\n"}},
+		{"the reader imports net/http", "imports net/http", map[string]string{
+			"mcpconfig_sneak.go": "package main\nimport _ \"net/http\"\n"}},
+		{"another file names a config file", "only mcpconfig.go reads", map[string]string{
+			"sneak_other.go": "package main\nvar sneakPath = \".cursor/mcp.json\"\n"}},
+		{"another file names the servers key", "only mcpconfig.go reads", map[string]string{
+			"sneak_other.go": "package main\nvar sneakKey = \"mcpServers\"\n"}},
+		{"a URL with an mcp path", "addresses an MCP endpoint", map[string]string{
+			"sneak_other.go": "package main\nvar sneakURL = \"https://h.example.com/v1/mcp\"\n"}},
+		{"a route", "addresses an MCP endpoint", map[string]string{
+			"sneak_other.go": "package main\nvar sneakRoute = \"/mcp\"\n"}},
+		{"a route with a suffix", "addresses an MCP endpoint", map[string]string{
+			"sneak_other.go": "package main\nvar sneakRoute = \"/mcp-proxy\"\n"}},
+		{"the reader dials through a Dialer variable", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakD() { var d net.Dialer; d.Dial(\"tcp\", \"x\") }\n"}},
+		{"the reader dials through a function value", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakF() { f := net.Dial; f(\"tcp\", \"x\") }\n"}},
+		{"the reader dials from a package-level function literal", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nvar mcpSneakV = func() { net.Dial(\"tcp\", \"x\") }\n"}},
+		{"the reader opens a raw socket", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakS() { syscall.Socket(2, 1, 0) }\n"}},
+		{"the reader resolves a name", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakL() { net.LookupHost(\"x\") }\n"}},
+		{"the reader imports a websocket client not on a deny list", "imports golang.org/x/net/websocket", map[string]string{
+			"mcpconfig_sneak.go": "package main\nimport ws \"golang.org/x/net/websocket\"\nfunc mcpSneakW() { ws.Dial(\"x\", \"\", \"y\") }\n"}},
+		{"the reader calls a dialler held in another file's variable", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nfunc mcpSneakH() { sneakDialer(\"tcp\", \"x\") }\n",
+			"sneak_helper.go":    "package main\nvar sneakDialer = net.Dial\n"}},
+		{"another file names a client's config directory", "only mcpconfig.go reads", map[string]string{
+			"sneak_other.go": "package main\nvar sneakDir = \".codex/\"\n"}},
+		{"the Windows reader starts a process", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nimport \"golang.org/x/sys/windows\"\nfunc mcpSneakCP() { windows.CreateProcess(nil, nil, nil, nil, false, 0, nil, nil, nil, nil) }\n"}},
+		{"the Windows reader opens a socket", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nimport \"golang.org/x/sys/windows\"\nfunc mcpSneakWS() { windows.WSASocket(2, 1, 0, nil, 0, 0) }\n"}},
+		{"the Windows reader loads a DLL by name", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nimport \"golang.org/x/sys/windows\"\nvar mcpSneakDLL = windows.NewLazySystemDLL(\"ws2_32.dll\")\n"}},
+		{"the Windows reader opens a remote registry", "reaches a network or process call", map[string]string{
+			"mcpconfig_sneak.go": "package main\nimport \"golang.org/x/sys/windows/registry\"\nfunc mcpSneakRR() { registry.OpenRemoteKey(\"h\", registry.LOCAL_MACHINE) }\n"}},
+	}
+	for _, c := range cases {
+		p := parseSources(t)
+		for n, src := range c.files {
+			add(p, n, src)
+		}
+		found := false
+		for _, v := range mcpReaderViolations(p) {
+			if strings.Contains(v, c.want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s: not reported (want %q in %v)", c.name, c.want, mcpReaderViolations(p))
+		}
+	}
+	// A config file name is not a URL path, and a file in the reader may
+	// name one.
+	for _, ok := range []string{".cursor/mcp.json", "mcp_config.json", ".codeium/windsurf/mcp_config.json", "managed-mcp.json"} {
+		if mcpURLOrRoute(ok) {
+			t.Errorf("%q read as an MCP URL or route", ok)
+		}
+	}
+}
+
 // callGraph maps each function to what it calls or refers to, by name.
 // A method call through a value is resolved to every method of that name in
 // the package, so the graph over-approximates: a path it cannot rule out is
@@ -582,6 +963,14 @@ func TestNoRouteOpOrDependencySpeaksMCP(t *testing.T) {
 // followed; none of the handlers below does that.
 func (p *srcPkg) callGraph() map[string][]string {
 	g := map[string][]string{}
+	// The per-file duplicates ("name@file"), by name, built once: looking
+	// them up by prefix for every identifier made this graph cost seconds.
+	dups := map[string][]string{}
+	for k := range p.funcs {
+		if i := strings.IndexByte(k, '@'); i >= 0 {
+			dups[k[:i]] = append(dups[k[:i]], k)
+		}
+	}
 	for key, fd := range p.funcs {
 		if fd.Body == nil {
 			continue
@@ -593,11 +982,7 @@ func (p *srcPkg) callGraph() map[string][]string {
 				if _, ok := p.funcs[v.Name]; ok {
 					out = append(out, v.Name)
 				}
-				for k := range p.funcs {
-					if strings.HasPrefix(k, v.Name+"@") {
-						out = append(out, k)
-					}
-				}
+				out = append(out, dups[v.Name]...)
 			case *ast.CallExpr:
 				if sel, ok := v.Fun.(*ast.SelectorExpr); ok {
 					out = append(out, p.methods[sel.Sel.Name]...)

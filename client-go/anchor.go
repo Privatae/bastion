@@ -978,6 +978,20 @@ func cmdRepinAnchor() error {
 	return nil
 }
 
+// anchorAlreadyHolds: the anchor names an active pairing here, and host
+// (claim-anchor --host, "" for none) names that same pairing.
+func anchorAlreadyHolds(cfgs []*Config, prev *anchorClaim, host string) bool {
+	c := pairingFor(cfgs, prev.AnchorHost)
+	if c == nil || !c.active() {
+		return false
+	}
+	if host == "" {
+		return true
+	}
+	named, err := pickPairing(cfgs, host)
+	return err == nil && named.HostName == c.HostName
+}
+
 // pickPairing resolves --host against this box's pairings. It accepts the full
 // host_name the box reports, or just the handle in front of it, because the
 // name the user is looking at depends on which surface they read it from —
@@ -1021,6 +1035,17 @@ func cmdClaimAnchor(token string, rotate bool, owner, host string) error {
 		return err
 	}
 	prev := currentAnchor()
+	// Already anchored to the host this asks for (no token, no other host
+	// named), and that host's pairing is active: done, not an error. `pair`
+	// anchors a networked box to its first host by itself, and an installer
+	// that runs claim-anchor after pairing must find that a success. An anchor
+	// whose pairing is pending or revoked is not done, and is refused below as
+	// before. --host takes the short handle as well as the full name
+	// (pickPairing), so the same host named either way is the same request.
+	if prev != nil && !rotate && token == "" && anchorAlreadyHolds(cfgs, prev, host) {
+		fmt.Printf("already anchored to %s (owner %q)\n", prev.AnchorHost, prev.Owner)
+		return nil
+	}
 	if prev != nil && !rotate {
 		return fmt.Errorf("this box is already anchored to %s — `claim-anchor --rotate <token>` moves the anchor (needs the current anchor's consent, or %d days of silence from it)", prev.AnchorHost, int(anchorDeadAfter.Hours()/24))
 	}
