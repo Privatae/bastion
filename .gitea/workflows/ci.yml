@@ -83,6 +83,12 @@ jobs:
         # maintainers' key, which a CI job never holds, so here it is skipped and
         # the run says so; the entity-id, provenance, email and phone checks run.
         run: python3 scripts/test_no_personal_data.py
+      - name: every test the claims table cites exists
+        # docs/claims.md names, for each security claim, the test that fails
+        # if the claim stops being true. A renamed or deleted test would leave
+        # the claim looking covered; this fails the run instead. Reads files
+        # and greps; runs nothing from the tree.
+        run: bash deploy/check-claims.sh
       - name: no Host source file names in the tree
         # The member repository publishes this tree as a release was built,
         # and its release step refuses a path into the Host's Python

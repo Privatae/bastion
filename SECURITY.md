@@ -22,7 +22,8 @@ notes if you wish.
   machine do more than the grant and the local approval allow: reading files
   outside a granted store, deleting where only archiving is allowed, running a
   program that is not in the fixed table, bypassing the second factor, opening
-  a listener that is not documented in the README's security model.
+  a listener that is not documented in the security model
+  ([docs/security-model.md](docs/security-model.md)).
 
 ## What is out of scope
 

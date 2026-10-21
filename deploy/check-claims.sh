@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Check that every test the README's security table cites exists.
+# Check that every test the security claims table cites exists.
 #
 #   deploy/check-claims.sh [repo root]      (default: the repository this sits in)
 #
-# The README's "How each claim is tested" table names, for each security claim,
-# a test in client-go as `file_test.go`: `TestOrFuzzName`. A row is only worth
+# The "How each claim is tested" table in docs/claims.md names, for each
+# security claim, a test in client-go as `file_test.go`: `TestOrFuzzName`. A row is only worth
 # something while that function exists: a renamed or deleted test would leave
 # the claim looking covered when nothing checks it. This finds every such
 # citation in the table and confirms `func <name>(` is defined in the cited
@@ -22,17 +22,18 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 ROOT="${1:-$HERE}"
 cd "$ROOT"
-[ -f README.md ] && [ -d client-go ] || { echo "not a repository root: $ROOT" >&2; exit 2; }
+[ -f docs/claims.md ] && [ -d client-go ] || { echo "not a repository root (no docs/claims.md or client-go): $ROOT" >&2; exit 2; }
 python3 - <<'PY'
 import re, sys
 
-text = open("README.md", encoding="utf-8").read()
-start = text.find("### How each claim is tested")
-if start < 0:
-    print("the README has no 'How each claim is tested' section", file=sys.stderr)
+text = open("docs/claims.md", encoding="utf-8").read()
+head = re.search(r"^#{1,6} How each claim is tested[ \t]*$", text, re.M)
+if head is None:
+    print("docs/claims.md has no 'How each claim is tested' heading", file=sys.stderr)
     sys.exit(1)
-end = text.find("\n## ", start)
-table = text[start:end if end >= 0 else len(text)]
+# The table runs from that heading to the next heading, or to the end of the file.
+nxt = re.search(r"^#{1,6} ", text[head.end():], re.M)
+table = text[head.end():head.end() + nxt.start() if nxt else len(text)]
 
 cite = re.compile(r"`([\w./-]+_test\.go)`: `(\w+)`")
 rows, unreadable = [], []

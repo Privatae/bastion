@@ -23,6 +23,19 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.54.1
+
+- **No change to what the bastion does.** The README is now a short front
+  page: install, quick start, local and networked modes, a summary of the
+  security model, how this repository is published, and how to build and
+  verify a release. The reference text moved into one page per topic under
+  `docs/`, listed in `docs/README.md`, with only its headings and links
+  changed. The README and CONTRIBUTING.md now say that issues and pull
+  requests are welcome on GitHub.
+- **The claims table is its own file, `docs/claims.md`,** and
+  `deploy/check-claims.sh` reads it there. Two rows that cited two tests each
+  now cite one test per row, so the check passes again.
+
 ## 0.54.0
 
 - **Every audit row also goes to the system log.** The rows written to

@@ -7,10 +7,16 @@ their approval on that machine.
 
 ## What you can do today
 
-Sign-in on this forge is not reachable from the internet, so you cannot file
-an issue or open a pull request here. You can read, clone, build and verify a
-release, and fork under the GPL. Report a bug or a security problem by email
-(see [SECURITY.md](SECURITY.md)).
+Issues and pull requests are welcome on GitHub, at
+[github.com/Privatae/bastion](https://github.com/Privatae/bastion).
+Development happens in a private repository, and the public repository
+receives the source of each published release as one snapshot commit, so an
+accepted change is carried into the development repository and arrives with
+the next release. Sign-in on the git.privatae.ai forge is not reachable from
+the internet, so issues and pull requests cannot be opened there. You can
+also read, clone, build and verify a release, and fork under the GPL. Report
+a security problem by email, not in a public issue (see
+[SECURITY.md](SECURITY.md)).
 
 ## Checks a change has to pass
 
