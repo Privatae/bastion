@@ -1,0 +1,170 @@
+{{define "status"}}
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+
+{{/* Approvals come FIRST and before anything else on the page. They are the
+     only thing here that is waiting on the person, and everything below is
+     still true in a minute. */}}
+{{/* Asks waiting on THIS machine as your approval device (uidevice.go). They
+     are answered in the approvals popup, which the tray and the notification
+     open; the front page says they are there and links to it. */}}
+{{if .DeviceApprovals}}
+<div class="approval">
+  <div class="approval-head">{{len .DeviceApprovals}} request{{if gt (len .DeviceApprovals) 1}}s{{end}} from your hosts {{if gt (len .DeviceApprovals) 1}}are{{else}}is{{end}} waiting for your approval</div>
+  <p class="approval-line"><a href="/approvals">Open approvals</a> to read and answer {{if gt (len .DeviceApprovals) 1}}them{{else}}it{{end}}.</p>
+</div>
+{{end}}
+{{if .Approvals}}
+<h3 class="urgent">Waiting for you</h3>
+{{template "stepup-approvals" .}}
+{{end}}
+
+{{/* WHAT HAS HAPPENED HERE — above the state block on purpose. The template's
+     own rule for the approvals is that everything below them "is still true in
+     a minute"; the state block is exactly that, and a host having killed the
+     programs you were running is not. It is news, it is the only thing on this
+     page the user neither did nor was asked about, and nobody would think to
+     scroll for it. */}}
+{{if .Refusal}}
+<h3 class="urgent">This machine refused something your host asked for</h3>
+<div class="event refused">
+  <div class="event-when">{{.Refusal.At}}</div>
+  <p class="event-line">Refused: <strong>{{.Refusal.What}}</strong></p>
+  <p class="event-line">{{.Refusal.Why}}</p>
+  <p class="event-foot">Your host is told this on its next check-in, so it is not
+    left waiting on something that is never going to happen.</p>
+</div>
+{{end}}
+
+{{if .Events}}
+<h3 {{if .EventsRecent}}class="urgent"{{end}}>What your host has done on this machine</h3>
+{{range .Events}}
+<div class="event{{if .Recent}} recent{{end}}">
+  <div class="event-when">{{.At}}</div>
+  <p class="event-line">{{.Text}}</p>
+</div>
+{{end}}
+{{end}}
+
+<div class="state {{.StateClass}}">
+  <h2>{{.State}}</h2>
+  {{if .StateNote}}<p>{{.StateNote}}</p>{{end}}
+</div>
+
+<h3>Hosts this machine serves</h3>
+{{if not .Pairings}}
+  <div class="host">
+    <div class="host-name">No host is paired yet.</div>
+    <p class="sub">Pair one with a token from your host's “Set up a bastion”.</p>
+  </div>
+{{end}}
+{{range .Pairings}}
+  <div class="host">
+    <div class="host-name">
+      {{.Host}}
+      {{if .IsAnchor}}<span class="tag ok">anchor</span>{{end}}
+      {{if eq .State "pending"}}<span class="tag warn">waiting for approval</span>{{end}}
+      {{if eq .State "revoked"}}<span class="tag bad">revoked</span>{{end}}
+    </div>
+    <dl class="host-facts">
+      <dt>Local port</dt>
+      <dd>{{.ListenAddr}}
+        {{if .Listening}}<span class="tag ok">answering</span>
+        {{else}}<span class="tag bad">not answering</span>{{end}}</dd>
+      {{if .TunnelIP}}<dt>Tunnel address</dt><dd>{{.TunnelIP}}</dd>{{end}}
+      {{if .FirstSeen}}<dt>Paired since</dt><dd>{{.FirstSeen}}</dd>{{end}}
+    </dl>
+  </div>
+{{end}}
+
+<h3>This machine</h3>
+<div class="host">
+  <dl class="host-facts">
+    <dt>Mode</dt>
+    <dd>{{.Mode}}{{if .ModeNote}} — {{.ModeNote}}{{end}}</dd>
+    <dt>Anchor</dt>
+    {{if .AnchorHost}}
+      <dd>{{.AnchorHost}}{{if .AnchorOwner}} (owner “{{.AnchorOwner}}”){{end}}</dd>
+    {{else}}
+      <dd>none{{if .AnchorRequired}} <span class="tag bad">required</span>{{end}}</dd>
+    {{end}}
+    <dt>Owner</dt>
+    <dd>{{if .Owner}}{{.Owner}}{{else}}not claimed{{end}}</dd>
+    <dt>Version</dt>
+    <dd>{{.Version}}{{if .UpdateAvailable}}
+      <span class="tag warn">{{.UpdateAvailable}} available</span>{{end}}</dd>
+  </dl>
+  {{if .AnchorRequired}}
+  <div class="note">
+    This machine is <strong>networked</strong> but not anchored, so it answers
+    nothing: no host may run an op, open a terminal or place anything here until
+    one of them is made the anchor. Run
+    <code>sudo -H privatae-bastion claim-anchor</code> on this machine.
+  </div>
+  {{end}}
+  {{if .UpdateAvailable}}
+  {{/* Says where the control IS, because it is not here and must not be. The
+       bastion does not update itself — a host directs it (update.go) — and a
+       local UI that grew an Update button would be the first step across the
+       line in ui.go's header. Naming a version without naming who installs it
+       sends someone looking for a button this page will never have. */}}
+  <div class="note">
+    Version <strong>{{.UpdateAvailable}}</strong> has been published. This
+    machine will not install it on its own: your host directs updates. Open the
+    <strong>Network</strong> app on your host, find this machine under
+    <strong>Bastions</strong>, and use <strong>Update</strong> there. Nothing
+    changes here until it does.
+  </div>
+  {{end}}
+  {{if .NoConsoleNote}}
+  <div class="note">
+    After it updates itself the bastion restarts with no console window, which is
+    why nothing appears on screen while it runs. Task&nbsp;Manager →
+    <code>privatae-bastion.exe</code> is where it lives.
+  </div>
+  {{end}}
+</div>
+
+<p class="sub checked-at">Checked {{.CheckedAt}}.</p>
+{{end}}
+
+{{define "stepup-approvals"}}
+{{range .Approvals}}
+<div class="approval{{if .Unreadable}} unreadable{{end}}">
+  <div class="approval-head">{{.Host}} is asking <span class="id">{{.Short}}</span></div>
+  {{if .Unreadable}}
+    <p class="approval-line"><strong>This machine cannot tell you what is being asked for.</strong></p>
+    <p class="approval-line">It does not recognise this kind of request, which usually means your
+      host is newer than the bastion here. Deny it and update this machine —
+      approving something neither of you can read is not worth the risk.</p>
+  {{else}}
+    {{range .Lines}}<p class="approval-line">{{.}}</p>{{end}}
+  {{end}}
+  {{/* When the request cannot be described, Deny leads and Approve is demoted:
+       the green button must never be the easy one next to text that says
+       nothing. */}}
+  <div class="approval-acts{{if .Unreadable}} reversed{{end}}">
+    <form hx-post="/deny" hx-target="{{if $.ApprovalsView}}#approvals{{else}}#status{{end}}" hx-swap="innerHTML">
+      <input type="hidden" name="host" value="{{.Host}}">
+      {{if $.ApprovalsView}}<input type="hidden" name="view" value="approvals">{{end}}
+      <input type="hidden" name="id" value="{{.ID}}">
+      <input type="hidden" name="purpose" value="{{.PurposeSHA256}}">
+      <button class="{{if .Unreadable}}go{{else}}no{{end}}" type="submit">Deny</button>
+    </form>
+    <form hx-post="/approve" hx-target="{{if $.ApprovalsView}}#approvals{{else}}#status{{end}}" hx-swap="innerHTML" autocomplete="off">
+      <input type="hidden" name="host" value="{{.Host}}">
+      {{if $.ApprovalsView}}<input type="hidden" name="view" value="approvals">{{end}}
+      <input type="hidden" name="id" value="{{.ID}}">
+      {{/* What these words describe, so the tray's lane approves exactly the
+           request that was read (approvalpipe.go). */}}
+      <input type="hidden" name="purpose" value="{{.PurposeSHA256}}">
+      <input class="code" name="code" inputmode="numeric" pattern="[0-9]*"
+             autocomplete="one-time-code" placeholder="6-digit code"
+             aria-label="Code from the authenticator enrolled on this machine">
+      <button class="{{if .Unreadable}}no{{else}}go{{end}}" type="submit">Approve</button>
+    </form>
+  </div>
+  <p class="approval-foot">The code comes from the authenticator you enrolled on
+    this machine. Your host never sees it.</p>
+</div>
+{{end}}
+{{end}}

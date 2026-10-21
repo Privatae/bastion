@@ -1,0 +1,10 @@
+# Build output
+client-go/dist/
+client-go/privatae-bastion
+client-go/privatae-bastion.exe
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

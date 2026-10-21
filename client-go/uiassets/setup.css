@@ -1,0 +1,97 @@
+/* The setup page's own classes. app.css carries everything shared — the panels,
+   the tags, the flash, the buttons — and this file adds only what the forms and
+   the QR need. Same voice: plain, literal, no framework, served from the binary. */
+
+.setup-form { display: grid; gap: 0.45rem; margin-top: 0.8rem; }
+.setup-form label { color: var(--dim); font-size: 0.8rem; }
+.setup-form button { justify-self: start; margin-top: 0.35rem; }
+
+.setup-form input[type="text"],
+.setup-form select {
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9rem;
+}
+.setup-form input.wide { width: 100%; }
+.setup-form input[type="text"]:focus,
+.setup-form select:focus { outline: 2px solid var(--ok); outline-offset: 1px; }
+
+/* A tick or a radio and its words are one thing to click, so they are one
+   element — the label IS the target, which is what makes it reachable by
+   keyboard without any script. */
+.tick { display: flex; align-items: center; gap: 0.45rem; color: var(--ink);
+        font-size: 0.86rem; cursor: pointer; }
+
+.setup-hosts { margin-top: 0.8rem; border-top: 1px solid var(--line); padding-top: 0.7rem; }
+
+/* ── the QR ────────────────────────────────────────────────────────────────
+   A QR is a grid of hard-edged squares. A browser smoothing it while it scales
+   is the thing that makes a code on a screen refuse to scan — the screen
+   version of the inverted-colours failure stepup_qr.go describes for a
+   terminal. `pixelated` keeps every module square at any size, and the white
+   background is set here rather than inherited because the page is dark and a
+   dark QR on dark is not a QR. */
+
+.qr-wrap { display: flex; gap: 1.2rem; flex-wrap: wrap; margin-top: 0.9rem; }
+.qr {
+  image-rendering: pixelated;
+  background: #fff;
+  border-radius: 4px;
+  max-width: 100%;
+  height: auto;
+  flex: 0 0 auto;
+}
+.qr-side { flex: 1 1 16rem; display: grid; gap: 0.6rem; align-content: start; }
+.qr-side p { margin: 0; font-size: 0.88rem; }
+.qr-side form { display: flex; gap: 0.4rem; margin: 0; flex-wrap: wrap; }
+
+.secret-key {
+  margin: 0.3rem 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px dashed var(--warn);
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  word-break: break-all;
+  user-select: all;
+}
+
+/* ── the live path check ───────────────────────────────────────────────────
+   Colour alone never carries the answer: the sentence says what is wrong, and
+   the colour only agrees with it. */
+
+.check { margin: 0.1rem 0 0.3rem; font-size: 0.84rem; }
+.check.ok   { color: var(--ok); }
+.check.warn { color: var(--warn); }
+.check.bad  { color: var(--bad); }
+.check .resolved {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ink);
+  word-break: break-all;
+}
+
+/* ── a command the person runs themselves ────────────────────────────────── */
+
+.cmd {
+  margin-top: 0.8rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+.cmd.ok   { border-left-color: var(--ok); }
+.cmd.warn { border-left-color: var(--warn); }
+.cmd.bad  { border-left-color: var(--bad); }
+.cmd-line { margin: 0 0 0.4rem; }
+/* select-all on click: the whole point of this block is that it gets copied,
+   and a half-copied sudo line is a worse outcome than no line at all. */
+.cmd-line code { user-select: all; word-break: break-all; }
+.cmd .sub { margin-top: 0.3rem; }
+
+header .sub a { color: var(--dim); }

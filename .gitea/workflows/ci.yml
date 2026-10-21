@@ -1,0 +1,124 @@
+# The checks CONTRIBUTING.md asks for, run on every push to main and every
+# pull request into main. It holds no secrets: the only credential is the job's
+# own token, used to fetch the commit under test.
+#
+# Every Go step runs in the Go toolchain image deploy/build.sh builds releases
+# with, pinned by digest, so CI and the release use the same compiler. The
+# personal-data check is plain Python and runs in the job's own container.
+# Each container is capped at 6 CPUs, and GOMAXPROCS says so too, so Go does
+# not schedule more threads than the runner is allowed to use.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  GO_IMAGE: golang@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59
+  # The pull request's own head, or the pushed commit.
+  WANT: ${{ gitea.event.pull_request.head.sha || gitea.sha }}
+
+jobs:
+  test:
+    runs-on: platform
+    steps:
+      - name: fetch the commit
+        run: |
+          set -euo pipefail
+          git init -q .
+          git -c http.extraHeader="Authorization: token ${{ gitea.token }}" \
+            fetch -q --depth=1 "${{ gitea.server_url }}/${{ gitea.repository }}.git" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: gofmt, go vet on linux/darwin/windows, build, go test
+        # pdftotext, python3, setpriv and git are what the extract and peer-identity
+        # tests call; without them those tests fail rather than skip. Alpine's
+        # git has no http-backend (it is in git-daemon), which the forge-token
+        # test serves its repository with.
+        # The backup tests check this code against the age command itself: a
+        # pinned age release, its archive checked against the SHA-256 below,
+        # and PRIVATAE_REQUIRE_AGE makes those tests fail rather than skip if
+        # it is missing.
+        run: |
+          docker run --rm --cpus 6 -e GOMAXPROCS=6 -v "$PWD":/src -w /src/client-go \
+            -e GOTOOLCHAIN=local -e CGO_ENABLED=0 -e PRIVATAE_REQUIRE_AGE=1 "$GO_IMAGE" sh -euc '
+            apk add -q --no-cache poppler-utils python3 setpriv curl git git-daemon
+            case "$(uname -m)" in
+              x86_64)  a=amd64; sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;;
+              aarch64) a=arm64; sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;;
+              *) echo "no pinned age release for $(uname -m)"; exit 1 ;;
+            esac
+            curl -fsSL -o /tmp/age.tgz "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-$a.tar.gz"
+            echo "$sum  /tmp/age.tgz" | sha256sum -c -
+            tar -xzf /tmp/age.tgz -C /tmp age/age
+            export AGE_BIN=/tmp/age/age
+            "$AGE_BIN" --version
+            echo "== gofmt"; out="$(gofmt -l .)"; [ -z "$out" ] || { echo "$out"; exit 1; }
+            for os in linux darwin windows; do echo "== go vet ($os)"; GOOS=$os go vet ./...; done
+            echo "== go build"; go build -o /tmp/privatae-bastion .
+            echo "== go test"; go test -count=1 ./...'
+      - name: the same for deploy/release-sign
+        run: |
+          docker run --rm --cpus 6 -e GOMAXPROCS=6 -v "$PWD":/src -w /src/deploy/release-sign \
+            -e GOTOOLCHAIN=local -e CGO_ENABLED=0 "$GO_IMAGE" sh -euc '
+            out="$(gofmt -l .)"; [ -z "$out" ] || { echo "$out"; exit 1; }
+            for os in linux darwin windows; do GOOS=$os go vet ./...; done
+            go test -count=1 ./...'
+
+  personal-data:
+    runs-on: platform
+    steps:
+      - name: fetch the commit
+        run: |
+          set -euo pipefail
+          git init -q .
+          git -c http.extraHeader="Authorization: token ${{ gitea.token }}" \
+            fetch -q --depth=1 "${{ gitea.server_url }}/${{ gitea.repository }}.git" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: no person's data in the tree
+        # Reads files, runs nothing from the tree. The term check needs the
+        # maintainers' key, which a CI job never holds, so here it is skipped and
+        # the run says so; the entity-id, provenance, email and phone checks run.
+        run: python3 scripts/test_no_personal_data.py
+      - name: no Host source file names in the tree
+        # The member repository publishes this tree as a release was built,
+        # and its release step refuses a path into the Host's Python
+        # (server/... or brain/... .py): this repo has no such files, so the
+        # path can only name another program's source. Checked here, before a
+        # merge, instead of after a release is built and signed. git grep exits
+        # 1 when nothing matches and above 1 when it could not search (no
+        # repository, a pattern it cannot read); only 1 passes.
+        run: |
+          rc=0
+          git grep -nIE 'server/[a-z_/]+\.py|brain/[a-z_/]+\.py' || rc=$?
+          case "$rc" in
+            1) ;;
+            0) echo "these lines name another program's source file; describe it instead" >&2
+               exit 1 ;;
+            *) echo "git grep could not search the tree (exit $rc), so it was not checked" >&2
+               exit 1 ;;
+          esac
+
+  fuzz:
+    needs: test
+    runs-on: platform
+    steps:
+      - name: fetch the commit
+        run: |
+          set -euo pipefail
+          git init -q .
+          git -c http.extraHeader="Authorization: token ${{ gitea.token }}" \
+            fetch -q --depth=1 "${{ gitea.server_url }}/${{ gitea.repository }}.git" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: every fuzz target, 5 seconds each
+        # A short pass on every commit. Run deploy/fuzz.sh with its default of
+        # 20 seconds before changing a wall a host's input goes through.
+        run: |
+          docker run --rm --cpus 6 -e GOMAXPROCS=6 -v "$PWD":/src -w /src \
+            -e GOTOOLCHAIN=local -e CGO_ENABLED=0 "$GO_IMAGE" sh -euc '
+            apk add -q --no-cache bash
+            deploy/fuzz.sh 5'

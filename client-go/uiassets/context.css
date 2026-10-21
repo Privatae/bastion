@@ -1,0 +1,62 @@
+/* context.css — the user-run context surface.
+   Layered on diskmap.css, which the page also loads: the treemap, the crumbs
+   and the accounting blocks are the same thing on both surfaces and are styled
+   once. Only what is NEW here is below. */
+
+.context-page header h1 { margin-bottom: .15rem; }
+
+/* The ask. Deliberately quiet rather than a call to action: the page should
+   read as somewhere you look at your files, with handing one over as an
+   available act, not the purpose. */
+.context-ask {
+  margin: 1.4rem 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line, #2a3038);
+  border-radius: 6px;
+  background: var(--panel, #151a20);
+}
+.context-ask h3 { margin-top: 0; }
+.context-ask p { margin: .45rem 0; }
+.context-ask form {
+  margin-top: .85rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .6rem;
+}
+.context-ask label {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.context-ask input[type=text] {
+  padding: .35rem .5rem;
+  border: 1px solid var(--line, #2a3038);
+  border-radius: 4px;
+  background: var(--bg, #0f1317);
+  color: inherit;
+  min-width: 14rem;
+}
+
+/* What has been asked for. The unsent ones are not styled as an error the
+   person caused — they are a statement about the machine, so they are marked
+   but not alarming. */
+.context-asks { list-style: none; padding-left: 0; }
+.context-asks li {
+  padding: .4rem .6rem;
+  margin: .3rem 0;
+  border-left: 3px solid var(--line, #2a3038);
+}
+.context-asks li.ok { border-left-color: var(--ok, #4f9d69); }
+.context-asks li.bad { border-left-color: var(--warn, #b9862f); }
+
+/* What is already context. Above the map on purpose: the page is named for
+   this, and a file browser is what you use to ADD to it. */
+.ctx-held { width: 100%; border-collapse: collapse; margin: .5rem 0 1.2rem; }
+.ctx-held th, .ctx-held td {
+  text-align: left;
+  padding: .35rem .6rem;
+  border-bottom: 1px solid var(--line, #2a3038);
+  vertical-align: top;
+}
+.ctx-held th { font-weight: 600; opacity: .8; }

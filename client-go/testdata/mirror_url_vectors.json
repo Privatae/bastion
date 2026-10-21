@@ -1,0 +1,218 @@
+[
+ {
+  "url": "https://github.com/pallets/flask.git",
+  "ok": true
+ },
+ {
+  "url": "https://github.com/a/b",
+  "ok": true
+ },
+ {
+  "url": "https://git.example.org:8443/team/repo.git",
+  "ok": true
+ },
+ {
+  "url": "https://gitlab.com/group/sub/proj.git",
+  "ok": true
+ },
+ {
+  "url": "https://h.io/a%20b/c",
+  "ok": true
+ },
+ {
+  "url": "https://x-y.dev/o/r~1+2",
+  "ok": true
+ },
+ {
+  "url": "https://GitHub.com/A/B",
+  "ok": true
+ },
+ {
+  "url": "http://github.com/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/",
+  "ok": false
+ },
+ {
+  "url": "https://github.com",
+  "ok": false
+ },
+ {
+  "url": "https://u:p@github.com/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://@github.com/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b?x=1",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b#f",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b,c",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b c",
+  "ok": false
+ },
+ {
+  "url": "https://2130706433/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://127.1/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://0x7f.0.0.1/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://10.0.0.1/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://[::1]/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://[v1.x]/x",
+  "ok": false
+ },
+ {
+  "url": "https://h:abc/x",
+  "ok": false
+ },
+ {
+  "url": "https://h:+443/x",
+  "ok": false
+ },
+ {
+  "url": "https://h/x%zz",
+  "ok": false
+ },
+ {
+  "url": "https://h/%",
+  "ok": false
+ },
+ {
+  "url": "https://h\\x/y",
+  "ok": false
+ },
+ {
+  "url": "https://h^/x",
+  "ok": false
+ },
+ {
+  "url": "https://h%41/x",
+  "ok": false
+ },
+ {
+  "url": "https://h`/x",
+  "ok": false
+ },
+ {
+  "url": "https://h{}/x",
+  "ok": false
+ },
+ {
+  "url": "https://h]/x",
+  "ok": false
+ },
+ {
+  "url": "https://-h.com/x",
+  "ok": false
+ },
+ {
+  "url": "https://h.com./x",
+  "ok": false
+ },
+ {
+  "url": "https://h..com/x",
+  "ok": false
+ },
+ {
+  "url": "file:///srv/x",
+  "ok": false
+ },
+ {
+  "url": "ssh://git@github.com/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://gíthub.com/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/‮b",
+  "ok": false
+ },
+ {
+  "url": "HTTPS://github.com/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b|c",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b>c",
+  "ok": false
+ },
+ {
+  "url": "https://github.com:/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b\n",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/'b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b;c",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/a/b&c",
+  "ok": false
+ },
+ {
+  "url": "https://0x7f000001/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://127.0x1/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://0xa9fea9fe/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://10.0xa/a/b",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/%2F",
+  "ok": false
+ },
+ {
+  "url": "https://github.com/%2f%2F/",
+  "ok": false
+ },
+ {
+  "url": "https://a1.example.com/o/r.git",
+  "ok": true
+ }
+]

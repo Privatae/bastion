@@ -1,0 +1,244 @@
+{{define "agents-page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — automated programs on this machine</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/agents.css">
+<!-- htmx's own indicator stylesheet is injected with insertAdjacentHTML and is
+     blocked by this page's CSP (default-src 'self', no style-src escape, no
+     nonce). Turn the injection off rather than widen the policy — see
+     page.html for the full reasoning. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Automated programs on this machine</h1>
+  <p class="sub">Everything this machine can see that runs on its own or talks to a
+    model, and which of them you have said are yours.</p>
+</header>
+
+<p class="backlink"><a href="/">&larr; This machine</a></p>
+
+<!-- Ten seconds, not the status page's three. Producing this list walks every
+     process and reads every established connection (agents_linux.go), which
+     measured 24ms here — nothing, but it is not a liveness probe and nothing on
+     this page changes at three-second speed. -->
+<main id="agents"
+      hx-get="/fragments/agents"
+      hx-trigger="every 10s"
+      hx-swap="innerHTML">
+{{template "agents" .}}
+</main>
+
+<footer>
+  privatae-bastion {{.Version}} &middot; <a href="/">this machine</a> &middot; served
+  from this machine only and not reachable from anywhere else.
+</footer>
+</body>
+</html>
+{{end}}
+
+
+{{define "agents"}}
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+
+{{/* A build with no enumerator has to say so. "Nothing is running here" and
+     "nothing looked" read identically otherwise, and the second is the machine
+     you should worry about (agents_other.go, the README, "Observe"). */}}
+{{if .Blind}}
+<div class="state bad">
+  <h2>This machine cannot watch itself.</h2>
+  <p>This build of the bastion has no way to list processes or connections on this
+    platform, so the list below is empty because nothing looked — not because
+    nothing is running. Do not read it as a clean machine.</p>
+</div>
+{{end}}
+
+{{/* A read that FAILED is not a machine with nothing on it. Every verdict below
+     is unknown while this is true, and the page must not draw a tick. */}}
+{{/* The walk failed for THIS render: Blind for one pass, not for the platform. */}}
+{{if .WalkError}}
+<div class="state bad">
+  <h2>This machine could not read its processes just now.</h2>
+  <p>{{.WalkError}}</p>
+  <p>The list below is empty because nothing looked — not because nothing is
+    running. Reload to try again.</p>
+</div>
+{{end}}
+
+{{if .ReadError}}
+<div class="state bad">
+  <h2>This machine cannot read its own record of what you marked as yours.</h2>
+  <p>{{.ReadError}}</p>
+  <p>Until that is fixed nothing below can be called vouched for or not vouched
+    for, and nothing here should be treated as unwanted.</p>
+</div>
+{{end}}
+
+{{/* ...and not under the walk banner either: "this machine looked" is the one
+     sentence a failed walk must never draw. */}}
+{{if not .Blind}}{{if not .ReadError}}{{if not .WalkError}}
+<div class="state {{if .Unsanctioned}}warn{{else}}ok{{end}}">
+  {{if .Unsanctioned}}
+    <h2>{{.Unsanctioned}} of {{.Observed}} are not marked as yours.</h2>
+    <p>Marking something as yours is you vouching for it. What is left over is the
+      set worth looking at.</p>
+  {{else if .Observed}}
+    <h2>All {{.Observed}} are accounted for.</h2>
+    <p>Everything this machine can see has either been launched by your host or
+      marked as yours here.</p>
+  {{else}}
+    <h2>Nothing automated is running on this machine.</h2>
+    <p>No agent, automation or process talking to a model was found. This machine
+      looked; it did not find anything.</p>
+  {{end}}
+</div>
+{{end}}{{end}}{{end}}
+
+<div class="note">
+  <strong>This page does not stop anything.</strong> There is no button here that
+  closes a program. Stopping something running on this machine is directed by your
+  host, and saying that a program is yours is a different act from taking it away.
+</div>
+
+{{range .Rows}}
+<div class="obs {{if .Unknown}}unknown{{else if .Sanctioned}}vouched{{else}}bare{{end}}">
+  <div class="obs-head">
+    <span class="obs-name">{{if .Signature}}{{.Signature}}{{else}}(unnamed){{end}}</span>
+    {{/* The kind is a CLASSIFICATION and takes no colour. Being an agent is not
+         a fault — most of what is on this list on a working machine is the
+         user's own editor — and the chip beside it already carries the only
+         verdict this page makes. */}}
+    <span class="tag kind">{{.Kind}}</span>
+    {{if .Unknown}}<span class="tag bad">unknown</span>
+    {{else if .Sanctioned}}<span class="tag ok">yours</span>
+    {{else}}<span class="tag warn">not marked as yours</span>{{end}}
+  </div>
+
+  <p class="obs-why">{{.Why}}</p>
+
+  {{if .App}}
+  <p class="obs-why dim">This is software you are running rather than an agent, and
+    this machine refuses to close it however your host asks. It is listed and
+    counted because it talks to a model, not because it is suspected of anything.</p>
+  {{end}}
+
+  <dl class="host-facts">
+    <dt>Process</dt><dd>{{.PID}}{{if .User}}, running as {{.User}}{{end}}</dd>
+    {{if .Origin}}<dt>Started</dt><dd>{{.Origin}}</dd>{{end}}
+    {{/* The FILE and the COMMAND are two different facts and the page shows
+         both. A mark is recorded against the file — the kernel's answer, which
+         the program cannot choose — while the command line is the name it gave
+         itself. Showing only the second is what made a mark forgeable. */}}
+    {{if .Exe}}<dt>File</dt><dd><code>{{.Exe}}</code></dd>{{end}}
+    {{if .Cmdline}}<dt>Command</dt><dd><code>{{.Cmdline}}</code></dd>{{end}}
+    {{if .Endpoints}}
+    <dt>Talking to</dt>
+    <dd>{{range $i, $e := .Endpoints}}{{if $i}}, {{end}}<code>{{$e}}</code>{{end}}</dd>
+    {{end}}
+  </dl>
+
+  {{/* The evidence list, not a verdict — the same thing the host is shown
+       (origin.go:53). A person deciding whether to vouch for something needs to
+       see what made this machine notice it. */}}
+  {{if .Evidence}}
+  <ul class="evidence">
+    {{range .Evidence}}
+    <li><span class="tier {{.Tier}}">{{.Tier}}</span> {{.Signal}}{{if .Value}} &middot; {{.Value}}{{end}}</li>
+    {{end}}
+  </ul>
+  {{end}}
+
+  {{if not .Unknown}}
+  <div class="obs-acts">
+    {{if .Marked}}
+    <form hx-post="/agents/unmark" hx-target="#agents" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button class="no" type="submit">Unmark</button>
+    </form>
+    {{else if .Sanctioned}}
+    <p class="obs-foot">Your host vouched for this one. There is nothing to unmark
+      here — the tag it carries was issued by your host and is withdrawn there.</p>
+    {{else if .ID}}
+    <form hx-post="/agents/mark" hx-target="#agents" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button class="go" type="submit">This one is mine</button>
+    </form>
+    {{else}}
+    {{/* No kernel path, so there is no identity to mark and no button that
+         could do anything but fail. The reason above already says why; a
+         disabled control here would only imply the machine is withholding
+         something it could do. */}}
+    <p class="obs-foot">Nothing here can be marked as yours until this machine can
+      read which file it is running.</p>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}
+
+{{if .Dormant}}
+<h3>Marked as yours, but not running right now</h3>
+<p class="sub">These stay on this machine until you remove them, which is the only
+  way a mark ever goes away. They are listed so a mark you no longer want cannot
+  sit here unseen.</p>
+{{range .Dormant}}
+<div class="obs dormant">
+  <div class="obs-head">
+    <span class="obs-name">{{.What}}</span>
+    <span class="tag ok">yours</span>
+  </div>
+  <dl class="host-facts">
+    <dt>Marked</dt>
+    <dd>{{.At}}{{if .By}}, from {{.By}}{{end}}{{if .ByUser}}, by {{.ByUser}}{{end}}</dd>
+    {{if .Cmdline}}<dt>Looked like</dt><dd><code>{{.Cmdline}}</code></dd>{{end}}
+  </dl>
+  <div class="obs-acts">
+    <form hx-post="/agents/unmark" hx-target="#agents" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button class="no" type="submit">Unmark</button>
+    </form>
+  </div>
+</div>
+{{end}}
+{{end}}
+
+{{if .Expired}}
+<h3>Marks that no longer count</h3>
+<p class="sub">These were recorded against the name a program gave for itself, which
+  anything on this machine can copy by starting a process with that name. A mark is
+  now recorded against the FILE this machine's kernel says a process is running,
+  which a program cannot choose for itself. The old marks below vouch for nothing.
+  They are still shown because they are your record of a decision you made, and
+  this program does not throw those away quietly. To mark the same program again,
+  find it in the list above while it is running and press &ldquo;This one is
+  mine&rdquo;.</p>
+{{range .Expired}}
+<div class="obs expired">
+  <div class="obs-head">
+    <span class="obs-name">{{.What}}</span>
+    <span class="tag warn">no longer counts</span>
+  </div>
+  <dl class="host-facts">
+    <dt>Marked</dt>
+    <dd>{{.At}}{{if .By}}, from {{.By}}{{end}}{{if .ByUser}}, by {{.ByUser}}{{end}}</dd>
+    {{if .Cmdline}}<dt>Looked like</dt><dd><code>{{.Cmdline}}</code></dd>{{end}}
+  </dl>
+  <div class="obs-acts">
+    <form hx-post="/agents/unmark" hx-target="#agents" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button class="no" type="submit">Remove</button>
+    </form>
+  </div>
+</div>
+{{end}}
+{{end}}
+
+<p class="sub checked-at">Checked {{.CheckedAt}}. What this machine can see here is
+  deliberately soft: a program that does not want to be noticed can rename itself,
+  and a mark is a convenience, not a lock.</p>
+{{end}}

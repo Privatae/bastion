@@ -1,0 +1,7 @@
+# Local build artifacts (go build writes these). A name that is no longer
+# produced stays ignored: un-ignoring it once let a stale local build be
+# committed.
+bastion-client
+bastion-client.exe
+privatae-bastion
+privatae-bastion.exe

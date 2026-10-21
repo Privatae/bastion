@@ -1,0 +1,269 @@
+{{define "policy-page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — what would be stopped</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/policy.css">
+<!-- htmx's own indicator stylesheet is injected with insertAdjacentHTML and is
+     blocked by this page's CSP (default-src 'self', no style-src escape, no
+     nonce). Turn the injection off rather than widen the policy — see
+     page.html for the full reasoning. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>What would be stopped</h1>
+  <p class="sub">A rule this machine runs against everything automated it can see,
+    and a record of what it would have stopped while nobody was watching. It is a
+    rehearsal: nothing here has any power to close a program.</p>
+</header>
+
+<p class="backlink"><a href="/">&larr; This machine</a> &middot;
+  <a href="/agents">Automated programs running here</a></p>
+
+<!-- Ten seconds, like the agents page and for the same reason: producing this
+     list walks every process and every established connection (24ms measured),
+     and nothing on this page changes at the status page's three-second speed. -->
+<main id="policy"
+      hx-get="/fragments/policy"
+      hx-trigger="every 10s"
+      hx-swap="innerHTML">
+{{template "policy" .}}
+</main>
+
+<footer>
+  privatae-bastion {{.Version}} &middot; <a href="/">this machine</a> &middot; served
+  from this machine only and not reachable from anywhere else.
+</footer>
+</body>
+</html>
+{{end}}
+
+
+{{define "policy"}}
+{{/* A build with no enumerator has to say so. "Nothing would be stopped" and
+     "nothing looked" read identically otherwise, and the second is the machine
+     you should worry about (agents_other.go, the README, "Observe"). */}}
+{{if .Blind}}
+<div class="state bad">
+  <h2>This machine cannot watch itself.</h2>
+  <p>This build of the bastion has no way to list processes or connections on this
+    platform. The rule below has nothing to run against, so read the empty list as
+    "nothing looked", never as "nothing is running".</p>
+</div>
+{{end}}
+
+{{/* A read that FAILED is not a machine with nothing on it. Every verdict below
+     is unreachable while this is true, and no count is worth printing. */}}
+{{if .RegistryError}}
+<div class="state bad">
+  <h2>This machine cannot read its own record of what you marked as yours.</h2>
+  <p>{{.RegistryError}}</p>
+  <p>Every judgement below needs that record, so this rule cannot judge anything
+    until it is fixed. It is not reporting that there is nothing to judge.</p>
+</div>
+{{end}}
+
+{{/* A walk that FAILED for this render is Blind for one pass: the rows below are
+     empty because nothing looked. Said before the rows, for the same reason. */}}
+{{if .WalkError}}
+<div class="state bad">
+  <h2>This machine could not read its processes just now.</h2>
+  <p>{{.WalkError}}</p>
+  <p>The rule had nothing to run against on this render, so read the empty list
+    as "nothing looked", never as "nothing would have been stopped". Reload to
+    try again.</p>
+</div>
+{{end}}
+
+{{if .CensusError}}
+<div class="state bad">
+  <h2>The record of what this rule would have stopped is not being written.</h2>
+  <p>{{.CensusError}}{{if .CensusErrorAt}} &middot; {{.CensusErrorAt}}{{end}}</p>
+  <p>The list further down is whatever was written before that started. Do not
+    read it as up to date.</p>
+</div>
+{{end}}
+
+{{/* ...and not under the walk banner: a failed walk must never draw the tick. */}}
+{{if not .Blind}}{{if not .RegistryError}}{{if not .WalkError}}
+<div class="state {{if .WouldStop}}warn{{else}}ok{{end}}">
+  {{if .WouldStop}}
+    <h2>{{.WouldStop}} of {{.Observed}} would be stopped by this rule.</h2>
+    <p>Nothing has been stopped. This is what the rule would do if it were ever
+      allowed to act, listed so you can decide whether it would have been right.</p>
+  {{else if .Observed}}
+    <h2>Nothing running here would be stopped by this rule.</h2>
+    <p>{{.Observed}} automated programs were looked at. Every one of them is either
+      something a person is running, or something that has been vouched for.</p>
+  {{else}}
+    <h2>Nothing automated is running on this machine.</h2>
+    <p>This machine looked; it did not find anything for the rule to run against.</p>
+  {{end}}
+  {{if .CannotJudge}}
+  <p><strong>{{.CannotJudge}} of {{.Observed}} cannot be judged at all.</strong>
+    A term this rule needs could not be read for them. That is a blind spot, not a
+    clean bill of health.</p>
+  {{end}}
+</div>
+{{end}}{{end}}{{end}}
+
+<div class="note">
+  <strong>This page cannot stop anything.</strong> There is no button here, and no
+  route behind this page that closes a program. Stopping something on this machine
+  is directed by your host. This rule is measured first so that whether it should
+  ever act is a decision somebody makes with evidence.
+</div>
+
+{{/* The rule, in the same words for everyone who reads this page. It lives
+     beside the code that implements it (policy.go policyRuleLines) so that
+     changing a term and forgetting the sentence is one file's mistake. */}}
+<h3>The rule</h3>
+<p class="sub">A program is proposed for stopping only when all four are true of it
+  at once.</p>
+<ul class="rule">
+  {{range .Rule}}
+  <li><span class="term">{{.Term}}</span> {{.Detail}}</li>
+  {{end}}
+</ul>
+
+{{if .Rows}}
+<h3>Right now</h3>
+{{end}}
+{{range .Rows}}
+<div class="obs {{if eq .Decision "would-stop"}}bare{{else if eq .Decision "cannot-judge"}}unknown{{else}}vouched{{end}}">
+  <div class="obs-head">
+    <span class="obs-name">{{if .Signature}}{{.Signature}}{{else}}(unnamed){{end}}</span>
+    <span class="tag kind">{{.Kind}}</span>
+    <span class="tag {{.Class}}">{{.Word}}</span>
+  </div>
+
+  <dl class="host-facts">
+    <dt>Process</dt><dd>{{.PID}}{{if .User}}, running as {{.User}}{{end}}</dd>
+    {{if .Origin}}<dt>Started</dt><dd>{{.Origin}}</dd>{{end}}
+    {{if .Cmdline}}<dt>Command</dt><dd><code>{{.Cmdline}}</code></dd>{{end}}
+    {{if .Endpoints}}
+    <dt>Talking to</dt>
+    <dd>{{range $i, $e := .Endpoints}}{{if $i}}, {{end}}<code>{{$e}}</code>{{end}}</dd>
+    {{end}}
+  </dl>
+
+  {{/* Every term, not only the one that decided it. A verdict nobody can audit
+       is a verdict nobody should trust, and the plane it reads from emits typed
+       evidence rather than a bare answer for the same reason (agents.go:183-188). */}}
+  <ul class="terms">
+    {{range .Reasons}}
+    <li class="points-{{.Points}}">
+      <span class="tier {{.Tier}}">{{.Tier}}</span>
+      <span class="term">{{.Term}}</span> {{.Detail}}
+    </li>
+    {{end}}
+  </ul>
+</div>
+{{end}}
+
+{{/* ── the census ────────────────────────────────────────────────────────────
+     The question step 4 is waiting on is not "what would be stopped now" but
+     "what would this have killed over a week, and would that have been wrong".
+     A page that only rendered the current scan would answer neither. */}}
+<h3>What this would have stopped</h3>
+{{/* A read that FAILED is not a machine that never measured anything. The two
+     were one branch until a review of this file caught it: an unparseable record
+     would have rendered the most reassuring sentence on the page. */}}
+{{if .CensusUnreadable}}
+<p class="sub">This machine could not read that record, so nothing is listed here
+  and the space below it is not an absence. The banner at the top of the page says
+  why. Until that is fixed the honest answer is "not known".</p>
+{{else if not .CensusRan}}
+<div class="state bad">
+  <h2>This machine has not taken this measurement yet.</h2>
+  <p>The record is written by the running bastion, once a minute. If the bastion is
+    not running here, or has only just started, there is nothing to show — which is
+    not the same as nothing having happened.</p>
+</div>
+{{else}}
+<p class="sub">Measured since {{.CensusSince}} — {{.CensusWindow}}. Last looked
+  {{.CensusLast}}. A program that appears and exits between two scans is not seen
+  at all, and the times below are kept to about five minutes so that watching this
+  does not mean writing to your disk every minute.</p>
+{{if .CensusStale}}
+<div class="state bad">
+  <h2>This measurement has stopped.</h2>
+  <p>The last scan was {{.CensusLast}}, which is longer ago than it should be. What
+    is below is history: it is not what this machine would do now.</p>
+</div>
+{{end}}
+{{if .PastDropped}}
+<p class="sub">{{.PastDropped}} older entries have been dropped to bound the file.
+  The oldest go first.</p>
+{{end}}
+
+{{if .Past}}
+{{/* "Vouched for since" is read out of the mark registry, so a registry this
+     machine could not load cannot produce that number — and a 0 there is the
+     same reassuring lie the banner at the top exists to stop. The rows below
+     still render; each one says it cannot be judged. */}}
+{{if .RegistryError}}
+<div class="state bad">
+  <h2>{{.PastTotal}} would have been stopped. How many were mistakes is not known.</h2>
+  <p>Answering that needs the record of what you have marked as yours, which this
+    machine could not read. The rows below are what would have been stopped; what
+    became of each one is not something this page can say right now.</p>
+</div>
+{{else if .WalkError}}
+{{/* The vouched count is read from the registry and is real; "still a
+     candidate right now" is read from the walk, which did not happen. */}}
+<div class="state {{if .PastVouched}}warn{{else}}ok{{end}}">
+  <h2>{{.PastTotal}} would have been stopped. Vouched for since: {{.PastVouched}}.</h2>
+  <p>Every one in that second number is a program this rule would have taken away
+    from you by mistake, and that number is what decides whether it should ever be
+    allowed to act. Still a candidate right now: not known — this machine could
+    not read its processes just now. If one of these is yours, say so on the
+    <a href="/agents">automated programs page</a> — this rule reads the same record.</p>
+</div>
+{{else}}
+<div class="state {{if .PastVouched}}warn{{else}}ok{{end}}">
+  <h2>{{.PastTotal}} would have been stopped. Vouched for since: {{.PastVouched}}.</h2>
+  <p>Every one in that second number is a program this rule would have taken away
+    from you by mistake, and that number is what decides whether it should ever be
+    allowed to act. Still a candidate right now: {{.PastStill}}. If one of these is
+    yours, say so on the <a href="/agents">automated programs page</a> — this rule
+    reads the same record.</p>
+</div>
+{{end}}
+{{range .Past}}
+<div class="obs past {{if .Still}}bare{{else if .Vouched}}vouched{{else if .Unknowable}}unknown{{else}}dormant{{end}}">
+  <div class="obs-head">
+    <span class="obs-name">{{.What}}</span>
+    {{if .Still}}<span class="tag warn">still a candidate</span>
+    {{else if .Vouched}}<span class="tag ok">vouched for since</span>
+    {{else}}<span class="tag kind">{{.Status}}</span>{{end}}
+  </div>
+  <p class="obs-why">{{.Status}}{{if .Because}} &mdash; {{.Because}}{{end}}</p>
+  <dl class="host-facts">
+    <dt>First proposed</dt><dd>{{.FirstSeen}}</dd>
+    <dt>Last proposed</dt><dd>{{.LastSeen}}</dd>
+    {{if .Origin}}<dt>Started</dt><dd>{{.Origin}}</dd>{{end}}
+    {{if .Cmdline}}<dt>Looked like</dt><dd><code>{{.Cmdline}}</code></dd>{{end}}
+    {{if .Endpoints}}
+    <dt>Was talking to</dt>
+    <dd>{{range $i, $e := .Endpoints}}{{if $i}}, {{end}}<code>{{$e}}</code>{{end}}</dd>
+    {{end}}
+  </dl>
+</div>
+{{end}}
+{{else}}
+<p class="sub">Nothing has been proposed for stopping in that time. This machine
+  looked and found nothing, which is a different sentence from the one above it.</p>
+{{end}}
+{{end}}
+
+<p class="sub checked-at">Checked {{.CheckedAt}}. What this machine can see is
+  deliberately soft: a program that does not want to be noticed can rename itself,
+  and a mark is a convenience, not a lock. This rule inherits every one of those
+  limits.</p>
+{{end}}

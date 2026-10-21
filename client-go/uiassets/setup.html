@@ -1,0 +1,287 @@
+{{define "setup-page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — set this machine up</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/setup.css">
+<!-- htmx's own indicator stylesheet is injected with insertAdjacentHTML and is
+     blocked by this page's CSP (default-src 'self', no style-src escape, no
+     nonce). Turn the injection off rather than widen the policy — see
+     page.html for the full reasoning. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Set this machine up</h1>
+  <p class="sub">Pairing, a second factor, folders, the anchor and the owner name.
+    <a href="/">Back to what this machine is doing</a>.</p>
+</header>
+
+<main id="setup">
+{{template "setup" .}}
+</main>
+
+<footer>
+  privatae-bastion {{.Version}} · this page is served from this machine only and
+  is not reachable from anywhere else.
+</footer>
+</body>
+</html>
+{{end}}
+
+
+{{define "setup"}}
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+{{if .ReadError}}
+<div class="flash bad">This machine's pairing records cannot be read: {{.ReadError}}.
+  The panels below cannot be trusted until that is fixed.</div>
+{{end}}
+
+{{/* The state first, because every panel below reads differently depending on
+     it — an anchor on a local box means nothing, and a folder needs a host. */}}
+<div class="host">
+  <dl class="host-facts">
+    <dt>Mode</dt><dd>{{.Mode}}</dd>
+    <dt>Anchor</dt>
+    {{if .AnchorHost}}<dd>{{.AnchorHost}}{{if .AnchorOwner}} (owner “{{.AnchorOwner}}”){{end}}</dd>
+    {{else}}<dd>none{{if .AnchorRequired}} <span class="tag bad">required</span>{{end}}</dd>{{end}}
+    <dt>Owner</dt><dd>{{if .Owner}}{{.Owner}}{{else}}not claimed{{end}}</dd>
+  </dl>
+  {{if .Hosts}}
+  <dl class="host-facts setup-hosts">
+    {{range .Hosts}}
+    <dt>{{.Name}}</dt>
+    <dd>
+      {{.State}}
+      {{if .IsAnchor}}<span class="tag ok">anchor</span>{{end}}
+      {{if .Active}}
+        {{if .Serving}}<span class="tag ok">serving</span>
+        {{else}}<span class="tag bad">not answering</span>{{end}}
+      {{end}}
+      {{if .Stepup}}<span class="tag ok">second factor</span>
+      {{else}}<span class="tag warn">no second factor</span>{{end}}
+    </dd>
+    {{end}}
+  </dl>
+  {{end}}
+</div>
+
+{{/* ── 1. pair ───────────────────────────────────────────────────────────── */}}
+<h3>Pair a host</h3>
+<div class="host">
+  <p class="sub">The token comes from your host's “Set up a bastion”. It is used once.</p>
+  <form class="setup-form" hx-post="/setup/pair" hx-target="#setup" hx-swap="innerHTML"
+        autocomplete="off">
+    <label for="pair-token">Token</label>
+    <input id="pair-token" class="wide" name="token" type="text" autocomplete="off"
+           spellcheck="false" placeholder="skb_…">
+    <label class="tick">
+      <input type="checkbox" name="replace" value="1">
+      This host is already paired here — rotate its credentials
+    </label>
+    <button class="go" type="submit">Pair</button>
+  </form>
+  <div class="note">
+    Pairing adds a host; it never replaces one. On an anchored machine a new host
+    is written <strong>pending</strong> and starts nothing until the anchor host
+    approves it. Nothing here needs the bastion restarted.
+  </div>
+</div>
+
+{{/* ── 2. second factor ──────────────────────────────────────────────────── */}}
+<h3>A second factor on this machine</h3>
+<div class="host">
+  <p class="sub">Once a factor is enrolled, your host can only reach a folder or move
+    files here after you approve the request on this machine. Your host never sees the code.</p>
+
+  {{if .Enrol}}
+    <div class="qr-wrap">
+      {{/* The handle addresses the enrolment on the server. The secret is never
+           in this page: it is in the pixels. */}}
+      <img class="qr" src="/setup/stepup/qr?e={{.Enrol.Handle}}" width="320" height="320"
+           alt="QR code for the second factor being enrolled on this machine">
+      <div class="qr-side">
+        <p>Point your authenticator app at the square. It will appear as
+          <strong>Privatae NAC</strong>, for {{.Enrol.Host}}.</p>
+        <form hx-post="/setup/stepup/confirm" hx-target="#setup" hx-swap="innerHTML"
+              autocomplete="off">
+          <input type="hidden" name="enrol" value="{{.Enrol.Handle}}">
+          <input class="code" name="code" inputmode="numeric" pattern="[0-9]*"
+                 autocomplete="one-time-code" placeholder="6-digit code"
+                 aria-label="A code from the app you just scanned with">
+          <button class="go" type="submit">Confirm</button>
+        </form>
+        <p class="sub">Nothing is written to this machine until that code matches.</p>
+        <form hx-post="/setup/stepup/key" hx-target="#stepup-key" hx-swap="innerHTML">
+          <input type="hidden" name="enrol" value="{{.Enrol.Handle}}">
+          <button type="submit">Cannot scan? Show the key</button>
+        </form>
+        <div id="stepup-key"></div>
+      </div>
+    </div>
+  {{else if .Servable}}
+    {{/* .Servable, not .Hosts: a pending pairing gets no state on this machine
+         at all, not even a directory (run.go:311), and a factor for it would
+         gate ops it has no lanes to run. */}}
+    <form class="setup-form" hx-post="/setup/stepup/start" hx-target="#setup" hx-swap="innerHTML">
+      <label for="enrol-host">For host</label>
+      <select id="enrol-host" name="host">
+        {{range .Servable}}<option value="{{.Name}}">{{.Name}}{{if .Stepup}} (already enrolled){{end}}</option>{{end}}
+      </select>
+      <label class="tick">
+        <input type="checkbox" name="replace" value="1">
+        Replace the factor already enrolled for that host
+      </label>
+      <button class="go" type="submit">Enrol a second factor</button>
+    </form>
+    <div class="note">
+      Replacing a factor stops the authenticator enrolled now from working.
+    </div>
+  {{else if .Hosts}}
+    <p class="sub">No host here has its lanes open, and a second factor gates ops a
+      pairing without lanes cannot run. Nothing is created for a pending host on this
+      machine until the anchor host approves it.</p>
+  {{else}}
+    <p class="sub">Pair a host first — a factor is enrolled per host.</p>
+  {{end}}
+</div>
+
+{{/* ── 3. folders ────────────────────────────────────────────────────────── */}}
+<h3>Add a folder to your network</h3>
+<div class="host">
+  {{if .Servable}}
+  <p class="sub">Your files stay on this machine. Your host keeps only the index, and
+    the draft does nothing until you approve it there.</p>
+  <form class="setup-form" hx-post="/setup/folder/propose" hx-target="#setup" hx-swap="innerHTML"
+        autocomplete="off">
+    <label for="folder-path">Folder</label>
+    {{/* A browser cannot open a native folder picker without the user choosing a
+         folder in it, and what it hands back is a file list, not a path this
+         machine can name. So: a typed path, checked against the real filesystem
+         as it is typed. */}}
+    <input id="folder-path" class="wide" name="path" type="text" autocomplete="off"
+           spellcheck="false" placeholder="/home/you/Documents"
+           hx-post="/setup/folder/check" hx-trigger="keyup changed delay:400ms, change"
+           hx-target="#folder-check" hx-swap="innerHTML">
+    <div id="folder-check">{{if .Check}}{{template "folder-check" .}}{{end}}</div>
+    <label for="folder-name">Shown as (optional)</label>
+    <input id="folder-name" class="wide" name="name" type="text" autocomplete="off"
+           placeholder="Documents">
+    {{if gt (len .Servable) 1}}
+    <label for="folder-host">Propose to</label>
+    <select id="folder-host" name="host">
+      {{range .Servable}}<option value="{{.Name}}">{{.Name}}</option>{{end}}
+    </select>
+    {{else}}
+      {{range .Servable}}<input type="hidden" name="host" value="{{.Name}}">
+      <p class="sub">Proposed to {{.Name}}.</p>{{end}}
+    {{end}}
+    <button class="go" type="submit">Propose this folder</button>
+  </form>
+  {{else}}
+  <p class="sub">No host on this machine has its lanes open, so there is nothing to
+    propose a folder to yet.</p>
+  {{end}}
+</div>
+
+{{/* ── 4. the anchor ─────────────────────────────────────────────────────── */}}
+<h3>Which host holds the anchor</h3>
+<div class="host">
+  <p class="sub">The anchor host is the one that approves every other host paired here.
+    It is a choice among the hosts this machine already serves.</p>
+  {{if .Hosts}}
+  <form class="setup-form" hx-post="/setup/anchor/choose" hx-target="#anchor-cmd" hx-swap="innerHTML">
+    {{range .Hosts}}
+    <label class="tick">
+      <input type="radio" name="host" value="{{.Name}}">
+      {{.Name}}
+      {{if .IsAnchor}}<span class="tag ok">anchor</span>{{end}}
+      {{/* A pending host CAN take the anchor — claim-anchor flips it active,
+           because the anchor never waits on itself (anchor.go:931). Said here
+           so the state is visible at the moment of choosing, not only above. */}}
+      {{if eq .State "pending"}}<span class="tag warn">waiting for approval</span>{{end}}
+      {{if eq .State "revoked"}}<span class="tag bad">revoked</span>{{end}}
+    </label>
+    {{end}}
+    <button type="submit">Show me the line to run</button>
+  </form>
+  {{else}}
+  <p class="sub">Pair a host first — the anchor is one of them.</p>
+  {{end}}
+  <div id="anchor-cmd">{{if .Cmd}}{{template "anchor-cmd" .}}{{end}}</div>
+  <div class="note">
+    <strong>This page will not do it.</strong> Claiming the anchor needs machine
+    authority — root on this box is what stands behind it — and it decides who
+    approves every pairing made here from now on. A page you are signed into for
+    twelve hours is not the right thing to hang that on, so the choice is here
+    and the act stays at a terminal.
+  </div>
+</div>
+
+{{/* ── 5. the owner name ─────────────────────────────────────────────────── */}}
+<h3>Who owns this machine</h3>
+<div class="host">
+  <p class="sub">A plain name, shown on this machine's card on every host it serves.
+    It is optional and it grants nothing.</p>
+  <form class="setup-form" hx-post="/setup/owner/name" hx-target="#owner-cmd" hx-swap="innerHTML"
+        autocomplete="off">
+    <label for="owner-name">Owner</label>
+    <input id="owner-name" class="wide" name="owner" type="text" autocomplete="off"
+           placeholder="{{if .Owner}}{{.Owner}}{{else}}a person or a team{{end}}">
+    <button type="submit">Show me the line to run</button>
+  </form>
+  <div id="owner-cmd">{{if .Cmd}}{{template "owner-cmd" .}}{{end}}</div>
+  <div class="note">
+    Root-gated for the same reason as the anchor: there is no authority above this
+    box to ask, so the ability to run root here is what the name stands on.
+  </div>
+</div>
+{{end}}
+
+
+{{/* ── fragments swapped on their own, so typing does not lose focus ─────── */}}
+
+{{define "folder-check"}}
+{{with .Check}}
+<p class="check {{.Class}}">
+  {{.Line}}
+  {{if .Resolved}}<br><span class="resolved">{{.Resolved}}</span>{{end}}
+  {{if .Note}}<br><span class="sub">{{.Note}}</span>{{end}}
+</p>
+{{end}}
+{{end}}
+
+{{define "stepup-key"}}
+{{if and .Enrol .Enrol.Key}}
+<p class="sub">Enter this key by hand, then type a code from the app:</p>
+<p class="secret-key">{{.Enrol.Key}}</p>
+<p class="sub">It is a secret. It is on screen because you asked for it, and it is
+  gone from this page as soon as you reload.</p>
+{{else}}
+<p class="sub">That enrolment has expired — start it again.</p>
+{{end}}
+{{end}}
+
+{{define "anchor-cmd"}}
+{{with .Cmd}}
+<div class="cmd {{.Class}}">
+  {{if .Command}}<p class="cmd-line"><code>{{.Command}}</code></p>{{end}}
+  {{if .How}}<p class="sub">{{.How}}</p>{{end}}
+  {{if .Why}}<p class="sub">{{.Why}}</p>{{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "owner-cmd"}}
+{{with .Cmd}}
+<div class="cmd {{.Class}}">
+  {{if .Command}}<p class="cmd-line"><code>{{.Command}}</code></p>{{end}}
+  {{if .How}}<p class="sub">{{.How}}</p>{{end}}
+  {{if .Why}}<p class="sub">{{.Why}}</p>{{end}}
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,88 @@
+/* agents.css — the "automated programs on this machine" view (uisanction.go).
+
+   ADDITIONS ONLY, the same rule given.css:1-10 states: app.css carries the page
+   and every colour here is one of its variables rather than a literal, so the
+   three pages cannot drift into three different looks.
+
+   No inline style= anywhere. The page's own CSP is `default-src 'self'`
+   (uisanction.go renderAgents), which covers style-src, so an inline style is
+   silently dropped and the policy wins against the markup. app.css:169-173
+   records the one time that happened. */
+
+a { color: var(--ink); }
+a:hover { color: var(--warn); }
+
+.backlink { max-width: 46rem; margin: 0 auto 1.25rem; font-size: 0.85rem; }
+
+/* ── one observation ───────────────────────────────────────────────────────
+   The left edge carries the state so a column of twenty can be read down
+   without reading a word: amber is something nobody has vouched for, green is
+   something that has been, red is a verdict this machine could not reach.
+
+   Deliberately NOT red for an unvouched-for program. Most of what lands there
+   on a working machine is the user's own editor before they have got round to
+   marking it, and a page that cries alarm at ordinary state is a page that gets
+   ignored the one time it matters — the same reasoning given.css:20-25 gives
+   for a granted capability. */
+
+.obs {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 0.6rem;
+}
+.obs.bare    { border-left-color: var(--warn); }
+.obs.vouched { border-left-color: var(--ok); }
+.obs.unknown { border-left-color: var(--bad); }
+.obs.dormant { border-left-color: var(--line); }
+/* An EXPIRED mark (a v1 record — sanction.go) takes the warn edge, not the
+   dormant grey: a dormant mark still vouches and simply has nothing running
+   behind it, while this one has stopped vouching and needs the user to act. */
+.obs.expired { border-left-color: var(--warn); }
+
+.obs-head { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+.obs-head .obs-name { font-weight: 600; word-break: break-all; }
+.obs-head .tag { margin-left: 0; }
+
+/* The kind chip: a classification, not a verdict, so it takes app.css's neutral
+   line colour rather than any of the three states. An `agent` chip in red would
+   put most of a working machine's list in alarm colours, which is the failure
+   given.css:20-25 already names for a granted capability. */
+.tag.kind { background: var(--line); color: var(--dim); }
+
+.obs-why { margin: 0.45rem 0 0; font-size: 0.85rem; }
+.obs-why.dim { color: var(--dim); }
+.obs-foot { margin: 0; color: var(--dim); font-size: 0.8rem; }
+
+.obs-acts { display: flex; gap: 0.6rem; margin-top: 0.8rem; flex-wrap: wrap; }
+.obs-acts form { margin: 0; }
+
+/* ── the evidence ──────────────────────────────────────────────────────────
+   One signal per line. The plane reports a LIST of typed reasons rather than a
+   verdict (origin.go:51-57), and running them together into a sentence is
+   exactly the compression that turns evidence back into a verdict. */
+
+.evidence {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+.evidence li { margin-top: 0.15rem; word-break: break-word; }
+
+.tier {
+  display: inline-block;
+  min-width: 5.2rem;
+  padding: 0.02rem 0.4rem;
+  margin-right: 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-align: center;
+}
+.tier.verified  { background: rgba(78,169,107,0.16); color: var(--ok); }
+.tier.known     { background: rgba(215,154,60,0.16); color: var(--warn); }
+.tier.ambiguous { background: rgba(154,161,173,0.16); color: var(--dim); }

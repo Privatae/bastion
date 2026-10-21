@@ -1,0 +1,110 @@
+{{define "approvals.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae — approvals</title>
+<link rel="stylesheet" href="/assets/app.css">
+<!-- Same CSP reasoning as page.html: htmx must not inject its indicator styles. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Approvals</h1>
+  <p class="sub">What your hosts are waiting on you for.{{if not .TrayView}} <a href="/">This machine</a>{{end}}</p>
+</header>
+
+<!-- NOT polled, unlike the front page. The list is redrawn only when the person
+     acts; a timer that redrew it would move cards under the cursor, wipe a
+     half-typed code, and put a just-arrived ask into "approve all" before
+     anyone read it. The news line inside the fragment is what polls. -->
+<main id="approvals">
+{{template "approvals" .}}
+</main>
+</body>
+</html>
+{{end}}
+
+{{define "approvals"}}
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+{{if .TrayError}}<div class="flash bad">{{.TrayError}}</div>{{end}}
+
+{{/* The ids this list was drawn with. The news poll sends them and is told
+     only whether the set has changed since; the list itself stays still. */}}
+<form id="approvals-shown" hidden>
+  {{range .DeviceApprovals}}<input type="hidden" name="shown" value="{{.ID}}">{{end}}
+  {{range .Approvals}}<input type="hidden" name="shown" value="{{.ID}}">{{end}}
+</form>
+<div id="approvals-news"
+     hx-get="/fragments/approvals-news"
+     hx-include="#approvals-shown"
+     hx-trigger="every 3s"
+     hx-swap="innerHTML"></div>
+
+{{if .DeviceApprovals}}
+<h3 class="urgent">Waiting for your approval</h3>
+{{range .DeviceApprovals}}
+<div class="approval">
+  <div class="approval-head">For {{.Server}} <span class="id">{{.Short}}</span></div>
+  {{range .Lines}}<p class="approval-line">{{.}}</p>{{end}}
+  <div class="approval-acts">
+    <form hx-post="/device/deny" hx-target="#approvals" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button class="no" type="submit">Deny</button>
+    </form>
+    <form hx-post="/device/approve" hx-target="#approvals" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      {{if .NeedsCode}}<input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="your code" required>{{end}}
+      <button class="go" type="submit">Approve</button>
+    </form>
+  </div>
+  {{if .Plan}}
+  <p class="approval-foot">Asked {{.At}}. Approving signs this ship plan with this device's key:
+    each of {{.Server}} runs only its own steps of it, once, within its time.
+    {{if .NeedsCode}}It runs root work, so it needs your code.{{end}} Your host cannot sign it.</p>
+  {{else}}
+  <p class="approval-foot">Asked {{.At}}. Approving signs it with this device's key: it
+    may run once, on {{.Server}} only, within the hour. Your host cannot sign it.</p>
+  {{end}}
+</div>
+{{end}}
+{{if gt .NoCodeApprovals 1}}
+{{/* "All" means all SHOWN: the form carries the ids drawn above and nothing
+     else, so an ask that lands after this was drawn is left waiting. A plan
+     that runs root work is never in it: it needs the code, one at a time. */}}
+<form class="approve-all" hx-post="/device/approve-shown" hx-target="#approvals" hx-swap="innerHTML">
+  {{range .DeviceApprovals}}{{if not .NeedsCode}}<input type="hidden" name="id" value="{{.ID}}">{{end}}{{end}}
+  <button class="go" type="submit">Approve all {{.NoCodeApprovals}} shown</button>
+</form>
+{{end}}
+{{end}}
+
+{{if .Approvals}}
+<h3 class="urgent">Waiting for your code on this machine</h3>
+{{template "stepup-approvals" .}}
+{{end}}
+
+{{if and (not .DeviceApprovals) (not .Approvals)}}
+<p class="approval-line">Nothing is waiting for your approval.</p>
+{{if .TrayView}}
+<p class="approval-foot">When your Host asks for something on this machine, it shows here and
+  this window asks for a code from the authenticator app enrolled when this machine's bastion was set up.</p>
+{{else if not .IsDevice}}
+<p class="approval-foot">This machine is not your approval device, so asks from your
+  hosts are not answered here. Run <code>privatae-bastion device-init</code> on the machine
+  you want to approve from.</p>
+{{end}}
+{{end}}
+<p class="sub checked-at">Checked {{.CheckedAt}}.</p>
+{{end}}
+
+{{define "approvals-news"}}
+{{if or .Arrived .Left}}
+<div class="flash warn">
+  {{if .Arrived}}{{.Arrived}} new request{{if gt .Arrived 1}}s{{end}} arrived{{end}}{{if and .Arrived .Left}}, and {{end}}{{if .Left}}{{.Left}} {{if gt .Left 1}}were{{else}}was{{end}} answered elsewhere or lapsed{{end}}.
+  <button type="button" hx-get="/fragments/approvals" hx-target="#approvals" hx-swap="innerHTML">Show them</button>
+</div>
+{{end}}
+{{end}}

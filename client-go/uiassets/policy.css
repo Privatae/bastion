@@ -1,0 +1,119 @@
+/* policy.css — the "what would be stopped" view (uipolicy.go).
+
+   ADDITIONS ONLY, the rule given.css:1-10 states and agents.css:3-5 repeats:
+   app.css carries the page, and every colour here is one of its variables rather
+   than a literal, so the pages cannot drift into different looks.
+
+   It repeats the observation-card rules that agents.css also has rather than
+   linking that file. Each page in this UI stands on app.css plus its own sheet
+   (given.css, setup.css, agents.css), and borrowing another unit's sheet would
+   mean this page changes shape whenever that unit restyles theirs. Forty lines
+   of duplication against a page that silently reflows: the duplication is the
+   cheaper of the two.
+
+   No inline style= anywhere. This page's CSP is `default-src 'self'`
+   (uipolicy.go renderPolicy), which covers style-src, so an inline style is
+   dropped and the policy wins against the markup. app.css:169-173 records the
+   one time that happened. */
+
+a { color: var(--ink); }
+a:hover { color: var(--warn); }
+
+.backlink { max-width: 46rem; margin: 0 auto 1.25rem; font-size: 0.85rem; }
+h3 { max-width: 46rem; margin: 1.6rem auto 0.5rem; font-size: 0.95rem; }
+h3 + .sub { margin-bottom: 0.8rem; }
+
+/* ── the rule itself ───────────────────────────────────────────────────────
+   Shown on the page because a person asked to review false positives cannot do
+   it against a rule they have to read the source to find. */
+
+.rule {
+  max-width: 46rem;
+  margin: 0 auto 1.25rem;
+  padding: 0.85rem 1.1rem 0.85rem 2.2rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 0.87rem;
+}
+.rule li { margin-top: 0.3rem; }
+.rule li:first-child { margin-top: 0; }
+
+.term {
+  font-weight: 600;
+  color: var(--ink);
+  margin-right: 0.3rem;
+}
+
+/* ── one observation ───────────────────────────────────────────────────────
+   The left edge carries the verdict so a column of twenty reads down without
+   reading a word: amber is something this rule would stop, green is something
+   it leaves alone, red is a verdict it could not reach.
+
+   Amber and not red for a would-stop, deliberately. Nothing has been stopped —
+   the page is a rehearsal — and a rehearsal that renders in alarm colours is a
+   page people stop opening, which is the one failure this measurement cannot
+   survive (agents.css:17-26 sets the same order for the same reason). Red is
+   kept for the state that genuinely needs a person: a verdict this machine
+   could not reach. */
+
+.obs {
+  max-width: 46rem;
+  margin: 0 auto 0.6rem;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.85rem 1.1rem;
+}
+.obs.bare    { border-left-color: var(--warn); }
+.obs.vouched { border-left-color: var(--ok); }
+.obs.unknown { border-left-color: var(--bad); }
+.obs.dormant { border-left-color: var(--line); }
+.obs.past    { border-style: dashed; border-left-style: solid; }
+
+.obs-head { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+.obs-head .obs-name { font-weight: 600; word-break: break-all; }
+.obs-why { margin: 0.45rem 0 0; font-size: 0.85rem; color: var(--dim); }
+
+/* The kind chip is a CLASSIFICATION and takes no colour: being an agent is not
+   a fault, and most of what is on this list on a working machine is the user's
+   own editor. The chip beside it carries the only verdict this page makes. */
+.tag.kind { background: var(--line); color: var(--dim); }
+
+/* ── the terms behind one verdict ──────────────────────────────────────────
+   Every term, not only the one that decided it, one per line. The plane this
+   reads from reports a LIST of typed reasons rather than a verdict
+   (origin.go:51-57); running them together into a sentence is exactly the
+   compression that turns evidence back into a verdict. */
+
+.terms {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.78rem;
+  color: var(--dim);
+}
+.terms li {
+  margin-top: 0.25rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--line);
+  word-break: break-word;
+}
+.terms li.points-stop    { border-left-color: var(--warn); }
+.terms li.points-leave   { border-left-color: var(--ok); }
+.terms li.points-unknown { border-left-color: var(--bad); }
+
+.tier {
+  display: inline-block;
+  min-width: 5.2rem;
+  padding: 0.02rem 0.4rem;
+  margin-right: 0.4rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-align: center;
+}
+.tier.verified  { background: rgba(78,169,107,0.16); color: var(--ok); }
+.tier.known     { background: rgba(215,154,60,0.16); color: var(--warn); }
+.tier.ambiguous { background: rgba(154,161,173,0.16); color: var(--dim); }

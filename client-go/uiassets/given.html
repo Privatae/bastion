@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — what this machine has given away</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/given.css">
+<!-- htmx's own indicator stylesheet is injected with insertAdjacentHTML and is
+     blocked by this page's CSP (default-src 'self', no style-src escape, no
+     nonce). Turn the injection off rather than widen the policy — see
+     page.html for the full reasoning. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>What this machine has given away</h1>
+  <p class="sub">Every host paired here, what it may do to this machine, and which
+    of your folders it can reach.</p>
+</header>
+
+<p class="backlink"><a href="/">&larr; This machine</a></p>
+
+<!-- Ten seconds, not three. The status page polls at 3s because liveness
+     changes at that speed; nothing on this page moves unless a host syncs a
+     grant or the anchor signs one, and every poll re-verifies an ed25519
+     signature per pairing and per folder. -->
+<main id="given"
+      hx-get="/fragments/given"
+      hx-trigger="every 10s"
+      hx-swap="innerHTML">
+{{template "given" .}}
+</main>
+
+<footer>
+  privatae-bastion {{.Version}} &middot; <a href="/">this machine</a> &middot; served
+  from this machine only and not reachable from anywhere else.
+</footer>
+</body>
+</html>
+
+{{define "given"}}
+{{/* THE OUTCOME OF THE LAST SWITCH. It was composed in givenSwitch and never
+     rendered — the tag flipped because it draws from state, so nothing looked
+     broken and the sentence that says what the machine will now DO never
+     reached the person. */}}
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+{{/* AND WHEN THE SWITCHES ARE NOT IN EFFECT. Without this the page renders
+     every capability as granted while a corrupt list quietly blocks nothing —
+     showing the person the opposite of the truth. */}}
+{{if .DenyNote}}<div class="flash bad">{{.DenyNote}}</div>{{end}}
+<div class="state">
+  <h2>This is your machine's own control.</h2>
+  <p>Every capability below can be <strong>switched off here</strong>, whatever your
+    Host was granted. Switching off never changes the grant — this machine simply
+    refuses, and tells the host why. Turning one back on clears that refusal and
+    nothing more, so nothing on this page can give a host reach it was not already
+    granted.</p>
+  <p>A folder stops being shared when you remove it on your Host, which drops the
+    grant here. A host stops being able to do anything at all when you run
+    <code>privatae-bastion unpair &lt;host&gt;</code> on this machine.</p>
+</div>
+
+{{/* A read that FAILED is not a machine with nothing on it. Rendering the
+     reassuring sentence for an unreadable pairing store is the misleading
+     direction, and this page exists to stop exactly that. */}}
+{{if .ReadError}}
+<div class="host unreadable">
+  <div class="host-name">This machine's pairing records cannot be read.</div>
+  <p class="sub">{{.ReadError}}</p>
+  <p class="sub">Until that is fixed, this page cannot tell you what has been given
+    away — and you should not read it as "nothing".</p>
+</div>
+{{end}}
+
+{{if .NoPairings}}
+<div class="host">
+  <div class="host-name">Nothing. No host is paired with this machine.</div>
+  <p class="sub">Nothing can read this screen, read your files or open a shell
+    here until you pair one.</p>
+</div>
+{{end}}
+
+{{range $h := .Hosts}}
+<div class="host">
+  <div class="host-name">
+    {{.Host}}
+    {{if .IsAnchor}}<span class="tag warn">anchor</span>{{end}}
+    {{if not .Served}}<span class="tag bad">{{.State}}</span>{{end}}
+  </div>
+  {{if not .Served}}
+  <p class="sub">This pairing is {{.State}}, so nothing is being served to it right
+    now — no tunnel, no lanes, no directories. What follows is what it would hold
+    the moment it became active again.</p>
+  {{end}}
+  <div class="note">{{.Basis}}</div>
+</div>
+
+<h3>What {{.Host}} may do to this machine</h3>
+<p class="sub legend">
+  <span class="tag warn">granted</span>is something this machine gives away.
+  <span class="tag ok">refused here</span>is something it will not do.
+  {{if .HeldCount}}{{.HeldCount}} of {{len .Families}} are granted.{{else}}None of them are granted.{{end}}
+</p>
+
+{{range .Families}}
+<div class="cap {{if .Held}}held{{else}}refused{{end}}">
+  <div class="cap-head">
+    <span class="cap-line">{{.Line}}</span>
+    {{if .SwitchedOff}}<span class="tag ok">switched off by you</span>
+    {{else if .Held}}<span class="tag warn">granted</span>
+    {{else}}<span class="tag ok">refused here</span>{{end}}
+    {{/* THE SWITCH. Only ever removes reach: "off" writes a local denial and
+         "on" clears it, leaving the host's signed grant exactly as it was. */}}
+    <form class="cap-switch" hx-post="/given/switch" hx-target="#given" hx-swap="innerHTML">
+      <input type="hidden" name="host" value="{{$h.Host}}">
+      <input type="hidden" name="family" value="{{.Name}}">
+      {{if .SwitchedOff}}
+        <input type="hidden" name="off" value="0">
+        <button class="go" type="submit">Turn back on</button>
+      {{else}}
+        <input type="hidden" name="off" value="1">
+        <button class="no" type="submit">Switch off here</button>
+      {{end}}
+    </form>
+  </div>
+  {{if .SwitchedOff}}<p class="cap-detail"><strong>You switched this off on this
+    machine.</strong> {{$h.Host}} still holds the grant; this machine refuses and
+    tells it why.</p>{{end}}
+  <p class="cap-detail">{{.Detail}}</p>
+  {{if .Second}}<p class="cap-second"><strong>Beyond this grant:</strong> {{.Second}}</p>{{end}}
+  <p class="cap-ops">{{.Name}}
+    {{range .Ops}} &middot; <code>{{.}}</code>{{end}}</p>
+</div>
+{{end}}
+
+<h3>Folders of yours that {{.Host}} can reach from here</h3>
+{{if .FolderNote}}<div class="note">{{.FolderNote}}</div>{{end}}
+
+{{range .Folders}}
+<div class="host">
+  <div class="host-name">
+    {{if .Readable}}{{.Root}}{{else}}store {{.StoreID}}{{end}}
+    {{if .InForce}}<span class="tag warn">shared</span>
+    {{else}}<span class="tag ok">not in force</span>{{end}}
+  </div>
+  {{if not .InForce}}
+  <p class="sub">This machine will not serve this folder: {{.Why}}. The record is
+    still on disk, which is why it is listed rather than hidden.</p>
+  {{end}}
+  {{if not .Readable}}
+  <p class="sub">The signed part of this record cannot be read on this machine, so
+    there is nothing honest to say about what it covers. It grants nothing.</p>
+  {{end}}
+  {{if .Readable}}
+  <dl class="host-facts">
+    <dt>Store</dt><dd>{{.StoreID}}</dd>
+    <dt>Store kind</dt><dd>{{.Class}}</dd>
+    <dt>Allowed</dt>
+    <dd>{{if .MaskWords}}
+        {{range .MaskWords}}<span class="mask">{{.}}</span>{{end}}
+      {{else}}nothing — the grant names no operation, so every read of this folder
+        is refused{{end}}</dd>
+    <dt>Excluded</dt>
+    <dd>{{if .Excludes}}the grant excludes
+        {{range $i, $e := .Excludes}}{{if $i}}, {{end}}<code>{{$e}}</code>{{end}}
+      {{else}}the grant names no exclusions at all{{end}}</dd>
+    <dt>Expires</dt>
+    <dd>{{if .Expires}}{{.Expires}}
+      {{else}}the grant carries no expiry, so it stands until it is removed on your
+        Host{{end}}</dd>
+    {{if .Sweep}}<dt>Swept</dt><dd>{{.Sweep}}</dd>{{end}}
+    {{if .TTLDays}}<dt>Shown to you as</dt><dd>{{.TTLDays}} days</dd>{{end}}
+  </dl>
+  {{if .Sensitive}}
+  <div class="note">The grant marks this folder <strong>sensitive</strong>.</div>
+  {{end}}
+  {{if .Sealed}}
+  <div class="note">The catalogue of this folder is sealed to your registered backup
+    key. That key travels outside the signed part of the record, so it is not one of
+    the things you approved when you approved the folder.</div>
+  {{end}}
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+<p class="sub checked-at">Checked {{.CheckedAt}}. This machine is in
+  <strong>{{.Mode}}</strong> mode{{if .Anchored}} and is anchored{{else}} and is not
+  anchored{{end}}.</p>
+{{end}}

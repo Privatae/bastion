@@ -1,0 +1,126 @@
+/* The disk map's own stylesheet, loaded beside app.css.
+
+   NOTHING IN HERE KNOWS A FILE-TYPE COLOUR. The map's colours live in one
+   place — dmKinds in uidiskmap.go — and reach the page as SVG fill attributes,
+   including the little squares in the legend. A .dm-kind-video rule here would
+   be a second copy of that table which nothing forces to agree with the first,
+   and the day they disagreed the legend would be confidently mislabelling the
+   picture beside it. */
+
+/* app.css caps main/header/footer at 46rem, which is right for a page of
+   sentences and wrong for a picture: at 46rem a 1000-unit treemap scales to
+   about 736px and the smallest blocks stop being clickable. Widened only on
+   this page, by a class on <body>, so nothing else moves. */
+.dm-page main,
+.dm-page header,
+.dm-page footer,
+.dm-page .backlink { max-width: 74rem; margin-left: auto; margin-right: auto; }
+
+.backlink { margin: 0 auto 1.25rem; font-size: 0.85rem; }
+.backlink a { color: var(--dim); }
+
+/* ── the map ─────────────────────────────────────────────────────────────── */
+
+/* The viewBox is 1000x620; this is what turns it into whatever the page is
+   wide. height:auto keeps the aspect, which the layout depends on — a squashed
+   viewBox would make every aspect-ratio decision dmSquarify made a lie. */
+.dm-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+/* A folder block is a link, so it gets the pointer the rest of the map does
+   not. This is the only hint on the page that some blocks go somewhere. */
+.dm-svg a { cursor: pointer; }
+.dm-svg a:focus rect { outline: 2px solid var(--ink); }
+
+.dm-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin: 0 0 0.6rem;
+}
+.dm-crumbs { font-size: 0.9rem; word-break: break-all; }
+.dm-crumbs a { color: var(--dim); }
+.dm-crumbs .here { font-weight: 600; }
+.dm-crumbs .sep { color: var(--line); }
+.dm-total { color: var(--dim); font-size: 0.85rem; white-space: nowrap; }
+
+.dm-drawn { margin-top: 0.5rem; }
+.dm-at { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         font-size: 0.78rem; word-break: break-all; }
+
+.dm-acts { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
+.dm-acts form { margin: 0; }
+
+/* ── the legend ──────────────────────────────────────────────────────────── */
+
+.dm-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 2px;
+  vertical-align: -0.05rem;
+  margin-right: 0.45rem;
+  flex: none;
+}
+
+.dm-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.25rem 1.2rem;
+  font-size: 0.85rem;
+}
+.dm-legend li { display: flex; align-items: center; gap: 0.5rem; }
+.dm-legend-label { flex: 1; }
+.dm-legend-size { font-weight: 600; }
+.dm-legend-items { color: var(--dim); font-size: 0.78rem; white-space: nowrap; }
+
+/* ── the biggest things ──────────────────────────────────────────────────── */
+
+.dm-rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.dm-rows th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--dim);
+  font-size: 0.78rem;
+  padding: 0.3rem 0.6rem 0.3rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.dm-rows td {
+  padding: 0.35rem 0.6rem 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.dm-rows .dm-name { word-break: break-all; }
+.dm-rows .dm-name a { color: var(--ink); }
+.dm-rows .dm-size, .dm-rows .dm-share { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dm-rows .dm-kind, .dm-rows .dm-when { color: var(--dim); white-space: nowrap; }
+
+/* ── about ───────────────────────────────────────────────────────────────── */
+
+.dm-about { margin-top: 0.4rem; }
+/* The roots are links. Without this they take the browser's default blue,
+   which on this palette is the one bright thing on a dark page and reads as an
+   error rather than as navigation. */
+.dm-about a { color: var(--ink); }
+.dm-about .host-facts dd { word-break: break-all; }
+.dm-paths {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  word-break: break-all;
+}

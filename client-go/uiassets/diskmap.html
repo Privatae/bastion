@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — {{if .Leaf}}{{.Leaf}}{{else}}this machine's disk{{end}}</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/diskmap.css">
+<!-- htmx's own indicator stylesheet is injected with insertAdjacentHTML and is
+     blocked by this page's CSP (default-src 'self', no style-src escape, no
+     nonce). Turn the injection off rather than widen the policy — see
+     page.html for the full reasoning. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body class="dm-page">
+<header>
+  <h1>This machine's disk</h1>
+  <p class="sub">Every rectangle is a file or a folder, drawn at the size of the
+    space it takes up. Hover one to see what it is. Click a folder to go in.</p>
+  <p class="sub">This reads <strong>names, sizes and the date each thing last
+    changed</strong>. It never opens a file and never reads what is inside one.</p>
+</header>
+
+<p class="backlink"><a href="/">&larr; This machine</a></p>
+
+<!-- NO POLL ON THIS <main>. The status page re-fetches itself every three
+     seconds (page.html) and the given page every ten, and this one must not:
+     re-running a disk walk off a timer is the single thing this feature is
+     forbidden to do. The fragment below carries its own hx-trigger and ONLY
+     while a scan is running, so an idle map makes no requests at all. -->
+<main>
+{{template "diskmap" .}}
+</main>
+
+<footer>
+  privatae-bastion {{.Version}} &middot; <a href="/">this machine</a> &middot;
+  <a href="/given">what this machine has given away</a> &middot; served from this
+  machine only and not reachable from anywhere else.
+</footer>
+</body>
+</html>
+
+{{define "diskmap"}}
+{{/* hx-swap="outerHTML" on this element and the poll attributes only while a
+     scan runs: when the scan finishes, the fragment that replaces this one
+     carries no hx-get, so the polling stops by itself rather than being
+     switched off by script. */}}
+<div id="dm-live"
+  {{if .Scanning}}hx-get="/fragments/diskmap{{.Query}}" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+
+{{if .Scanning}}
+<div class="state warn">
+  <h2>MAPPING {{if eq .Scope "machine"}}THIS WHOLE MACHINE{{else}}YOUR FILES{{end}}</h2>
+  <p>{{.Entries}} things counted, {{.SeenSize}} so far &middot; running for {{.Running}}.</p>
+  {{if .SeenAt}}<p class="dm-at">{{.SeenAt}}</p>{{end}}
+  <p>It keeps going if you close this page. Come back and it will be here.</p>
+  <div class="dm-acts">
+    <form hx-post="/diskmap/stop" hx-target="#dm-live" hx-swap="outerHTML">
+      <button class="no" type="submit">Stop</button>
+    </form>
+  </div>
+</div>
+{{end}}
+
+{{if not .HaveMap}}
+  {{if not .Scanning}}
+  <div class="state">
+    <h2>NO MAP YET</h2>
+    <p>Nothing has been counted yet. Mapping walks the folders it can reach and
+      adds up what is in them — on a large disk that takes a while, and it runs
+      in the background.</p>
+    <div class="dm-acts">
+      <form hx-post="/diskmap/scan" hx-target="#dm-live" hx-swap="outerHTML">
+        <input type="hidden" name="scope" value="home">
+        <button class="go" type="submit">Map my files</button>
+      </form>
+    </div>
+    {{range .RootNotes}}<p class="sub">{{.}}</p>{{end}}
+
+    {{/* THE WHOLE MACHINE IS A SEPARATE REQUEST: a full drive map is something
+         a person asks for. It reads into every account on the
+         box, so it is asked for on its own, below the default, and it NAMES
+         what it will walk before it is pressed. */}}
+    <div class="note">
+      <p>Mapping the whole machine is a bigger thing to ask for: it walks every
+        drive, including folders that belong to other people who use this
+        computer. It covers:</p>
+      <ul class="dm-paths">{{range .MachineRoots}}<li>{{.}}</li>{{end}}</ul>
+      <form hx-post="/diskmap/scan" hx-target="#dm-live" hx-swap="outerHTML">
+        <input type="hidden" name="scope" value="machine">
+        <button class="no" type="submit">Map this whole machine</button>
+      </form>
+    </div>
+  </div>
+  {{end}}
+{{else}}
+
+{{if .NotFound}}
+<div class="flash warn">That folder is not in this map. It may have been made
+  after the map was taken — map the machine again to pick it up.</div>
+{{end}}
+
+{{/* THE ACCOUNTING BLOCK, above the picture and not below it. Everything here
+     is a way the map is INCOMPLETE, and a caveat under a pretty picture is a
+     caveat nobody reads. */}}
+{{if .Capped}}
+<div class="flash bad">This map stopped after counting as much as it is willing
+  to hold in memory, at <code>{{.CappedAt}}</code>. Everything drawn is real and
+  everything under that point is missing.</div>
+{{end}}
+{{if .Cancelled}}
+<div class="flash warn">This map was stopped before it finished, so it is a
+  partial count. What is drawn is real; there is more on the disk.</div>
+{{end}}
+{{if .Stale}}
+<div class="flash warn">This map was taken {{.TakenAgo}} and things will have
+  changed since. Map again for a current picture.</div>
+{{end}}
+
+<div class="dm-head">
+  <nav class="dm-crumbs" aria-label="Where you are">
+    {{range .Crumbs}}{{if .Here}}<span class="here">{{.Name}}</span>{{else}}<a
+      href="/diskmap?p={{.Path}}">{{.Name}}</a> <span class="sep">/</span> {{end}}{{end}}
+  </nav>
+  <div class="dm-total">{{.Total}} &middot; {{.Items}} things directly in here</div>
+</div>
+
+{{.SVG}}
+
+<p class="sub dm-drawn">
+  {{.Cells}} blocks drawn.
+  {{if .Tiny}}{{.Tiny}} more are too small to draw at this size ({{.TinySize}} in
+  total) — they are still counted in the block they sit inside. Click a folder
+  to see them.{{end}}
+  {{if .Overflow}}The picture stopped at its own limit of blocks; go into a
+  folder to see the rest of it.{{end}}
+</p>
+
+{{if .Legend}}
+<h3>What is in here</h3>
+<ul class="dm-legend">
+  {{range .Legend}}
+  <li>
+    {{/* The swatch is a one-rect SVG rather than a CSS class per type, so the
+         colours have ONE definition (dmKinds, in Go) instead of a copy in a
+         stylesheet that would quietly stop matching the map. An SVG fill is a
+         presentation attribute, so it needs no style-src hole either. */}}
+    <svg class="dm-swatch" viewBox="0 0 10 10" aria-hidden="true"><rect width="10" height="10" fill="{{.Fill}}"/></svg>
+    <span class="dm-legend-label">{{.Label}}</span>
+    <span class="dm-legend-size">{{.Size}}</span>
+    <span class="dm-legend-items">{{.Items}} files</span>
+  </li>
+  {{end}}
+</ul>
+{{end}}
+
+{{if .Biggest}}
+<h3>The biggest things here</h3>
+<table class="dm-rows">
+  <thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Share</th><th scope="col">Kind</th><th scope="col">Changed</th></tr></thead>
+  <tbody>
+  {{range .Biggest}}
+  <tr>
+    <td class="dm-name">
+      <svg class="dm-swatch" viewBox="0 0 10 10" aria-hidden="true"><rect width="10" height="10" fill="{{.Fill}}"/></svg>
+      {{if .Dir}}<a href="/diskmap?p={{.Path}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}
+    </td>
+    <td class="dm-size">{{.Size}}</td>
+    <td class="dm-share">{{.Share}}%</td>
+    <td class="dm-kind">{{.Kind}}</td>
+    <td class="dm-when">{{.Modified}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .MoreRow}}<p class="sub">and {{.MoreRow}} more, all smaller than these.</p>{{end}}
+{{end}}
+
+<h3>About this map</h3>
+<div class="dm-about">
+  <dl class="host-facts">
+    <dt>This map is</dt>
+    <dd>{{if eq .Scope "machine"}}the whole machine — every drive, including
+      folders belonging to other people who use this computer{{else}}your files
+      only{{end}}</dd>
+    <dt>Taken</dt><dd>{{.TakenAgo}}, and it took {{.TookFor}}</dd>
+    <dt>Covers</dt>
+    <dd>{{range .Roots}}<a href="/diskmap?p={{.Path}}">{{.Path}}</a> — {{.Size}}<br>{{end}}</dd>
+  </dl>
+  {{range .RootNotes}}<p class="sub">{{.}}</p>{{end}}
+
+  {{/* WHAT IS NOT IN THE MAP. This is the honest half of the page and it is
+       written out rather than summarised: a user comparing this total against
+       what their operating system says the disk holds is entitled to every
+       reason the two differ. */}}
+  {{if .Denied}}
+  <div class="note">
+    <strong>{{.Denied}} places could not be read</strong>, so whatever is inside
+    them is not counted anywhere in this map. That is the operating system
+    refusing this program, which is how it should be.
+    {{if .DeniedPaths}}
+    <ul class="dm-paths">{{range .DeniedPaths}}<li>{{.}}</li>{{end}}</ul>
+    {{end}}
+  </div>
+  {{end}}
+  {{if .Crossings}}
+  <div class="note">
+    <strong>{{len .Crossings}} other disks or mounts start inside these
+    folders</strong> and were not entered — they are separate storage and are
+    not part of this map.
+    <ul class="dm-paths">{{range .Crossings}}<li>{{.}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+  {{if .Skipped}}
+  <div class="note">
+    These are not real storage — they are the operating system pretending to be
+    folders, and one file in them claims to be larger than every disk you own:
+    <ul class="dm-paths">{{range .Skipped}}<li>{{.}}</li>{{end}}</ul>
+  </div>
+  {{end}}
+
+  <div class="dm-acts">
+    <form hx-post="/diskmap/scan" hx-target="#dm-live" hx-swap="outerHTML">
+      {{/* Where the user is standing, so a re-scan does not silently drop them
+           at the root of the disk. If that folder is gone by the time the new
+           map lands, the page says so — it never redirects quietly. */}}
+      <input type="hidden" name="p" value="{{.Path}}">
+      {{/* And WHAT they were looking at. A re-scan repeats the same scope:
+           pressing "again" must never quietly widen what gets read. */}}
+      <input type="hidden" name="scope" value="{{.Scope}}">
+      <button class="go" type="submit">Map {{.ScopeWords}} again</button>
+    </form>
+  </div>
+
+  {{if ne .Scope "machine"}}
+  <div class="note">
+    <p>This map is your files only. Mapping the whole machine walks every drive,
+      including folders that belong to other people who use this computer, and
+      it covers:</p>
+    <ul class="dm-paths">{{range .MachineRoots}}<li>{{.}}</li>{{end}}</ul>
+    <form hx-post="/diskmap/scan" hx-target="#dm-live" hx-swap="outerHTML">
+      <input type="hidden" name="scope" value="machine">
+      <button class="no" type="submit">Map this whole machine</button>
+    </form>
+  </div>
+  {{end}}
+</div>
+
+{{end}}
+
+<p class="sub checked-at">Checked {{.CheckedAt}}.</p>
+</div>
+{{end}}

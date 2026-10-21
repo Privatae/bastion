@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Your context</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/diskmap.css">
+<link rel="stylesheet" href="/assets/context.css">
+<!-- Same CSP note as every other page here: htmx injects its indicator styles
+     with insertAdjacentHTML, which `default-src 'self'` blocks. Turn the
+     injection off rather than widen the policy. -->
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body class="dm-page context-page">
+<header>
+  <h1>Your context</h1>
+  <p class="sub">{{.Home}}</p>
+  <p class="sub">Your files are not your context. This is where you choose which
+    of them <strong>become</strong> context on your network — everything else stays
+    exactly where it is and is never read.</p>
+  <p class="sub">This is running <strong>as you</strong>, so what it can show is
+    exactly what you can already open. It reads <strong>names, sizes and the date
+    each thing last changed</strong> — it never opens a file and never reads what
+    is inside one.</p>
+</header>
+
+<!-- NO POLL ON THIS <main>, for the reason diskmap.html gives: re-running a
+     walk off a timer is the one thing this feature must never do. The fragment
+     below carries its own trigger, and only while a walk is running. -->
+<main>
+{{template "context" .}}
+</main>
+
+<footer>
+  privatae-bastion {{.Version}} &middot; your context, from your files &middot; served from this
+  machine to you, and not reachable from anywhere else.
+</footer>
+</body>
+</html>
+
+{{define "context"}}
+<div id="context-live"
+  {{if .Map.Scanning}}hx-get="/fragments/context{{.Map.Query}}" hx-trigger="every 2s" hx-swap="outerHTML"{{end}}>
+
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+
+{{/* WHAT IS ALREADY CONTEXT, FIRST. A page called "Your context" that opens
+     with a file browser answers every question except the one in its title. */}}
+<h3>What is context now</h3>
+{{if .Held}}
+<table class="ctx-held">
+  <thead><tr><th scope="col">Folder</th><th scope="col">Host</th><th scope="col">It may</th><th scope="col">Re-reads</th><th scope="col">Until</th></tr></thead>
+  <tbody>
+  {{range .Held}}
+  <tr>
+    <td>{{if .Readable}}{{.Root}}{{else}}(store {{.StoreID}} — this machine cannot read its record){{end}}</td>
+    <td>{{.Host}}</td>
+    <td>{{range .What}}{{.}} {{end}}</td>
+    <td>{{.Sweep}}</td>
+    <td>{{.Expires}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{if .HeldNote}}<p class="sub">{{.HeldNote}}</p>{{end}}
+
+{{if .Map.Scanning}}
+<div class="state warn">
+  <h2>COUNTING UP YOUR FILES</h2>
+  <p>{{.Map.Entries}} things counted, {{.Map.SeenSize}} so far &middot; running for {{.Map.Running}}.</p>
+  {{if .Map.SeenAt}}<p class="dm-at">{{.Map.SeenAt}}</p>{{end}}
+  <p>It keeps going if you close this page. Come back and it will be here.</p>
+  <div class="dm-acts">
+    <form hx-post="/context/stop" hx-target="#context-live" hx-swap="outerHTML">
+      <button class="no" type="submit">Stop</button>
+    </form>
+  </div>
+</div>
+{{end}}
+
+{{if not .Map.HaveMap}}
+  {{if not .Map.Scanning}}
+  <div class="state">
+    <h2>NOTHING COUNTED YET</h2>
+    <p>Counting walks your folders and adds up what is in them. On a big home
+      directory that takes a while, and it runs in the background.</p>
+    <div class="dm-acts">
+      <form hx-post="/context/scan" hx-target="#context-live" hx-swap="outerHTML">
+        <button class="go" type="submit">Count up my files</button>
+      </form>
+    </div>
+    {{range .Map.RootNotes}}<p class="sub">{{.}}</p>{{end}}
+  </div>
+  {{end}}
+{{else}}
+
+{{if .Map.NotFound}}
+<div class="flash warn">That folder is not in what was counted. It may be new —
+  count again to pick it up.</div>
+{{end}}
+
+{{/* THE ACCOUNTING FIRST, above the picture. Everything here is a way the map
+     is INCOMPLETE, and a caveat under a pretty picture is a caveat nobody
+     reads. Denied matters more on this surface than on the admin one: a folder
+     you cannot read is the normal case for a person, not an anomaly. */}}
+{{if .Map.Capped}}
+<div class="note">This stopped after {{.Map.CappedAt}} — there was more than it
+  counts in one pass, so what is below that point was never looked at.</div>
+{{end}}
+{{if .Map.Cancelled}}
+<div class="note">You stopped this one, so it is partial. What it had already
+  counted is kept.</div>
+{{end}}
+{{if .Map.Denied}}
+<div class="note">
+  {{.Map.Denied}} things could not be read by you and are not counted here.
+  That is the operating system saying no, and it is normal — some of your own
+  folders are managed by applications.
+  {{if .Map.DeniedPaths}}<ul class="dm-paths">{{range .Map.DeniedPaths}}<li>{{.}}</li>{{end}}</ul>{{end}}
+</div>
+{{end}}
+
+<nav class="dm-crumbs">
+  {{range .Map.Crumbs}}<a href="/?p={{.Path}}">{{.Name}}</a> / {{end}}
+</nav>
+<div class="dm-total">{{.Map.Total}} &middot; {{.Map.Items}} things directly in here</div>
+
+<div class="dm-map">{{.Map.SVG}}</div>
+
+{{if .Map.Path}}
+{{/* THE ASK. One folder, named, with what happens next said before the button
+     rather than after it. "Share" would be a lie: nothing is shared by pressing
+     this — a person on the host has to approve it with a code first. */}}
+<div class="context-ask">
+  <h3>Make this folder part of your context</h3>
+  <p>A bastion agent reads one folder <strong>on this machine</strong>, indexes it
+    here, and answers questions about it with personal details removed. Your
+    files do not move and nothing is copied off this computer.</p>
+  <p class="sub">Pressing this does not share anything. It sends a request. Somebody
+    has to approve it on your host, with a code, before a single file is read.</p>
+  <form hx-post="/context/ask" hx-target="#context-live" hx-swap="outerHTML">
+    <input type="hidden" name="path" value="{{.Map.Path}}">
+    <input type="hidden" name="p" value="{{.Map.Path}}">
+    <label>Call it
+      <input type="text" name="name" value="{{.Map.Leaf}}" maxlength="60">
+    </label>
+    <button class="go" type="submit">Ask to add {{.Map.Leaf}} to your context</button>
+  </form>
+</div>
+{{end}}
+
+{{if .Map.Biggest}}
+<h3>The biggest things here</h3>
+<table class="dm-rows">
+  <thead><tr><th scope="col">Name</th><th scope="col">Size</th><th scope="col">Share</th><th scope="col">Kind</th><th scope="col">Changed</th></tr></thead>
+  <tbody>
+  {{range .Map.Biggest}}
+  <tr>
+    <td class="dm-name">
+      <svg class="dm-swatch" viewBox="0 0 10 10" aria-hidden="true"><rect width="10" height="10" fill="{{.Fill}}"/></svg>
+      {{if .Dir}}<a href="/?p={{.Path}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}
+    </td>
+    <td class="dm-size">{{.Size}}</td>
+    <td class="dm-share">{{.Share}}%</td>
+    <td class="dm-kind">{{.Kind}}</td>
+    <td class="dm-when">{{.Modified}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{if .Map.MoreRow}}<p class="sub">and {{.Map.MoreRow}} more, all smaller than these.</p>{{end}}
+{{end}}
+
+<div class="dm-acts">
+  <form hx-post="/context/scan" hx-target="#context-live" hx-swap="outerHTML">
+    <input type="hidden" name="p" value="{{.Map.Path}}">
+    <button class="go" type="submit">Count my files again</button>
+  </form>
+</div>
+
+{{end}}
+
+{{if .Asks}}
+<h3>What you have asked to add</h3>
+<p class="sub">These are requests you made. They are kept here so closing this window does not lose them; whether each was approved is the host's answer, not this machine's.</p>
+<ul class="context-asks">
+  {{range .Asks}}
+  <li class="{{if .Sent}}ok{{else}}bad{{end}}">
+    <strong>{{.Path}}</strong>
+    {{if .Sent}}— asked {{.Host}} at {{.At}}. Waiting for somebody there to approve it.
+    {{else}}— not sent at {{.At}}. {{.Note}}{{end}}
+  </li>
+  {{end}}
+</ul>
+{{end}}
+
+<p class="sub checked-at">Checked {{.Map.CheckedAt}}.</p>
+</div>
+{{end}}

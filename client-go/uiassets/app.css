@@ -1,0 +1,188 @@
+/* The local UI's whole stylesheet. Plain, literal, no framework — the same
+   voice as the product's copy. Served from the binary, never from a CDN. */
+
+:root {
+  --bg: #16181d;
+  --panel: #1e2128;
+  --line: #2c313b;
+  --ink: #e6e8ec;
+  --dim: #9aa1ad;
+  --ok: #4ea96b;
+  --warn: #d79a3c;
+  --bad: #d1584f;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1.5rem 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+main, header, footer { max-width: 46rem; margin: 0 auto; }
+
+header { margin-bottom: 1.5rem; }
+h1 { margin: 0; font-size: 1.35rem; font-weight: 600; letter-spacing: -0.01em; }
+.sub { margin: 0.15rem 0 0; color: var(--dim); font-size: 0.85rem; }
+
+.state {
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--panel);
+  margin-bottom: 1.25rem;
+}
+.state.ok   { border-left-color: var(--ok); }
+.state.warn { border-left-color: var(--warn); }
+.state.bad  { border-left-color: var(--bad); }
+.state h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+.state p  { margin: 0.45rem 0 0; color: var(--dim); font-size: 0.87rem; }
+
+/* ── waiting for you ───────────────────────────────────────────────────────
+   The only thing on this page that is time-critical, so it is the only thing
+   allowed to shout. */
+
+h3.urgent { color: var(--warn); font-size: 0.85rem; margin-top: 0; }
+
+.flash {
+  padding: 0.7rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+  font-size: 0.88rem;
+  border: 1px solid var(--line);
+}
+.flash.ok   { border-color: var(--ok);   color: var(--ok); }
+.flash.warn { border-color: var(--warn); color: var(--warn); }
+.flash.bad  { border-color: var(--bad);  color: var(--bad); }
+
+.approval {
+  border: 1px solid var(--warn);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 1rem 1.1rem;
+  margin-bottom: 0.8rem;
+}
+.approval-head { font-weight: 600; }
+.approval-head .id {
+  color: var(--dim); font-weight: 400;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+.approval-line { margin: 0.45rem 0 0; font-size: 0.88rem; white-space: pre-wrap; }
+.approval.unreadable { border-color: var(--bad); }
+.approval.unreadable .approval-line strong { color: var(--bad); }
+
+.approval-acts { display: flex; gap: 0.6rem; margin-top: 0.9rem; flex-wrap: wrap; }
+/* Deny is written first in the markup so it leads for keyboard and screen
+   readers; on a describable request the visual order goes back to Approve
+   first, where it belongs. */
+.approval-acts:not(.reversed) { flex-direction: row-reverse; justify-content: flex-end; }
+.approval-acts form { display: flex; gap: 0.4rem; margin: 0; }
+.approval-foot { margin: 0.7rem 0 0; color: var(--dim); font-size: 0.78rem; }
+
+input.code {
+  width: 9rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+}
+input.code:focus { outline: 2px solid var(--warn); outline-offset: 1px; }
+
+button {
+  padding: 0.45rem 1rem;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--line);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.go { background: var(--ok); border-color: var(--ok); color: #0d1410; }
+button.no { background: transparent; color: var(--dim); }
+button:hover { filter: brightness(1.12); }
+
+/* ── what has happened here ────────────────────────────────────────────────
+   The same card as .host, deliberately NOT the .approval treatment: an approval
+   is a question the page is holding open, and these are answers to questions
+   nobody asked. A recent one — or a live refusal — takes the bad border,
+   because the host killing your programs is the one thing on this page you did
+   not do and were never told about. The border is the whole difference; an
+   event is never hidden once it stops being recent, it only stops shouting. */
+
+.event {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 0.6rem;
+}
+.event.recent, .event.refused { border-color: var(--bad); }
+.event-when { color: var(--dim); font-size: 0.78rem; }
+.event-line { margin: 0.35rem 0 0; font-size: 0.88rem; }
+.event-foot { margin: 0.65rem 0 0; color: var(--dim); font-size: 0.78rem; }
+
+.host {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.85rem 1.1rem;
+  margin-bottom: 0.6rem;
+}
+.host-name { font-weight: 600; word-break: break-all; }
+.host-facts {
+  margin: 0.5rem 0 0;
+  display: grid;
+  grid-template-columns: 8.5rem 1fr;
+  gap: 0.2rem 0.75rem;
+  font-size: 0.85rem;
+}
+.host-facts dt { color: var(--dim); }
+.host-facts dd { margin: 0; word-break: break-all; }
+
+.tag {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  vertical-align: 0.08em;
+}
+.tag.ok   { background: rgba(78,169,107,0.16); color: var(--ok); }
+.tag.warn { background: rgba(215,154,60,0.16); color: var(--warn); }
+.tag.bad  { background: rgba(209,88,79,0.16); color: var(--bad); }
+
+h3 { margin: 1.6rem 0 0.6rem; font-size: 0.8rem; font-weight: 600;
+     color: var(--dim); text-transform: none; letter-spacing: 0; }
+
+/* Was an inline style="margin-top:1rem" until review pointed out the page's own
+   CSP (`default-src 'self'`, ui.go) covers style-src and therefore blocks it —
+   the policy was silently winning against the markup. A class costs nothing and
+   keeps the CSP with no 'unsafe-inline' escape hatch in it. */
+.checked-at { margin-top: 1rem; }
+
+footer { margin-top: 2.5rem; color: var(--dim); font-size: 0.8rem; }
+footer a { color: var(--dim); }
+
+.note {
+  margin-top: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 0.84rem;
+}
+
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+       font-size: 0.85em; color: var(--ink); }

@@ -1,0 +1,59 @@
+/* given.css — the "what this machine has given away" view (uigiven.go).
+
+   ADDITIONS ONLY. app.css still carries the page, and every colour here is one
+   of its variables rather than a literal, so the two files cannot drift into
+   two different looks — this page and the status page have to read as the same
+   program or a user will not believe either of them.
+
+   No inline style= anywhere, for the reason app.css already records: the page's
+   own CSP is `default-src 'self'` (ui.go), which covers style-src, so an inline
+   style is silently dropped and the policy wins against the markup. */
+
+/* app.css styles `footer a` only, because nothing outside the footer linked
+   anywhere until this page. An unstyled link on this background renders in the
+   browser's default blue, which on #16181d is close to unreadable. */
+a { color: var(--ink); }
+a:hover { color: var(--warn); }
+
+.backlink { max-width: 46rem; margin: 0 auto 1.25rem; font-size: 0.85rem; }
+
+/* ── one capability ────────────────────────────────────────────────────────
+   The left edge carries the verdict so a column of seven can be read down
+   without reading a word: amber is something this machine gives away, green is
+   something it refuses. Deliberately NOT red for a granted capability — a
+   grant the user made is not a fault, and a page that cries error at normal
+   state is a page that gets ignored the one time it matters. */
+
+.cap {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 0.8rem 1.1rem;
+  margin-bottom: 0.5rem;
+}
+.cap.held    { border-left-color: var(--warn); }
+.cap.refused { border-left-color: var(--ok); }
+
+.cap-head { display: flex; gap: 0.6rem; align-items: baseline; flex-wrap: wrap; }
+.cap-head .cap-line { font-weight: 600; }
+.cap-head .tag { margin-left: 0; }
+
+.cap p { margin: 0.4rem 0 0; font-size: 0.85rem; }
+.cap .cap-second { color: var(--dim); }
+.cap .cap-ops { color: var(--dim); font-size: 0.78rem; margin-top: 0.55rem; }
+
+.legend { margin-bottom: 0.6rem; }
+.legend .tag { margin-left: 0; margin-right: 0.35rem; }
+
+/* One granted operation per line: a mask is a list of separate permissions and
+   running them together reads as one sentence the user then has to unpick. */
+.mask { display: block; }
+
+.host.unreadable { border-color: var(--bad); }
+
+/* The local switch. Quiet by default — this page is still mostly something you
+   read — and the "off" state is the one that gets the emphasis, because a
+   capability you have cut is a fact about the machine worth seeing at a glance. */
+.cap-switch { display: inline; margin-left: .5rem; }
+.cap-switch button { font-size: .85em; padding: .15rem .5rem; }
