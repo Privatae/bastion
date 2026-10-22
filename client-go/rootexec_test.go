@@ -697,7 +697,7 @@ func TestRootExecGrantCeremony(t *testing.T) {
 	if _, err := rootExecGrantWithCode(dir, "h", "box1", code, 0, now); err == nil {
 		t.Fatal("a grant with no expiry must be refused")
 	}
-	if _, err := rootExecGrantWithCode(dir, "h", "box1", code, 400*24*time.Hour, now); err == nil {
+	if _, err := rootExecGrantWithCode(dir, "h", "box1", code, 31*24*time.Hour, now); err == nil {
 		t.Fatal("a grant past the longest term must be refused")
 	}
 	wrong := "000000"
@@ -741,6 +741,71 @@ func TestRootExecGrantCeremony(t *testing.T) {
 		if _, err := parseGrantFor(bad); err == nil {
 			t.Fatalf("parseGrantFor(%q) must fail", bad)
 		}
+	}
+}
+
+// The longest root-command grant is 30 days: a 31-day one is refused at the
+// ceremony, and a grant held from when the longest term was a year ends 30
+// days after it was given.
+//
+// MUTATION: set rootExecMaxGrantTTL back to 365 days.
+// RESULT: red — the 31-day grant is written and the held year-long grant admits.
+func TestRootExecGrantIsAtMostThirtyDays(t *testing.T) {
+	now := time.Now()
+	enrolled := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := stepupSave(dir, &stepupFile{SecretB32: rootExecTestSecret, EnrolledAt: "2026-10-11T00:00:00Z", LastCounter: -1}); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	dir := enrolled(t)
+	d, err := parseGrantFor("31d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = rootExecGrantWithCode(dir, "h", "box1", rootExecCode(t, now), d, now)
+	if err == nil || !strings.Contains(err.Error(), "at most 30 days") {
+		t.Fatalf("a 31-day grant must be refused and say the longest term: %v", err)
+	}
+	if _, err := os.Stat(rootExecGrantPath(dir)); err == nil {
+		t.Fatal("a refused grant writes nothing")
+	}
+	if _, err := rootExecGrantWithCode(dir, "h", "box1", rootExecCode(t, now), 30*24*time.Hour, now); err != nil {
+		t.Fatalf("30 days is the longest term and is granted: %v", err)
+	}
+
+	held := func(t *testing.T, given, expires time.Time) string {
+		t.Helper()
+		dir := t.TempDir()
+		g := &rootExecGrant{ID: "g1", Host: "h", Server: "box1",
+			GrantedAt: given.UTC().Format(time.RFC3339), Expires: expires.UTC().Format(time.RFC3339)}
+		if err := rootExecGrantSave(dir, g); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	old := held(t, now.Add(-31*24*time.Hour), now.Add(334*24*time.Hour))
+	if why := rootExecGrantCheck(old, "h", "box1", now); !strings.Contains(why, "expired") {
+		t.Fatalf("a year-long grant given 31 days ago has ended: %q", why)
+	}
+	recent := held(t, now.Add(-10*24*time.Hour), now.Add(355*24*time.Hour))
+	if why := rootExecGrantCheck(recent, "h", "box1", now); why != "" {
+		t.Fatalf("a year-long grant given 10 days ago still admits: %s", why)
+	}
+	if why := rootExecGrantCheck(recent, "h", "box1", now.Add(21*24*time.Hour)); !strings.Contains(why, "expired") {
+		t.Fatalf("and it ends 30 days after it was given: %q", why)
+	}
+	noTime := held(t, now, now.Add(24*time.Hour))
+	g, _ := rootExecGrantLoad(noTime)
+	g.GrantedAt = ""
+	if err := rootExecGrantSave(noTime, g); err != nil {
+		t.Fatal(err)
+	}
+	if why := rootExecGrantCheck(noTime, "h", "box1", now); why == "" {
+		t.Fatal("a grant with no grant time cannot be held to the longest term, so it is refused")
 	}
 }
 

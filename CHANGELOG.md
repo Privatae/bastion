@@ -23,6 +23,68 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.55.0
+
+- **A local machine's egress lane never reaches the machine itself.** Before,
+  on a machine with no anchor the lane vetted no destination, so a host could
+  dial this machine's own services through it: `POST
+  http://127.0.0.1:11434/api/pull` reached ollama whatever the `models` switch
+  said. It now refuses `localhost` names, loopback and unspecified addresses
+  (`0.0.0.0/8` and `::` included), link-local addresses (the cloud metadata
+  address included), the rest of `64:ff9b::/32`, the deprecated IPv6 forms
+  below, and any address this machine takes as its own, as the anchored lane
+  checks them, also inside an IPv4-mapped, NAT64 or 6to4 address. The LAN
+  stays reachable: a private, CGNAT or reserved address that is not this
+  machine's is dialled. Every address a name resolves to is checked, and only
+  those addresses are dialled, never the name again.
+- **Every lane refuses the deprecated IPv6 forms.** IPv4-compatible `::/96`,
+  IPv4-translated `::ffff:0:0/96` and site-local `fec0::/10` are no
+  destination of their own, and where each is delivered depends on the
+  platform. A coder run's proxy and the backup lanes already refused them; the
+  egress lane now does too, anchored or local, by address and in any answer a
+  name resolves to. The anchored lane refuses nothing else it did not refuse
+  before. All the lanes now read one address classifier.
+- **Both egress lanes try each vetted address, as Happy Eyeballs does.** A
+  name with more than one address is dialled at each in order, the next
+  starting as soon as an attempt fails or when none has answered within
+  300 ms, and the first to answer is used; the others are cancelled, and one
+  that connects anyway is closed. Before, the anchored lane dialled only the
+  first address, and a coder run's proxy gave each address an even share of
+  the dial budget, so an address whose packets go nowhere held up the next
+  one for seconds. The next one now starts within 300 ms, about what the OS
+  dialler took when it was given the name.
+- **`pair` says to enrol a second factor after every pairing that has none.**
+  It said so only after it anchored a networked machine, so a local pairing,
+  one over TCP or a unix socket, and a later host on an anchored machine were
+  told nothing, and on a local machine a folder grant then installs on the
+  host's signed grant alone. The line names `--host` when more than one host
+  is paired, and `sudo -H` only when `pair` itself ran with machine authority,
+  so a local install is told to enrol as its own user. A pairing that keeps
+  its factor (a `--replace`), or a machine with an approval device pinned, is
+  not told.
+- **A root-command grant lasts at most 30 days.** It was a year. `root-exec
+  grant --for 31d` is refused and says the longest term; grant again before
+  it ends. A grant given under the longer term ends 30 days after it was
+  given, and `root-exec` shows that end. A grant file with no grant time is
+  refused, since it cannot be held to the term.
+- **SECURITY.md, the README's license section and `docs/host-on-this-machine.md`
+  name each kind of Host.** They described only a Host on Privatae's platform.
+  They now say that a C-Series Host runs on your own machine in its own Linux
+  virtual machine, is open source (Privatae/cseries, AGPL-3.0-only), needs no
+  Privatae account, and that `npx cseries` sets the bastion up networked,
+  paired, anchored and with a second factor on every pairing (the commands are
+  shown); that C-Series Cloud and a network membership are optional and paid;
+  and that a Host on Privatae's own platform is the case where the Host's
+  software is not open source.
+- **Security reports go to security@privatae.ai,** the address
+  privatae.ai/.well-known/security.txt names. SECURITY.md said info@.
+- **`docs/models.md` says what stops a host changing your models on a local
+  machine.** It told you to scope the pairing on your host, which a local
+  machine never reads. There, switching `models` off for the host is what
+  filters the ollama forward, and the egress lane is no way around it. On an
+  anchored machine the forward filters for every pairing, which the page now
+  says too.
+
 ## 0.54.1
 
 - **No change to what the bastion does.** The README is now a short front

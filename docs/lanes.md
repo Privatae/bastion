@@ -49,8 +49,11 @@ privatae-bastion root-exec revoke [--host <host>]                        # take 
 ```
 
 The grant names one host (the anchor; a member pairing never gets it) and
-this machine, ends at the time you chose, and is written only by that command
-with the code; nothing the host sends can create, widen or extend it. Each
+this machine, ends at the time you chose, at most 30 days after you gave it
+(`--for 31d` is refused; grant again before it ends), and is written only by
+that command with the code; nothing the host sends can create, widen or
+extend it. A grant given before 0.55.0, when the longest term was a year,
+ends 30 days after it was given. Each
 command runs as `/bin/sh -c` in its own process group, with a deadline (10
 minutes unless the host asks for less or more, never more than 8 hours) and
 with stdout and stderr returned up to a size cap (256 KiB each unless the host

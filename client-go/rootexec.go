@@ -85,7 +85,9 @@ var (
 	rootExecMaxOutput     = 4 << 20
 	rootExecMinOutput     = 1 << 10
 	rootExecTranscriptMax = int64(64 << 20) // the local record keeps far more than the host sees
-	rootExecMaxGrantTTL   = 365 * 24 * time.Hour
+	// The longest a root-command grant lasts before it has to be given again
+	// at this machine with the code.
+	rootExecMaxGrantTTL = 30 * 24 * time.Hour
 )
 
 // rootExecCommandMax bounds the command text itself: a script, not a payload.
@@ -132,6 +134,24 @@ type rootExecGrant struct {
 	GrantedAt string `json:"granted_at"`
 	Expires   string `json:"expires"`
 	RevokedAt string `json:"revoked_at,omitempty"`
+}
+
+// ends is when the grant stops admitting: its stated expiry, and never later
+// than the longest term after it was given, so a grant written when the
+// longest term was longer ends on today's rule.
+func (g *rootExecGrant) ends() (time.Time, error) {
+	exp, err := time.Parse(time.RFC3339, g.Expires)
+	if err != nil {
+		return time.Time{}, err
+	}
+	at, err := time.Parse(time.RFC3339, g.GrantedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if limit := at.Add(rootExecMaxGrantTTL); exp.After(limit) {
+		exp = limit
+	}
+	return exp, nil
 }
 
 var rootExecMu sync.Mutex
@@ -189,12 +209,12 @@ func rootExecGrantCheck(dir, self, server string, now time.Time) string {
 	if g.Server == "" || g.Server != server {
 		return fmt.Sprintf("the root-command grant is for machine '%s', this machine is '%s'", g.Server, server)
 	}
-	exp, err := time.Parse(time.RFC3339, g.Expires)
+	exp, err := g.ends()
 	if err != nil {
-		return "the root-command grant states no expiry (open-ended terms are refused)"
+		return "the root-command grant states no expiry or no grant time (open-ended terms are refused)"
 	}
 	if !exp.After(now) {
-		return "the root-command grant expired at " + g.Expires + " — " + rootExecGrantHowTo(self)
+		return "the root-command grant expired at " + exp.UTC().Format(time.RFC3339) + " — " + rootExecGrantHowTo(self)
 	}
 	return ""
 }
@@ -310,7 +330,11 @@ func cmdRootExec(args []string) error {
 		} else if why := rootExecGrantCheck(dir, cfg.HostName, server, time.Now()); why != "" {
 			state = why
 		}
-		fmt.Printf("root commands for %s on %s: %s\n  granted %s, until %s\n", g.Host, g.Server, state, g.GrantedAt, g.Expires)
+		until := g.Expires
+		if exp, err := g.ends(); err == nil {
+			until = exp.UTC().Format(time.RFC3339)
+		}
+		fmt.Printf("root commands for %s on %s: %s\n  granted %s, until %s\n", g.Host, g.Server, state, g.GrantedAt, until)
 		fmt.Println("  every command: " + filepath.Join(cfg.contextRoot(), "sessions") + "/<id>.log and audit.jsonl")
 		fmt.Println("  " + rootExecOwnHostsLine())
 		fmt.Println("  take it back:  privatae-bastion root-exec revoke --host " + cfg.HostName)

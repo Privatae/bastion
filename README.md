@@ -261,14 +261,15 @@ Each point in full: [docs/security-model.md](docs/security-model.md); the link a
 - **Egress for someone else reaches the public internet, never this
   machine**: a coder run's proxy and an anchored machine's egress lane refuse
   internal addresses and this machine's own (a coder run reaches a LAN host
-  you named). A local machine's egress lane vets no destination, and an address
-  that reaches this machine only through a 1:1 NAT is not covered. ([full text](docs/security-model.md))
+  you named). A local machine's egress lane refuses this machine and keeps
+  your LAN. An address that reaches this machine only through a 1:1 NAT is
+  not covered. ([full text](docs/security-model.md))
 - **A terminal is checked here and logged.** On a local machine it opens when
   the host asks; on an anchored one each needs an approval for that session;
   a root terminal needs a code entered here. ([session lane](docs/lanes.md#session-lane))
 - **Root commands run only under a grant given here with the code**, to the
-  anchor host, until the time you chose; a revoke or expiry stops a running
-  command within 2 seconds. ([session lane](docs/lanes.md#session-lane))
+  anchor host, until the time you chose and at most 30 days; a revoke or
+  expiry stops a running command within 2 seconds. ([session lane](docs/lanes.md#session-lane))
 - **Root only where there is no one else to ask**: claiming ownership or the
   anchor. ([modes](#local-and-networked-modes))
 - **On macOS and Windows, a networked bastion is the system's service**, which
@@ -397,8 +398,11 @@ version 3 or (at your option) any later version. See [LICENSE](LICENSE).
 Copyright Privatae LLC.
 
 You may run it, read it, change it and redistribute it under that license. The
-Privatae platform the bastion connects to is separate, proprietary software and
-is not covered by this license.
+Host the bastion connects to is separate software and is not covered by this
+license: a C-Series Host is [Privatae/cseries](https://github.com/Privatae/cseries),
+under AGPL-3.0-only, and a Host on Privatae's own platform is proprietary
+software. See [SECURITY.md](SECURITY.md#what-you-still-have-to-trust) for what
+the bastion holds each to.
 
 The local console vendors [htmx](https://htmx.org) 2.0.10
 (`client-go/uiassets/htmx.min.js`), which is distributed under the Zero-Clause

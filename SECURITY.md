@@ -4,7 +4,7 @@
 
 Please do not open a public issue for a security problem.
 
-Email **info@privatae.ai** with:
+Email **security@privatae.ai** with:
 
 - the version (`privatae-bastion version`) and platform,
 - what you found and how to reproduce it,
@@ -27,9 +27,10 @@ notes if you wish.
 
 ## What is out of scope
 
-- The Privatae platform the bastion connects to. It is separate software with
-  its own reporting path; reports about it sent to the address above are
-  forwarded.
+- The Host the bastion connects to. It is separate software: a C-Series Host
+  is [Privatae/cseries](https://github.com/Privatae/cseries), and a Host on
+  Privatae's own platform is software that is not open source. Reports about
+  either sent to the address above are forwarded.
 - Findings that require root on the machine already. The bastion's root ops
   assume the machine's administrator is trusted.
 
@@ -116,7 +117,26 @@ leaves your machine is what its manifest and your grant allow. Its extraction
 and PII redaction happen inside it, so check that repository, not this one,
 for how well those work.
 
-**The platform.** Your host runs on our platform, which is not open source. The
-bastion keeps the host to your grant and your approvals whatever the platform
-does. What the host does with what you share with it is governed by software
-you cannot read here.
+**The Host.** The bastion holds your Host to your grant and your approvals.
+What the Host does with what you share with it is the Host's own software, and
+which software that is depends on where the Host runs.
+
+- **A C-Series Host** runs on your own machine, in its own Linux virtual
+  machine. Its source is [Privatae/cseries](https://github.com/Privatae/cseries),
+  under AGPL-3.0-only; the bastion and the bastion agent are GPL-3.0-or-later.
+  `npx cseries` installs the bastion beside it as the machine's system service
+  and, on every pairing, runs `set-mode networked`, then
+  `pair --redeem-url <the Host's https enroll address> --host-ca <its CA> -`
+  with the token on standard input, then `claim-anchor` and
+  `stepup-enroll --console-only --host <the Host>`: the machine is anchored to
+  that Host and you approve its writes here with your own authenticator. No
+  Privatae account is needed
+  ([A Host in a VM on this machine](docs/host-on-this-machine.md#a-host-in-a-vm-on-this-machine)).
+- **Optional and paid, from Privatae:** C-Series Cloud, which runs a Host on a
+  server of its own that Privatae sets up and keeps patched, and a Privatae
+  network membership, which joins a Host on your own machine to the Privatae
+  network.
+- **A Host on Privatae's own platform** is the case where the Host's software
+  is not open source. There, the bastion keeps the Host to your grant and your
+  approvals whatever the platform does, and what the Host does with what you
+  share with it is governed by software you cannot read here.

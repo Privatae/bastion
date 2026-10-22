@@ -60,13 +60,28 @@ carries a tag of the named repository.
 ## A Host in a VM on this machine
 
 A Host with no platform that runs in a VM on this machine shares no kernel and
-no directory with it. Its installer forwards two ports of the VM to this
-machine's loopback and hands over a pairing token with the Host's CA:
+no directory with it. A C-Series Host
+([Privatae/cseries](https://github.com/Privatae/cseries)) is one: it runs in
+its own Linux virtual machine. Its installer, `npx cseries`, forwards two ports
+of the VM to this machine's loopback, installs this bastion as the machine's
+system service, and on every pairing runs these in one elevated step (on
+Windows, from an Administrator PowerShell instead of `sudo -H`):
 
 ```sh
-privatae-bastion pair --redeem-url https://127.0.0.1:8810/v1/local/redeem --host-ca host-ca.pem <token>
-privatae-bastion run
+# 1. The service's state, networked.
+sudo -H privatae-bastion set-mode networked
+# 2. Pair over the Host's enroll port, trusting its CA alone; the token is read
+#    from standard input, never from the arguments.
+sudo -H privatae-bastion pair --redeem-url https://127.0.0.1:8810/v1/local/redeem --host-ca host-ca.pem -
+# 3. Anchor the machine to that Host: every write and terminal waits for your approval.
+sudo -H privatae-bastion claim-anchor
+# 4. Your authenticator, enrolled on that console and nowhere else.
+sudo -H privatae-bastion stepup-enroll --console-only --host <the Host>
 ```
+
+No Privatae account is needed. A plain `pair` and `run` as your own user also
+pair with such a Host, but leave the machine local: not anchored, and with no
+second factor until you enrol one.
 
 | port | what |
 |---|---|

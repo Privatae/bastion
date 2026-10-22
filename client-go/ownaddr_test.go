@@ -136,7 +136,7 @@ func TestCoderEgressRefusesAnAddressTheKernelDeliversHere(t *testing.T) {
 
 // The anchored egress lane refuses this machine too: an address on its NIC
 // and an address a `local` route delivers here, in every spelling, and a
-// failed lookup. A neighbour passes, and a local box keeps the lane it had.
+// failed lookup. A neighbour passes, and a local box refuses this machine too.
 //
 // MUTATION: drop the ownDestination check from egressVettedAddr.
 // RESULT: red — the machine's own addresses are vetted and dialled.
@@ -161,8 +161,11 @@ func TestAnchoredEgressRefusesThisMachinesOwnAddresses(t *testing.T) {
 		t.Fatal("a failed route lookup refuses on an anchored box")
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	if addr, why := egressVettedAddr(ctx, "198.51.100.7:8080"); why != "" || addr != "198.51.100.7:8080" {
-		t.Fatalf("a local box keeps its lane: %q %q", addr, why)
+	stubOwnAddrs(t, []string{"127.0.0.1/8", "198.51.100.7/24"}, localRange("203.0.113.0/24"))
+	for _, hp := range []string{"198.51.100.7:8080", "203.0.113.5:80"} {
+		if addr, why := egressVettedAddr(ctx, hp); why == "" || addr != "" {
+			t.Errorf("%s is this machine and must be refused on a local box too, got %q", hp, addr)
+		}
 	}
 }
 

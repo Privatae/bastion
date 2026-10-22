@@ -231,40 +231,76 @@ func cmdPair(token, redeemURL, hostCAFile string, replace bool) error {
 				cfg, all = c, fresh
 			}
 		}
-		fmt.Printf("\nThis machine is networked and anchored to %s: every terminal and every write\n", cfg.HostName)
-		fmt.Println("waits for your approval, and any later host waits for this one to approve it.")
-		fmt.Printf("Enrol your second factor now, so you can approve here:\n  %s\n\n", stepupEnrollHint())
+	}
+	pairReport(os.Stdout, cfg, all, anchored)
+	return nil
+}
+
+// pairReport is what `pair` prints once the pairing stands. Whatever the form
+// (anchored just now, over TCP, over a unix socket, pending, or over the
+// tunnel), it ends by saying to enrol a second factor when this pairing has
+// none and no approval device is pinned: without one, a local machine installs
+// a folder grant on the host's signed grant alone, and an anchored one has no
+// way to approve anything the host asks for.
+func pairReport(w io.Writer, cfg *Config, all []*Config, anchored bool) {
+	enrol := ""
+	if !secondFactorAvailable(cfg.dcnDir()) {
+		enrol = stepupEnrollHint(cfg.HostName, len(all))
+	}
+	defer func() { pairEnrolNote(w, cfg.HostName, enrol) }()
+	if anchored {
+		fmt.Fprintf(w, "\nThis machine is networked and anchored to %s: every terminal and every write\n", cfg.HostName)
+		fmt.Fprintln(w, "waits for your approval, and any later host waits for this one to approve it.")
+		if enrol != "" {
+			fmt.Fprintf(w, "Enrol your second factor now, so you can approve here:\n  %s\n\n", enrol)
+			enrol = ""
+		}
 	}
 	if cfg.tcpTransport() && cfg.active() {
-		fmt.Printf("Paired with %s over TCP.\n\n", cfg.HostName)
-		fmt.Printf("  lanes:     %s (mutual TLS, the Host's CA pinned, name %s)\n  coder runs: none over TCP\n", cfg.LaneAddr, tcpServerName)
-		fmt.Printf("  local:     http://%s\n\nStart (or restart) the bastion:\n  privatae-bastion run\n", cfg.ListenAddr)
-		return nil
+		fmt.Fprintf(w, "Paired with %s over TCP.\n\n", cfg.HostName)
+		fmt.Fprintf(w, "  lanes:     %s (mutual TLS, the Host's CA pinned, name %s)\n  coder runs: none over TCP\n", cfg.LaneAddr, tcpServerName)
+		fmt.Fprintf(w, "  local:     http://%s\n\nStart (or restart) the bastion:\n  privatae-bastion run\n", cfg.ListenAddr)
+		return
 	}
 	if cfg.unixTransport() && cfg.active() {
-		fmt.Printf("Paired with %s, a Host on this machine.\n\n", cfg.HostName)
-		fmt.Printf("  lanes:     %s (mutual TLS, the Host's CA pinned)\n  coder runs: a socket per run in %s\n", cfg.LaneSocket, cfg.RunsDir)
-		fmt.Printf("  local:     http://%s\n\nStart (or restart) the bastion:\n  privatae-bastion run\n", cfg.ListenAddr)
-		return nil
+		fmt.Fprintf(w, "Paired with %s, a Host on this machine.\n\n", cfg.HostName)
+		fmt.Fprintf(w, "  lanes:     %s (mutual TLS, the Host's CA pinned)\n  coder runs: a socket per run in %s\n", cfg.LaneSocket, cfg.RunsDir)
+		fmt.Fprintf(w, "  local:     http://%s\n\nStart (or restart) the bastion:\n  privatae-bastion run\n", cfg.ListenAddr)
+		return
 	}
 	if !cfg.active() {
-		fmt.Printf("Paired with %s — PENDING.\n\n", cfg.HostName)
-		fmt.Println("This machine is anchored, so a new host waits until the anchor host approves it.")
-		fmt.Println("Nothing is started for it yet: no tunnel, no lanes. It shows on the anchor host's")
-		fmt.Println("Network app as a pending pairing; once approved the daemon opens its lanes by itself.")
-		return nil
+		fmt.Fprintf(w, "Paired with %s — PENDING.\n\n", cfg.HostName)
+		fmt.Fprintln(w, "This machine is anchored, so a new host waits until the anchor host approves it.")
+		fmt.Fprintln(w, "Nothing is started for it yet: no tunnel, no lanes. It shows on the anchor host's")
+		fmt.Fprintln(w, "Network app as a pending pairing; once approved the daemon opens its lanes by itself.")
+		return
 	}
-	fmt.Printf("Paired with %s.\n\nOne `privatae-bastion run` serves every pairing:\n", cfg.HostName)
+	fmt.Fprintf(w, "Paired with %s.\n\nOne `privatae-bastion run` serves every pairing:\n", cfg.HostName)
 	for _, c := range all {
 		// The listen address is the CLI's loopback control port for that host
 		// (add-folder, git-credential). The local secret that guards it is read
 		// from the pairing file by those verbs and is never shown: there is no
 		// operator client to hand it to since the MCP relay was removed.
-		fmt.Printf("\n  %s\n    local: http://%s\n", c.HostName, c.ListenAddr)
+		fmt.Fprintf(w, "\n  %s\n    local: http://%s\n", c.HostName, c.ListenAddr)
 	}
-	fmt.Printf("\nStart (or restart) the tunnels:\n  privatae-bastion run\n")
-	fmt.Printf("\ngit to your forge goes through this bastion — one-time setup:\n  privatae-bastion git-setup\n")
-	return nil
+	fmt.Fprintf(w, "\nStart (or restart) the tunnels:\n  privatae-bastion run\n")
+	fmt.Fprintf(w, "\ngit to your forge goes through this bastion — one-time setup:\n  privatae-bastion git-setup\n")
+}
+
+// pairEnrolNote says what a pairing with no second factor means on this kind
+// of machine, and how to enrol one. hint "" says nothing.
+func pairEnrolNote(w io.Writer, host, hint string) {
+	if hint == "" {
+		return
+	}
+	if currentAnchor() != nil {
+		fmt.Fprintf(w, "\nNo second factor is enrolled here for %s, so this machine cannot approve what it\n"+
+			"asks for until you enrol one. Enrol it now:\n  %s\n", host, hint)
+		return
+	}
+	fmt.Fprintf(w, "\nNo second factor is enrolled here for %s. Until you enrol one, a folder grant or a\n"+
+		"move plan from it installs on its signed grant alone, and model pulls and root\n"+
+		"sessions are refused. Enrol it now, so each needs a code from this machine:\n  %s\n", host, hint)
 }
 
 // anchorFirstNetworkedPairing anchors a networked machine that has no anchor

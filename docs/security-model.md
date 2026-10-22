@@ -64,7 +64,9 @@
 - **Egress for someone else reaches the public internet, never this
   machine.** A coder run's proxy, always, and the egress lane on an anchored
   machine refuse loopback, link-local (the cloud metadata address included),
-  private, CGNAT and reserved addresses, and any address this machine takes
+  private, CGNAT and reserved addresses, the deprecated IPv4-compatible
+  (`::/96`), IPv4-translated (`::ffff:0:0/96`) and site-local (`fec0::/10`)
+  IPv6 forms, and any address this machine takes
   as its own: one on its interfaces (a public one included), and on Linux any
   address the kernel's routing table delivers here (a `local`, broadcast,
   anycast or multicast route, such as an AnyIP range on `lo`), asked of the
@@ -74,9 +76,20 @@
   it refuses. A coder run reaches a LAN host only when you named it in
   `coders set --allow-lan`; the anchored egress lane has no such exception.
   The anchored lane's refusal of this machine's own non-private addresses is
-  new in 0.50.0; before it, that lane refused only the internal ranges. A
-  local (unanchored) machine's egress lane is unchanged and vets no
-  destination. The backup lanes (`backup_fetch` and `backup_push`, anchored
+  new in 0.50.0; before it, that lane refused only the internal ranges. On a
+  local (unanchored) machine the egress lane refuses this machine too:
+  `localhost` names, loopback and unspecified addresses (`0.0.0.0/8` and
+  `::` included), link-local addresses (the cloud metadata address included),
+  the rest of `64:ff9b::/32`, the three deprecated IPv6 forms, and any
+  address this machine takes as its own, checked as above and also inside an
+  IPv4-mapped, NAT64 or 6to4 address. It
+  keeps your LAN: a private, CGNAT or reserved address that is not this
+  machine's is dialled. Every address a name resolves to is checked there
+  too, and only those addresses are dialled, in order, the next as soon as
+  one fails or none has answered within 300 ms. This is new in
+  0.55.0; before it, a local machine's egress lane vetted no destination, so
+  a host could reach this machine's own services through it, ollama's
+  `/api/pull` among them, whatever the `models` switch said. The backup lanes (`backup_fetch` and `backup_push`, anchored
   or not) apply the same check of this machine's own addresses, to every
   address the URL's name resolves to, to each redirect a fetch follows and to
   the address dialled; this too is new in 0.50.0, and before it they refused

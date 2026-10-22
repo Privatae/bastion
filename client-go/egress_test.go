@@ -38,6 +38,16 @@ func dialHandler(t *testing.T, dialOut egressDialer) (net.Conn, func()) {
 	return cli, func() { cli.Close(); ln.Close() }
 }
 
+// redirectDial stands in for the user's internet: the lane asks for a public
+// destination, and this dials the loopback backend instead, recording what the
+// lane asked for. The lane never reaches loopback itself.
+func redirectDial(backend string, asked *[]string) egressDialer {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		*asked = append(*asked, addr)
+		return (&net.Dialer{}).DialContext(ctx, network, backend)
+	}
+}
+
 // CONNECT establishes a raw tunnel; bytes flow both ways through it.
 func TestEgressConnConnectTunnel(t *testing.T) {
 	backend, err := net.Listen("tcp", "127.0.0.1:0")
@@ -54,9 +64,10 @@ func TestEgressConnConnectTunnel(t *testing.T) {
 		_, _ = io.Copy(c, c) // echo
 	}()
 
-	cli, cleanup := dialHandler(t, (&net.Dialer{}).DialContext)
+	var asked []string
+	cli, cleanup := dialHandler(t, redirectDial(backend.Addr().String(), &asked))
 	defer cleanup()
-	fmt.Fprintf(cli, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", backend.Addr(), backend.Addr())
+	fmt.Fprint(cli, "CONNECT 198.51.100.20:443 HTTP/1.1\r\nHost: 198.51.100.20:443\r\n\r\n")
 	br := bufio.NewReader(cli)
 	status, err := br.ReadString('\n')
 	if err != nil || !strings.Contains(status, "200") {
@@ -82,6 +93,9 @@ func TestEgressConnConnectTunnel(t *testing.T) {
 	if string(buf) != want {
 		t.Fatalf("tunnel echo mismatch: got %q", string(buf))
 	}
+	if len(asked) != 1 || asked[0] != "198.51.100.20:443" {
+		t.Fatalf("the lane must dial the address it vetted: %v", asked)
+	}
 }
 
 func TestEgressConnPlainHTTP(t *testing.T) {
@@ -89,14 +103,17 @@ func TestEgressConnPlainHTTP(t *testing.T) {
 		fmt.Fprint(w, "plain-http-ok")
 	}))
 	defer backend.Close()
-	host := strings.TrimPrefix(backend.URL, "http://")
 
-	cli, cleanup := dialHandler(t, (&net.Dialer{}).DialContext)
+	var asked []string
+	cli, cleanup := dialHandler(t, redirectDial(strings.TrimPrefix(backend.URL, "http://"), &asked))
 	defer cleanup()
-	fmt.Fprintf(cli, "GET http://%s/ HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host, host)
+	fmt.Fprint(cli, "GET http://198.51.100.21/ HTTP/1.1\r\nHost: 198.51.100.21\r\nConnection: close\r\n\r\n")
 	body, _ := io.ReadAll(cli)
 	if !strings.Contains(string(body), "plain-http-ok") {
 		t.Fatalf("plain HTTP forward: got %q", string(body))
+	}
+	if len(asked) != 1 || asked[0] != "198.51.100.21:80" {
+		t.Fatalf("the lane must dial the address it vetted: %v", asked)
 	}
 }
 
@@ -106,7 +123,7 @@ func TestEgressConnDialFailure(t *testing.T) {
 	}
 	cli, cleanup := dialHandler(t, failDial)
 	defer cleanup()
-	fmt.Fprint(cli, "CONNECT unreachable.example:443 HTTP/1.1\r\n\r\n")
+	fmt.Fprint(cli, "CONNECT 198.51.100.22:443 HTTP/1.1\r\n\r\n")
 	status, _ := bufio.NewReader(cli).ReadString('\n')
 	if !strings.Contains(status, "502") {
 		t.Fatalf("expected 502 on dial failure, got %q", status)

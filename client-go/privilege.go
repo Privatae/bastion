@@ -139,13 +139,28 @@ func restartHintFor(goos string) string {
 	return "Restart the service so the change takes:  systemctl restart privatae-bastion"
 }
 
-// stepupEnrollHint is the stepup-enroll line to print after a networked
-// machine is anchored: approvals on it need a second factor or a device.
-func stepupEnrollHint() string { return stepupEnrollHintFor(runtime.GOOS) }
+// stepupEnrollHint is the stepup-enroll line `pair` prints for a pairing with
+// no second factor. It is run as whoever ran `pair`, since that is whose state
+// the pairing is in: with machine authority (an anchored or networked machine,
+// a root install) through sudo -H or this Administrator terminal, and as the
+// person's own account on a local install. --host is named when more than one
+// host is paired, as stepup-enroll then requires.
+func stepupEnrollHint(host string, paired int) string {
+	return stepupEnrollHintFor(runtime.GOOS, machineAuthorityHeld(), host, paired)
+}
 
-func stepupEnrollHintFor(goos string) string {
-	if goos == "windows" {
-		return "privatae-bastion stepup-enroll   (from this Administrator terminal)"
+func stepupEnrollHintFor(goos string, authority bool, host string, paired int) string {
+	cmd := "privatae-bastion stepup-enroll"
+	if paired > 1 {
+		cmd += " --host " + host
 	}
-	return "sudo -H privatae-bastion stepup-enroll"
+	switch {
+	case goos == "windows" && authority:
+		return cmd + "   (from this Administrator terminal)"
+	case goos == "windows":
+		return cmd
+	case authority:
+		return "sudo -H " + cmd
+	}
+	return cmd
 }

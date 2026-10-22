@@ -2,8 +2,8 @@ package main
 
 // ownaddr.go — is a destination THIS machine?
 //
-// The outbound lanes that dial for someone else (the egress lane on an
-// anchored box, egress.go; a coder run's proxy, coder_egress.go; the backup
+// The outbound lanes that dial for someone else (the egress lane,
+// egress.go; a coder run's proxy, coder_egress.go; the backup
 // lanes' fetch and push, backupfetch.go) must never be turned back on the
 // machine itself: a service listening on 0.0.0.0 here
 // answers on every address the kernel delivers locally, not only on loopback

@@ -10,8 +10,8 @@ package main
 // over the machine's own connection.
 //
 // THE VETTING APPLIES ALWAYS, anchored box or not. The egress lane
-// (egress.go) only vets on an anchored box, because on a local box the host
-// using it is the person's own. A coding agent is not the person: it runs
+// (egress.go) keeps a local box's LAN reachable, because on a local box the
+// host using it is the person's own. A coding agent is not the person: it runs
 // whatever a prompt or a repository talks it into, so this proxy reaches the
 // public internet and nothing else — not this machine, not its LAN, not the
 // cloud metadata address, nor any address this machine takes as its own (a
@@ -23,7 +23,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -50,35 +49,12 @@ var (
 	coderDialOut egressDialer = (&net.Dialer{Timeout: egressDialTimeout}).DialContext
 )
 
-// coderInternalIP is internalIP (egress.go) plus the IPv6 forms that carry an
-// IPv4 address and are not covered there: IPv4-compatible ::a.b.c.d (::/96),
-// IPv4-translated ::ffff:0:a.b.c.d, and the deprecated site-local fec0::/10.
-// IPv4-mapped ::ffff:a.b.c.d is covered by internalIP through To4.
+// coderInternalIP is internalIP (egress.go): a coder run's proxy and the
+// backup lanes refuse the same address classes as the egress lane, from the
+// one classifier (classifyIP), the IPv4-compatible, IPv4-translated and
+// site-local fec0::/10 forms included.
 func coderInternalIP(ip net.IP) bool {
-	if internalIP(ip) {
-		return true
-	}
-	if ip.To4() != nil || len(ip) != net.IPv6len {
-		return false
-	}
-	zero := true
-	for _, b := range ip[:12] {
-		if b != 0 {
-			zero = false
-			break
-		}
-	}
-	if zero {
-		return true // ::/96 — never a public host
-	}
-	if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0 && ip[4] == 0 && ip[5] == 0 &&
-		ip[6] == 0 && ip[7] == 0 && ip[8] == 0xff && ip[9] == 0xff && ip[10] == 0 && ip[11] == 0 {
-		return true // ::ffff:0:0/96
-	}
-	if ip[0] == 0xfe && ip[1]&0xc0 == 0xc0 {
-		return true // fec0::/10
-	}
-	return false
+	return internalIP(ip)
 }
 
 // coderLANAllowed: the owner's allow_lan names this requested host (an entry
@@ -245,23 +221,7 @@ func handleCoderEgressConn(client net.Conn, allowLAN []string, refused *int64) {
 		coderRefuse(client, why)
 		return
 	}
-	var upstream net.Conn
-	err = errors.New("no address")
-	for i, a := range dialAddrs {
-		// Each address gets an even share of what is left of the dial budget,
-		// so one that black-holes cannot use it all.
-		actx, acancel := ctx, context.CancelFunc(func() {})
-		if left := len(dialAddrs) - i; left > 1 {
-			if dl, ok := ctx.Deadline(); ok {
-				actx, acancel = context.WithTimeout(ctx, time.Until(dl)/time.Duration(left))
-			}
-		}
-		upstream, err = coderDialOut(actx, "tcp", a)
-		acancel()
-		if err == nil {
-			break
-		}
-	}
+	upstream, err := dialEach(ctx, coderDialOut, dialAddrs)
 	if err != nil {
 		_, _ = client.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 		return
