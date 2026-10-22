@@ -125,6 +125,10 @@ func setupBoxKeep(t *testing.T) ed25519.PrivateKey {
 // before any dial; the anchor's request is dialled.
 func TestEgressLaneGatedByCaps(t *testing.T) {
 	grantMember(t, []string{"observe"})
+	// The name and this machine's addresses are answered here, so the anchor's
+	// request is vetted the same way on a box with no network or DNS.
+	answerEgressNames(t, map[string][]string{"example.com": {"203.0.113.10"}})
+	stubOwnAddrs(t, []string{"127.0.0.1/8", "::1/128"}, nil)
 	dialed := false
 	dialOut := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dialed = true

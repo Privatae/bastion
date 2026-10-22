@@ -37,6 +37,23 @@ says which version is. Older entries are not marked.
   stays reachable: a private, CGNAT or reserved address that is not this
   machine's is dialled. Every address a name resolves to is checked, and only
   those addresses are dialled, never the name again.
+- **A container or VM on this machine is this machine, not the LAN.** On
+  Linux, an address the kernel routes straight onto a container's veth, or
+  onto a bridge whose every port is a veth, a tap or a dummy (the bridge
+  networks Docker, Podman, LXD and libvirt make for their containers and
+  VMs), is refused as this machine. A route through a gateway on such a link
+  leaves, and a link an IPv4 or IPv6 default route of the main table goes
+  out of (any nexthop's, for a multipath default) is never inside: a bastion
+  that is itself in a container reaches the internet through the machine it
+  runs on, and dials the network on its own veth, its LAN included, as
+  before. Before, the local egress lane dialled such an address as LAN,
+  so a host could reach a service in a container here, `172.17.0.2:11434`
+  for one, though the same service on loopback was refused. A bridge with a
+  network card, a bond or a VLAN among its ports is still the LAN. Every lane
+  reads the same check, so a coder run's proxy, the anchored lane and the
+  backup lanes now also refuse a public address on such a network; their
+  private addresses were refused already. macOS and Windows have no route
+  lookup here, so there such an address is still dialled.
 - **Every lane refuses the deprecated IPv6 forms.** IPv4-compatible `::/96`,
   IPv4-translated `::ffff:0:0/96` and site-local `fec0::/10` are no
   destination of their own, and where each is delivered depends on the

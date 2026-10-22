@@ -70,9 +70,18 @@
   as its own: one on its interfaces (a public one included), and on Linux any
   address the kernel's routing table delivers here (a `local`, broadcast,
   anycast or multicast route, such as an AnyIP range on `lo`), asked of the
-  kernel per connection. The IPv4 address inside an IPv4-mapped, NAT64 or
-  6to4 address is checked too, every address a name resolves to is checked,
-  and the address checked is the one dialled. When the machine cannot tell,
+  kernel per connection, and on Linux any address the kernel routes straight
+  onto a link that stays on this machine: a container's veth, or a bridge
+  whose every port is a veth, a tap or a dummy, which is the bridge network
+  Docker, Podman, LXD and libvirt each make for their containers and VMs. A
+  bridge with a network card, a bond or a VLAN among its ports is the LAN, a
+  VPN or a tunnel to other machines leaves, and so does a route through a
+  gateway, which sends the packet on. A link an IPv4 or IPv6 default route
+  of the main table goes out of is never inside: it is this machine's way
+  out, so a bastion that is itself in a container dials the network on its
+  own veth, its LAN included. The IPv4 address inside an
+  IPv4-mapped, NAT64 or 6to4 address is checked too, every address a name
+  resolves to is checked, and the address checked is the one dialled. When the machine cannot tell,
   it refuses. A coder run reaches a LAN host only when you named it in
   `coders set --allow-lan`; the anchored egress lane has no such exception.
   The anchored lane's refusal of this machine's own non-private addresses is
@@ -84,7 +93,9 @@
   address this machine takes as its own, checked as above and also inside an
   IPv4-mapped, NAT64 or 6to4 address. It
   keeps your LAN: a private, CGNAT or reserved address that is not this
-  machine's is dialled. Every address a name resolves to is checked there
+  machine's is dialled. A container or VM on a network made on this machine
+  is this machine, not the LAN; on macOS and Windows, which have no route
+  lookup here, such an address is dialled. Every address a name resolves to is checked there
   too, and only those addresses are dialled, in order, the next as soon as
   one fails or none has answered within 300 ms. This is new in
   0.55.0; before it, a local machine's egress lane vetted no destination, so

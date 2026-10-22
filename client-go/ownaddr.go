@@ -19,6 +19,15 @@ package main
 //     `local` route (`ip route add local 192.0.2.0/24 dev lo`, AnyIP) makes a
 //     whole range this machine. Only a route of type unicast leaves the
 //     machine; local, broadcast, anycast and multicast routes are refused.
+//     A destination on a link that stays on this machine is refused too: a
+//     container's veth, or a bridge whose every port is a veth, a tap or a
+//     dummy (the bridge networks Docker, Podman, LXD and libvirt make here).
+//     A container or VM on one of them is a service on this machine. A route
+//     through a gateway on such a link leaves: the gateway sends the packet
+//     on, as the machine a container runs on does for the container. A link
+//     a main-table default route goes out of is never inside: it is this
+//     machine's way out, so a bastion in a container keeps the network on
+//     its own veth, its LAN included.
 //
 // The IPv4 address inside an IPv4-mapped, NAT64 (64:ff9b::/96) or 6to4
 // (2002::/16) address is checked as well, since that is what such an address

@@ -230,8 +230,10 @@ func egressVettedAddrs(ctx context.Context, hostport string) ([]string, string) 
 	}
 	// This machine is not only loopback: a public address on its NIC, a LAN
 	// address on it, or a range the kernel delivers locally through a `local`
-	// route, reaches its 0.0.0.0 services too (ownaddr.go). This lane has no
-	// allow list, so the refusal has no exception on either kind of box.
+	// route, reaches its 0.0.0.0 services too, and a container's or VM's
+	// address on a network made here reaches a service on it (ownaddr.go). This
+	// lane has no allow list, so the refusal has no exception on either kind of
+	// box.
 	own, err := ownDestination(addrs)
 	if err != nil {
 		return nil, "refused: egress to " + host + " — this machine could not tell whether that is itself, so it cannot be vetted"
