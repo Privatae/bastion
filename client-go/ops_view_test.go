@@ -110,7 +110,7 @@ func TestOpManifestReadsAreJudgedLikeEffects(t *testing.T) {
 		`"/proc/1/environ"`:      false,
 		`"/"`:                    false,
 	} {
-		_, err := parseOpManifest([]byte(strings.Replace(strings.Replace(base, "%s/", "/srv/work/optest/x/", 1), "%s", read, 1)))
+		_, err := parseOpManifest([]byte(strings.Replace(strings.Replace(base, "%s/", "/srv/optest/x/", 1), "%s", read, 1)))
 		if (err == nil) != ok {
 			t.Errorf("reads %s: ok=%v err=%v", read, ok, err)
 		}

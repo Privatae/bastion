@@ -101,6 +101,31 @@ says which version is. Older entries are not marked.
   filters the ollama forward, and the egress lane is no way around it. On an
   anchored machine the forward filters for every pairing, which the page now
   says too.
+- **How this repository is published (docs only).** From this release on,
+  GitHub receives each change merged since the last release as its own commit,
+  titled as the change was, instead of one commit per release. The README,
+  CONTRIBUTING.md and SECURITY.md say so, and say that releases from 0.53.2 on
+  can be verified from a clone, since the earlier tags are not public.
+- **The personal-data check reads what it used to miss.** A listed term
+  written right after a backslash escape (`\n`, `\t`, `\u00e9`) is found, and
+  so is any value inside a run of base64 or base64url that decodes to text.
+  The reserved entity ids are read from `/etc/privatae/reserved-entity-ids`
+  (one per line, `RESERVED_ENTITY_IDS_FILE` to point elsewhere) instead of
+  being written in the script; where that file is absent, as in public CI,
+  the entity-id check is skipped and the run prints a NOTE, as the term check
+  already does without its key. A file that holds no id, or a line that is
+  not one, fails the run.
+- **The former-name check reads comments and Markdown.** A kept identifier
+  is set aside only in Go code; in a comment, this changelog or any other
+  file it is a hit like the bare word, and the two entries that spelled the
+  device-fingerprint prefix out now name `fpSANPrefix` instead.
+- **CI on GitHub.** `.github/workflows/ci.yml` runs the jobs of
+  `.gitea/workflows/ci.yml` on GitHub Actions in the same Go image, pinned by
+  the same digest, with no action from the marketplace and a token that can
+  only read. A step fails if its digest stops matching `deploy/build.sh`.
+- Tests use documentation addresses (`2001:db8::/32`, `203.0.113.0/24`) and
+  neutral paths, and comments state their reason instead of citing a pull
+  request by number; a test keeps published source free of such numbers.
 
 ## 0.54.1
 
@@ -304,13 +329,13 @@ says which version is. Older entries are not marked.
 - **The device fingerprint is sent under a second name to a Host with no
   platform.** A pairing with such a Host (`--redeem-url unix://…` or
   `https://…`) sends an operator certificate request that carries the
-  fingerprint as two URI SANs: first `urn:skema:hwfp:<fp>` (`fpSANPrefix`),
-  then `urn:privatae:hwfp:<fp>`, which that Host reads. A platform pairing's
-  request names it once, under `urn:skema:hwfp:`, as before: the platform
-  signs a request with that one name and refuses one with any other. A
-  signed accounting verifies with the fingerprint under either name, and a
-  signer certificate that names two different fingerprints is refused rather
-  than resolved.
+  fingerprint as two URI SANs: first under the original device-fingerprint
+  URN prefix (`fpSANPrefix` in pair.go), then `urn:privatae:hwfp:<fp>`, which
+  that Host reads. A platform pairing's request names it once, under
+  `fpSANPrefix`, as before: the platform signs a request with that one name
+  and refuses one with any other. A signed accounting verifies with the
+  fingerprint under either name, and a signer certificate that names two
+  different fingerprints is refused rather than resolved.
 
 ## 0.52.0
 

@@ -16,8 +16,8 @@ import (
 )
 
 func TestCandidateList(t *testing.T) {
-	got := candidateList([]string{" [2604:2dc0:100:589b::36]:51820 ", "203.0.113.10:52054", ""}, "203.0.113.10:52054")
-	want := []string{"[2604:2dc0:100:589b::36]:51820", "203.0.113.10:52054"}
+	got := candidateList([]string{" [2001:db8:100::36]:51820 ", "203.0.113.10:52054", ""}, "203.0.113.10:52054")
+	want := []string{"[2001:db8:100::36]:51820", "203.0.113.10:52054"}
 	if !sameList(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -26,20 +26,20 @@ func TestCandidateList(t *testing.T) {
 		t.Fatalf("single: %v", got)
 	}
 	// The v4 entry is appended when the list omits it, never dropped.
-	if got := candidateList([]string{"[2604::1]:51820"}, "1.2.3.4:52001"); !sameList(got, []string{"[2604::1]:51820", "1.2.3.4:52001"}) {
+	if got := candidateList([]string{"[2001:db8::1]:51820"}, "203.0.113.20:52001"); !sameList(got, []string{"[2001:db8::1]:51820", "203.0.113.20:52001"}) {
 		t.Fatalf("append: %v", got)
 	}
 }
 
 func TestParseRotateTarget(t *testing.T) {
 	// New host: ordered list.
-	c, pk := parseRotateTarget([]byte(`{"ok":true,"rotate_endpoint":{"endpoint":"1.2.3.4:52054","endpoints":["[2604::36]:51820","1.2.3.4:52054"],"endpoint_pubkey":"PK="}}`))
-	if pk != "PK=" || !sameList(c, []string{"[2604::36]:51820", "1.2.3.4:52054"}) {
+	c, pk := parseRotateTarget([]byte(`{"ok":true,"rotate_endpoint":{"endpoint":"203.0.113.20:52054","endpoints":["[2001:db8::36]:51820","203.0.113.20:52054"],"endpoint_pubkey":"PK="}}`))
+	if pk != "PK=" || !sameList(c, []string{"[2001:db8::36]:51820", "203.0.113.20:52054"}) {
 		t.Fatalf("new host: %v %q", c, pk)
 	}
 	// Old host: only endpoint.
-	c, pk = parseRotateTarget([]byte(`{"rotate_endpoint":{"endpoint":"1.2.3.4:52054","endpoint_pubkey":"PK="}}`))
-	if pk != "PK=" || !sameList(c, []string{"1.2.3.4:52054"}) {
+	c, pk = parseRotateTarget([]byte(`{"rotate_endpoint":{"endpoint":"203.0.113.20:52054","endpoint_pubkey":"PK="}}`))
+	if pk != "PK=" || !sameList(c, []string{"203.0.113.20:52054"}) {
 		t.Fatalf("old host: %v %q", c, pk)
 	}
 	// No directive.
@@ -134,7 +134,7 @@ func TestEndpointRoutableRefusesWhenTheKernelHasNoRoute(t *testing.T) {
 		}
 		return nil, &net.OpError{Op: "dial", Net: network, Err: errors.New("connect: network is unreachable")}
 	}
-	err := endpointRoutable("[2604:2dc0:100:589b::4a]:51820")
+	err := endpointRoutable("[2001:db8:100::4a]:51820")
 	if !errors.Is(err, errNoLocalPath) {
 		t.Fatalf("want errNoLocalPath, got %v", err)
 	}
@@ -150,7 +150,7 @@ func TestEndpointRoutableRefusesWhenTheKernelHasNoRoute(t *testing.T) {
 		c, _ := net.Pipe()
 		return c, nil
 	}
-	if err := endpointRoutable("15.204.198.155:20074"); err != nil {
+	if err := endpointRoutable("203.0.113.55:20074"); err != nil {
 		t.Fatalf("routable endpoint refused: %v", err)
 	}
 }
@@ -158,7 +158,7 @@ func TestEndpointRoutableRefusesWhenTheKernelHasNoRoute(t *testing.T) {
 // A standing local condition is stated once, not once a minute.
 func TestNotePathlessReportsOnlyTheFirstTime(t *testing.T) {
 	s := rotateState{failed: map[string]probeFailure{}} // noPath deliberately nil, as the package var is
-	ep := "[2604:2dc0:100:589b::4a]:51820"
+	ep := "[2001:db8:100::4a]:51820"
 	if !s.notePathless(ep) {
 		t.Fatal("the first sighting is the one worth logging")
 	}
@@ -200,7 +200,7 @@ func failuresRecordedFor(ep string) []string {
 // the guard after the swap this panics instead of quietly passing.
 func TestProbeAndCommitRefusesUnroutableBeforeTouchingTheLivePeer(t *testing.T) {
 	orig := dialForRouteCheck
-	ep := "[2604:2dc0:100:589b::4a]:51820"
+	ep := "[2001:db8:100::4a]:51820"
 	defer func() {
 		dialForRouteCheck = orig
 		rotation.clearPathless(ep)
@@ -212,7 +212,7 @@ func TestProbeAndCommitRefusesUnroutableBeforeTouchingTheLivePeer(t *testing.T) 
 		return nil, &net.OpError{Op: "dial", Net: network, Err: errors.New("connect: network is unreachable")}
 	}
 
-	cfg := &Config{Endpoint: "15.204.198.155:20074", EndpointPubKey: "OLD="}
+	cfg := &Config{Endpoint: "203.0.113.55:20074", EndpointPubKey: "OLD="}
 	err := probeAndCommit(cfg, nil, ep, "NEW=", []string{ep, cfg.Endpoint})
 	if !errors.Is(err, errNoLocalPath) {
 		t.Fatalf("want errNoLocalPath before any peer swap, got %v", err)
@@ -225,7 +225,7 @@ func TestProbeAndCommitRefusesUnroutableBeforeTouchingTheLivePeer(t *testing.T) 
 		t.Fatalf("an unroutable candidate must not consume the probe backoff, recorded %q", got)
 	}
 	// The live endpoint is untouched: nothing was committed.
-	if cfg.Endpoint != "15.204.198.155:20074" || cfg.EndpointPubKey != "OLD=" {
+	if cfg.Endpoint != "203.0.113.55:20074" || cfg.EndpointPubKey != "OLD=" {
 		t.Fatalf("config moved on a refused candidate: %s %s", cfg.Endpoint, cfg.EndpointPubKey)
 	}
 }

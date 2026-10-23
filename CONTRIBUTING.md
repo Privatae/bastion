@@ -9,10 +9,9 @@ their approval on that machine.
 
 Issues and pull requests are welcome on GitHub, at
 [github.com/Privatae/bastion](https://github.com/Privatae/bastion).
-Development happens in a private repository, and the public repository
-receives the source of each published release as one snapshot commit, so an
-accepted change is carried into the development repository and arrives with
-the next release. Sign-in on the git.privatae.ai forge is not reachable from
+Development happens in a private repository, so an accepted change is carried
+into the development repository and arrives here with the next release, as
+its own commit. Sign-in on the git.privatae.ai forge is not reachable from
 the internet, so issues and pull requests cannot be opened there. You can
 also read, clone, build and verify a release, and fork under the GPL. Report
 a security problem by email, not in a public issue (see

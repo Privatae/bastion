@@ -290,7 +290,7 @@ func TestProcessFindingsFromTheRealComparison(t *testing.T) {
 	}
 }
 
-// THE GUARDS HOLD ACROSS THE WHOLE TREE (review of #100, blocking). A finding
+// THE GUARDS HOLD ACROSS THE WHOLE TREE. A finding
 // whose tree holds an accounting entry, an app, or something the bastion
 // started: those processes and everything beneath them are spared, the rest
 // of the tree is stopped.
@@ -334,8 +334,8 @@ func TestContainFindingRefusesTheBastionsOwnAncestors(t *testing.T) {
 }
 
 // THE REFUSALS liveProcessFindings MAKES, through the real function with only
-// the machine replaced (review of #100: every other test replaced the whole
-// function, so none of these was tested).
+// the machine replaced. Every other test replaces the whole function, so
+// this is the one that tests these refusals.
 //
 // MUTATION: drop the root check.   RESULT: red (no_authority not returned).
 // MUTATION: drop !digestOK.         RESULT: red (an edited accounting is used).
@@ -375,7 +375,7 @@ func TestLiveProcessFindingsRefusesWhatItCannotTrust(t *testing.T) {
 	}
 }
 
-// RESULTS SURVIVE A RESTART (review of #100): an answer recorded before the
+// RESULTS SURVIVE A RESTART: an answer recorded before the
 // process died is still there — and still stops a re-run — after it starts.
 //
 // MUTATION: skip containResultsSaveLocked.  RESULT: red.
@@ -413,7 +413,7 @@ func TestContainFindingRunsAnOrderOnce(t *testing.T) {
 	}
 }
 
-// THE REAL FILTER IS WIRED IN (review of #100): with containFilter left at its
+// THE REAL FILTER IS WIRED IN: with containFilter left at its
 // default, a new process the bastion itself started is filtered by the same
 // deltaFilter the pass uses, and so is never containable; the same process
 // started by anyone else is.
@@ -422,7 +422,7 @@ func TestContainFindingRunsAnOrderOnce(t *testing.T) {
 func TestContainFilterIsTheDeltaPassFilter(t *testing.T) {
 	// The process's AGE is supplied (an hour), not read from a real process:
 	// a real pid's age depends on where the suite runs — pid 1 in a fresh PID
-	// namespace is seconds old and reads as short-lived (review of #100).
+	// namespace is seconds old and reads as short-lived.
 	self := os.Getpid()
 	prevTree, prevAge := processTree, deltaAgeFn
 	t.Cleanup(func() { processTree, deltaAgeFn = prevTree, prevAge })
@@ -446,7 +446,7 @@ func TestContainFilterIsTheDeltaPassFilter(t *testing.T) {
 	}
 }
 
-// THE ROOT'S IDENTITY IS CARRIED FROM THE WALK (review of #100): a pid that
+// THE ROOT'S IDENTITY IS CARRIED FROM THE WALK: a pid that
 // changed hands between the finding walk and the kill is not signalled at all.
 //
 // MUTATION: killTree(pid, protected) instead of killTreeExpect with the view's
@@ -471,7 +471,7 @@ func TestContainFindingDoesNotKillARootThatChangedHandsAfterTheWalk(t *testing.T
 	}
 }
 
-// THE AGENT PATH HAS THE SAME TREE GUARD (review of #100): an accounting entry
+// THE AGENT PATH HAS THE SAME TREE GUARD: an accounting entry
 // or an app inside an agent's tree is spared with its subtree.
 //
 // MUTATION: killTree(pid, spareFromContain) in maybeContain.  RESULT: red.
@@ -497,9 +497,9 @@ func TestAgentContainSparesProtectedProcessesInTheTree(t *testing.T) {
 	}
 }
 
-// AN AGENT WHOSE OWN FINGERPRINT IS IN THE ACCOUNTING IS STILL STOPPED (review
-// of #100, round 3): the tree guard applies BENEATH the agent, never to the
-// agent the host named. Before this, such an agent was spared in silence.
+// AN AGENT WHOSE OWN FINGERPRINT IS IN THE ACCOUNTING IS STILL STOPPED: the
+// tree guard applies BENEATH the agent, never to the agent the host named.
+// Before this, such an agent was spared in silence.
 //
 // MUTATION: killTree(pid, guard) — the guard on the root too.  RESULT: red.
 func TestAgentContainStopsAnAgentThatIsItselfInTheAccounting(t *testing.T) {

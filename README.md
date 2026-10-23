@@ -300,11 +300,14 @@ test it cites exists in `client-go`.
 
 ## How this repo is published
 
-Development happens in a private repository. This repository receives the
-source of each published release as one snapshot commit, tagged
-`v<version>`, with the tree identical to the commit the signed release
-manifest names as `built_from`. Every binary can be rebuilt from the tag and
-compared with the published one: see [Verify a release](#verify-a-release).
+Development happens in a private repository, and its history is not
+published. When a release is published, each change merged since the last one
+arrives on GitHub as a commit with the same files, titled as the change was
+and dated when it was merged; the copy at git.privatae.ai receives the release
+as one commit. In both, the release is tagged `v<version>` on a commit whose
+tree is identical to the commit the signed release manifest names as
+`built_from`. Every binary can be rebuilt from the tag and compared with the
+published one: see [Verify a release](#verify-a-release).
 
 Issues and pull requests are welcome on GitHub, at
 [github.com/Privatae/bastion](https://github.com/Privatae/bastion). An
@@ -359,8 +362,8 @@ It checks the release manifest's signature against the keys pinned in
 `client-go/release_sign.go`, checks out the release's source, rebuilds it, and
 compares every binary's sha256 with the published one.
 
-From this release on, each public snapshot in this repository carries the tag
-`v<version>` (for example `v0.43.0`). The manifest's `built_from` names the
+Each published release in this repository carries the tag `v<version>` (for
+example `v0.54.1`). The manifest's `built_from` names the
 commit in the repository the release was built in, which is not a commit here,
 so the script checks out the tag `v<version>` for the version the manifest
 names, and prints which source it used. The tag is annotated and its message
@@ -373,8 +376,8 @@ bytes.
 
 If the published version has no tag in your clone, the script says so and
 stops without building. If it cannot fetch tags, it says that instead.
-Releases from 0.43.0 on can be checked this way from a clone of this
-repository.
+Releases from 0.53.2 on can be checked this way from a clone of this
+repository; the tags of earlier releases are not in it.
 
 ## Contributing
 

@@ -1,0 +1,165 @@
+# The checks of .gitea/workflows/ci.yml, for the copy of this repository on
+# GitHub. Gitea reads .gitea/workflows when it exists and then ignores this
+# directory, so each forge runs one of the two files, never both.
+#
+# The jobs, image and commands are the same as there. Every job runs in the Go
+# toolchain image deploy/build.sh builds releases with, pinned by the same
+# digest, so CI and the release use the same compiler. GitHub does not let a
+# job's container name come from env, so the digest is written out in each
+# job; it must match GO_IMAGE in deploy/build.sh and .gitea/workflows/ci.yml.
+# No action from the marketplace is used: the commit is fetched with git from
+# this repository's public URL, so nothing outside this file and the pinned
+# image runs. The job token can only read.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # The pull request's own head, or the pushed commit.
+  WANT: ${{ github.event.pull_request.head.sha || github.sha }}
+  REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+  GOTOOLCHAIN: local
+  CGO_ENABLED: "0"
+
+defaults:
+  run:
+    shell: sh -eu {0}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container:
+      image: golang@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59
+    env:
+      PRIVATAE_REQUIRE_AGE: "1"
+    steps:
+      - name: tools
+        # pdftotext, python3, setpriv and git are what the extract and
+        # peer-identity tests call; without them those tests fail rather than
+        # skip. Alpine's git has no http-backend (it is in git-daemon), which
+        # the forge-token test serves its repository with.
+        run: apk add -q --no-cache poppler-utils python3 setpriv curl git git-daemon
+      - name: fetch the commit
+        # The checkout belongs to the runner's user and the job runs as root,
+        # so git is told the directory is safe; go build reads it to stamp the
+        # binary with the commit.
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$PWD"
+          git init -q .
+          git fetch -q --depth=1 "$REPO_URL" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: age
+        # The backup tests check this code against the age command itself: a
+        # pinned age release, its archive checked against the SHA-256 below,
+        # and PRIVATAE_REQUIRE_AGE makes those tests fail rather than skip if
+        # it is missing.
+        run: |
+          case "$(uname -m)" in
+            x86_64)  a=amd64; sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;;
+            aarch64) a=arm64; sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;;
+            *) echo "no pinned age release for $(uname -m)"; exit 1 ;;
+          esac
+          curl -fsSL -o /tmp/age.tgz "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-$a.tar.gz"
+          echo "$sum  /tmp/age.tgz" | sha256sum -c -
+          tar -xzf /tmp/age.tgz -C /tmp age/age
+          /tmp/age/age --version
+          echo "AGE_BIN=/tmp/age/age" >> "$GITHUB_ENV"
+      - name: gofmt, go vet on linux/darwin/windows, build, go test
+        working-directory: client-go
+        run: |
+          echo "== gofmt"; out="$(gofmt -l .)"; [ -z "$out" ] || { echo "$out"; exit 1; }
+          for os in linux darwin windows; do echo "== go vet ($os)"; GOOS=$os go vet ./...; done
+          echo "== go build"; go build -o /tmp/privatae-bastion .
+          echo "== go test"; go test -count=1 ./...
+      - name: the same for deploy/release-sign
+        working-directory: deploy/release-sign
+        run: |
+          out="$(gofmt -l .)"; [ -z "$out" ] || { echo "$out"; exit 1; }
+          for os in linux darwin windows; do GOOS=$os go vet ./...; done
+          go test -count=1 ./...
+
+  personal-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    container:
+      image: golang@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59
+    steps:
+      - name: tools
+        run: apk add -q --no-cache bash git python3
+      - name: fetch the commit
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$PWD"
+          git init -q .
+          git fetch -q --depth=1 "$REPO_URL" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: this file's image is the image releases are built with
+        # Each job here names the digest itself, so a change to GO_IMAGE in
+        # deploy/build.sh that missed this file fails here.
+        run: |
+          want="$(sed -n 's/^GO_IMAGE="\(golang@sha256:[0-9a-f]\{64\}\)"$/\1/p' deploy/build.sh)"
+          test -n "$want"
+          test "$(grep -c "^      image: $want\$" .github/workflows/ci.yml)" -eq 3
+          test "$(grep -c '^      image: ' .github/workflows/ci.yml)" -eq 3
+          grep -q "^  GO_IMAGE: $want\$" .gitea/workflows/ci.yml
+      - name: no person's data in the tree
+        # Reads files, runs nothing from the tree. The term check needs the
+        # maintainers' key and the entity-id check the reserved ids, which
+        # this job never holds, so both are skipped and the run prints a NOTE
+        # for each; the provenance, email and phone checks run.
+        run: python3 -I scripts/test_no_personal_data.py
+      - name: every test the claims table cites exists
+        # docs/claims.md names, for each security claim, the test that fails
+        # if the claim stops being true. A renamed or deleted test would leave
+        # the claim looking covered; this fails the run instead. Reads files
+        # and greps; runs nothing from the tree.
+        run: bash deploy/check-claims.sh
+      - name: no Host source file names in the tree
+        # The member repository publishes this tree as a release was built,
+        # and its release step refuses a path into the Host's Python
+        # (server/... or brain/... .py): this repo has no such files, so the
+        # path can only name another program's source. git grep exits 1 when
+        # nothing matches and above 1 when it could not search; only 1 passes.
+        run: |
+          rc=0
+          git grep -nIE 'server/[a-z_/]+\.py|brain/[a-z_/]+\.py' || rc=$?
+          case "$rc" in
+            1) ;;
+            0) echo "these lines name another program's source file; describe it instead" >&2
+               exit 1 ;;
+            *) echo "git grep could not search the tree (exit $rc), so it was not checked" >&2
+               exit 1 ;;
+          esac
+
+  fuzz:
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: golang@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59
+    steps:
+      - name: tools
+        run: apk add -q --no-cache bash git
+      - name: fetch the commit
+        run: |
+          set -o pipefail
+          git config --global --add safe.directory "$PWD"
+          git init -q .
+          git fetch -q --depth=1 "$REPO_URL" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: every fuzz target, 5 seconds each
+        # A short pass on every commit. Run deploy/fuzz.sh with its default of
+        # 20 seconds before changing a wall a host's input goes through.
+        run: bash deploy/fuzz.sh 5

@@ -519,7 +519,7 @@ func requireSandbox(t *testing.T) {
 	}
 }
 
-const opTestRoot = "/srv/work/optest"
+const opTestRoot = "/srv/privatae-optest"
 
 // opProbeRun is a python3 op that tries what the sandbox must deny: a dial
 // to the host's sshd and a write under /proc. It prints a marker for each

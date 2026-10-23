@@ -61,8 +61,8 @@ func TestTheOperatorCSRNamesTheFingerprintForItsSigner(t *testing.T) {
 
 // platformSignerRefusal is the platform's rule for the SANs of an operator
 // CSR it signs (the bridge's _checked_operator_csr): one name, a URI,
-// urn:skema:hwfp: and a fingerprint of 16 to 128 base64url characters.
-// Anything else is refused before anything is signed.
+// the device-fingerprint prefix (fpSANPrefix) and a fingerprint of 16 to 128
+// base64url characters. Anything else is refused before anything is signed.
 var platformFPRe = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 func platformSignerRefusal(csr *x509.CertificateRequest) string {

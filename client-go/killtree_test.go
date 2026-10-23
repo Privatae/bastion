@@ -208,7 +208,7 @@ func identityRig(t *testing.T, script map[int][]string, stopped map[int]bool) {
 	}
 }
 
-// A PID IS NOT A PROCESS (review of #100). 202's number changes hands between
+// A PID IS NOT A PROCESS. 202's number changes hands between
 // the read and the stop: the stranger is resumed and never killed. 203 dies
 // while frozen and its number is reused before the kill: not killed, and not
 // resumed either (the frozen process is gone; the new one was never stopped).
@@ -239,7 +239,7 @@ func TestKillTreeNeverSignalsAStrangerUnderARecycledPid(t *testing.T) {
 }
 
 // A PROCESS SOMEONE ELSE HAD STOPPED is killed with the tree but never resumed
-// by us when the kill fails (review of #100, N4): its stopped state was not
+// by us when the kill fails: its stopped state was not
 // ours to undo.
 //
 // MUTATION: resume on kill failure regardless of wasStopped.  RESULT: red.
@@ -311,7 +311,7 @@ func TestRecoverFrozenTreesThawsOnlyWhatItFroze(t *testing.T) {
 	}
 }
 
-// THE FROZEN SET IS JOURNALLED AS IT IS FROZEN (review of #100): a bastion that
+// THE FROZEN SET IS JOURNALLED AS IT IS FROZEN: a bastion that
 // dies during the freeze rounds still leaves a record of what it stopped.
 //
 // MUTATION: write the journal only after the freeze rounds.  RESULT: red — the

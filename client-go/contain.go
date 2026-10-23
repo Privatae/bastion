@@ -135,7 +135,7 @@ func maybeContain(pairing, dcnDir string, heartbeatResponse []byte) {
 		// already passed the agent checks above, and an agent whose own
 		// fingerprint is in the accounting (one running as a service, say)
 		// would otherwise be spared in silence — killTree returns 0 for a
-		// spared root and a zero kill is not recorded (review of #100).
+		// spared root and a zero kill is not recorded.
 		root := pid
 		killed := killTree(pid, func(p int) bool {
 			if p == root {

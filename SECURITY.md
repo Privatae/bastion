@@ -102,7 +102,7 @@ one installed.
 **Checking our work.** Release builds are reproducible.
 `deploy/verify-release.sh` fetches the published manifest, checks its
 signature, checks out the release's source, rebuilds it, and compares every
-binary's digest. From 0.43.0 on, each public snapshot in this repository
+binary's digest. From 0.53.2 on, each published release in this repository
 carries the annotated tag `v<version>`, whose message records the release's
 `built_from`. That field names the commit in the repository the release was
 built in, which is not a commit here, so the script uses the tag and prints

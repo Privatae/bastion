@@ -90,7 +90,7 @@ var procIdentity = osProcIdentity
 // walked. The tree kill used to test only the root, so stopping a finding
 // took everything under it — a replaced sshd took every ssh session with it,
 // accounting entries included, which is exactly what the guards on the root
-// exist to refuse (review of #100). Killing a parent does not kill its
+// exist to refuse. Killing a parent does not kill its
 // children, so a spared subtree simply survives, re-parented.
 //
 // A PID IS NOT A PROCESS. Each pid's identity is read before it is stopped and
@@ -111,7 +111,7 @@ func killTree(root int, spare func(int) bool) int { return killTreeExpect(root, 
 // killTreeExpect is killTree for a root whose identity was read when it was
 // chosen (the finding walk): if the pid no longer carries that identity, the
 // number has changed hands since and nothing is signalled. That closes the gap
-// between choosing the root and the first read inside the kill (review of #100).
+// between choosing the root and the first read inside the kill.
 func killTreeExpect(root int, spare func(int) bool, rootID string) int {
 	if spare(root) {
 		return 0

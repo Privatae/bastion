@@ -104,7 +104,7 @@ func recordContainResult(pairing string, o findingOrder, outcome string, stopped
 // "Carried out once" held only while this process lived: a bastion that
 // restarted after a kill and before the beat carried the answer (a self-update,
 // a crash) would receive the order again, run it again, and report
-// not_a_finding — or kill a restarted copy (review of #100). So every result
+// not_a_finding — or kill a restarted copy. So every result
 // is written to the config dir as it is recorded and read back on first use.
 
 var containResultsLoaded bool
@@ -165,7 +165,7 @@ func containResultsSaveLocked() {
 	}
 	if b, err := json.Marshal(disk); err == nil {
 		// Atomic: a crash mid-write must not corrupt the record and make the
-		// box forget answers it gave (review of #100).
+		// box forget answers it gave.
 		_ = atomicWrite(p, b)
 	}
 }
@@ -231,7 +231,7 @@ type findingView struct {
 	protected map[int]bool
 	// identity: each finding pid's identity read straight after the walk. The
 	// kill checks it before touching the root, so a pid reused between the walk
-	// and the kill is never signalled (review of #100).
+	// and the kill is never signalled.
 	identity map[int]string
 }
 
@@ -441,9 +441,9 @@ func maybeContainFindings(pairing, dcnDir string, heartbeatResponse []byte) {
 // process in the tree, not only the ones an order names — an accounting entry
 // (accountingPIDs), an app the user is running, anything this bastion started,
 // init, the bastion. killTree does not signal a protected process or walk
-// beneath it (review of #100: stopping a replaced sshd would otherwise have
-// taken every ssh session with it). It also returns the bastion's ANCESTORS —
-// its launch chain — which the finding path refuses by name: if any process in
+// beneath it: without that, stopping a replaced sshd would take every ssh
+// session with it. It also returns the bastion's ANCESTORS — its launch
+// chain — which the finding path refuses by name: if any process in
 // a tree were an ancestor of the bastion, the tree's root would be one too, so
 // the named check always fires first and a tree-level check could never be
 // reached.
