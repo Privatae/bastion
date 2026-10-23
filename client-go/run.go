@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,10 +32,16 @@ import (
 // deploy/publish.sh + deploy/VERSION). The "dev" default flags an unstamped local build.
 var clientVersion = "dev"
 
+// b64ToHex turns a base64 WireGuard key into the hex the device's
+// configuration text takes. A key is 32 bytes; anything else is refused here
+// rather than by the device.
 func b64ToHex(b64 string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		return "", err
+	}
+	if len(raw) != 32 {
+		return "", fmt.Errorf("a WireGuard key is 32 bytes, this one is %d", len(raw))
 	}
 	return hex.EncodeToString(raw), nil
 }
@@ -131,6 +138,11 @@ func cmdRun() error {
 		}
 	}
 	if started == 0 {
+		for _, cfg := range cfgs {
+			if cfg.invalid != "" {
+				return fmt.Errorf("no pairing can be served — %s", cfg.invalid)
+			}
+		}
 		return fmt.Errorf("no active pairing — every pairing is pending or revoked; the anchor host must approve one")
 	}
 	go superviseLoop(ctx)
@@ -204,6 +216,10 @@ type pairingRun struct {
 // pairing — it is a file), when it is already running, or when the daemon is
 // not running (a CLI process handling a grant has nothing to start).
 func startPairing(cfg *Config) bool {
+	if cfg.invalid != "" {
+		fmt.Printf("[%s] not started (no tunnel, no lanes, no dirs): %s\n", cfg.HostName, cfg.invalid)
+		return false
+	}
 	if !cfg.active() {
 		fmt.Printf("[%s] %s — not started (no tunnel, no lanes, no dirs) until the anchor host approves it\n", cfg.HostName, cfg.stateName())
 		return false
@@ -901,25 +917,110 @@ func heartbeatPayload(cfg *Config, dev interface{ IpcGet() (string, error) }, ho
 // function of its own so a test can read back what a device holds after
 // exactly the configuration runPairing applies.
 func configureTunnelPeer(dev interface{ IpcSet(string) error }, cfg *Config) error {
-	privHex, err := b64ToHex(cfg.WGPrivateKey)
-	if err != nil {
-		return fmt.Errorf("wg private key: %w", err)
-	}
-	endpointPubHex, err := b64ToHex(cfg.EndpointPubKey)
-	if err != nil {
-		return fmt.Errorf("endpoint pubkey: %w", err)
-	}
-	hostCIDR, err := hostTunnelAllowedIP(cfg.HostTunnelIP)
+	uapi, err := tunnelPeerUAPI(cfg, cfg.Endpoint, cfg.EndpointPubKey, false)
 	if err != nil {
 		return err
 	}
-	// AllowedIPs is the host's tunnel alias ONLY — the tunnel can reach nothing else.
-	uapi := fmt.Sprintf("private_key=%s\npublic_key=%s\nendpoint=%s\npersistent_keepalive_interval=25\nallowed_ip=%s\n",
-		privHex, endpointPubHex, cfg.Endpoint, hostCIDR)
 	if err := dev.IpcSet(uapi); err != nil {
 		return fmt.Errorf("configure wireguard: %w", err)
 	}
 	return nil
+}
+
+// tunnelPeerUAPI is the configuration text that gives the device its one
+// peer: the host at endpoint under pubkey, with the host's tunnel alias as
+// the only allowed address. Both the boot-time configuration and the live
+// endpoint swap build it here. The text is one setting per line and every
+// value in it comes from the host, so each is checked before it is written:
+// a newline in any of them would add settings of its own.
+func tunnelPeerUAPI(cfg *Config, endpoint, pubkey string, replacePeers bool) (string, error) {
+	privHex, err := b64ToHex(cfg.WGPrivateKey)
+	if err != nil {
+		return "", fmt.Errorf("wg private key: %w", err)
+	}
+	pubHex, err := b64ToHex(pubkey)
+	if err != nil {
+		return "", fmt.Errorf("endpoint pubkey: %w", err)
+	}
+	if err := checkEndpoint(endpoint); err != nil {
+		return "", err
+	}
+	hostCIDR, err := hostTunnelAllowedIP(cfg.HostTunnelIP)
+	if err != nil {
+		return "", err
+	}
+	replace := ""
+	if replacePeers {
+		replace = "replace_peers=true\n"
+	}
+	// AllowedIPs is the host's tunnel alias ONLY — the tunnel can reach nothing else.
+	return fmt.Sprintf("private_key=%s\n%spublic_key=%s\nendpoint=%s\npersistent_keepalive_interval=25\nallowed_ip=%s\n",
+		privHex, replace, pubHex, endpoint, hostCIDR), nil
+}
+
+// checkEndpoint accepts one tunnel endpoint: an IP address and port
+// ("203.0.113.7:51820", "[2001:db8::7]:51820") or an RFC 1123 host name and
+// port, the port 1-65535. Anything else is refused, any space or control
+// character included: the value is written into the configuration text.
+func checkEndpoint(s string) error {
+	bad := fmt.Errorf("the endpoint %q is not a host:port — refusing to configure the tunnel to it", s)
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] >= 0x7f {
+			return bad
+		}
+	}
+	if ap, err := netip.ParseAddrPort(s); err == nil {
+		if ap.Port() == 0 || ap.Addr().Zone() != "" || ap.Addr().IsUnspecified() {
+			return bad
+		}
+		return nil
+	}
+	if strings.HasPrefix(s, "[") {
+		return bad // brackets hold an IPv6 address, and this one did not parse
+	}
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || !rfc1123Host(host) || len(port) > 5 || strings.Trim(port, "0123456789") != "" {
+		return bad
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return bad
+	}
+	return nil
+}
+
+// checkEndpoints applies checkEndpoint to each non-empty entry: a pairing
+// over a socket has no endpoint, and an empty list entry is dropped by
+// candidateList.
+func checkEndpoints(eps ...string) error {
+	for _, e := range eps {
+		if e == "" {
+			continue
+		}
+		if err := checkEndpoint(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rfc1123Host is a DNS host name: dot-separated labels of 1-63 letters,
+// digits and hyphens, no label starting or ending with a hyphen.
+func rfc1123Host(h string) bool {
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // hostTunnelAllowedIP is the one allowed address the tunnel's peer gets: the
@@ -991,6 +1092,10 @@ func cmdStatus() error {
 	}
 	fmt.Println()
 	for _, cfg := range cfgs {
+		if cfg.invalid != "" {
+			fmt.Printf("paired with: %s  [%s]\n  problem:  %s\n", cfg.HostName, cfg.stateName(), cfg.invalid)
+			continue
+		}
 		live := "not answering"
 		if bastionListening(cfg.ListenAddr) {
 			live = "answering"

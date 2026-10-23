@@ -606,7 +606,7 @@ func TestClaimAnchorWithNoToken(t *testing.T) {
 		if err := cmdClaimAnchor("", false, "", ""); err == nil || !contains(err.Error(), "machine authority") {
 			t.Fatalf("claim-anchor must need machine authority whether or not a token is given: %v", err)
 		}
-		return
+		t.Skip("the rest needs root: without machine authority claim-anchor stops at the refusal checked above")
 	}
 
 	t.Run("local mode refuses — the token is not what gates this", func(t *testing.T) {

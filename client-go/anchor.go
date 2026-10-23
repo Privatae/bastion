@@ -810,6 +810,11 @@ type pairingEntry struct {
 // --replace, so a pending host re-presenting a token keeps its original age
 // (the 10-minute unapproved clock does not restart). nil when the directory
 // cannot be read — the host keeps what it has, as with peers.
+//
+// A pairing whose file this build refuses (Config.invalid) is left out: it is
+// never served, so to a host it is not on this box. A host knows the states
+// active, pending and revoked and may read any other as active, so "invalid"
+// is never sent. The machine's own status and setup page still show it.
 func pairingsReport() []pairingEntry {
 	cfgs, err := loadPairings()
 	if err != nil {
@@ -817,7 +822,7 @@ func pairingsReport() []pairingEntry {
 	}
 	out := make([]pairingEntry, 0, len(cfgs))
 	for _, c := range cfgs {
-		if c.HostName == "" {
+		if c.HostName == "" || c.invalid != "" {
 			continue
 		}
 		out = append(out, pairingEntry{HostName: c.HostName, Handle: handleOf(c.HostName),
@@ -1115,6 +1120,13 @@ func cmdClaimAnchor(token string, rotate bool, owner, host string) error {
 		default:
 			return fmt.Errorf("this box serves %d hosts — say which one should hold the anchor:\n%s\n  e.g. `privatae-bastion claim-anchor --host %s`\nThe anchor host approves every pairing made here from then on; the other pairings keep the lanes they already have.",
 				len(cfgs), "    "+strings.Join(hostNames(cfgs), "\n    "), hostNames(cfgs)[0])
+		}
+		// A pairing whose file this build refuses is never served, so the box
+		// could not reach the host it would be anchored to, and that host would
+		// approve every pairing made here. Refused with the reason, before
+		// anything is written.
+		if cfg.invalid != "" {
+			return fmt.Errorf("%s cannot hold the anchor: %s", cfg.HostName, cfg.invalid)
 		}
 		// REVOKED is not "waiting", it is a decision, and it must not be undone by
 		// a command the user ran to do something else. pair.go holds the same line

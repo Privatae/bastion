@@ -64,6 +64,7 @@
       {{if .IsAnchor}}<span class="tag ok">anchor</span>{{end}}
       {{if eq .State "pending"}}<span class="tag warn">waiting for approval</span>{{end}}
       {{if eq .State "revoked"}}<span class="tag bad">revoked</span>{{end}}
+      {{if eq .State "invalid"}}<span class="tag bad">invalid, not served</span>{{end}}
     </div>
     <dl class="host-facts">
       <dt>Local port</dt>

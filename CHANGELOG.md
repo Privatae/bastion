@@ -101,6 +101,155 @@ says which version is. Older entries are not marked.
   filters the ollama forward, and the egress lane is no way around it. On an
   anchored machine the forward filters for every pairing, which the page now
   says too.
+- **A tunnel endpoint the host sends must be one host and port.** The
+  pairing response's `endpoint` and `endpoints`, and the endpoints in a
+  heartbeat's rotate directive, were written into the WireGuard
+  configuration unchecked. That configuration is one setting per line, so an
+  endpoint with a newline in it added settings of its own:
+  `203.0.113.7:51820` followed by a newline and `allowed_ip=::/0` let the
+  tunnel carry every IPv6 address, not only the host's. An endpoint must now
+  be an IP address or a host name with a port from 1 to 65535, and nothing
+  else, no space or control character. A pairing response with any other is
+  refused and nothing is saved, and a rotate directive with one is not acted
+  on. A WireGuard key must be 32 bytes. The tunnel's peer is now configured in
+  one place, which checks every value it writes.
+- **A pairing file that holds such an endpoint is listed but never served.**
+  An older build may have saved one. Its tunnel and lanes never come up, and
+  `run` names the file and says why. Every other pairing still loads and
+  serves, `status` shows the pairing as `invalid` with the same reason, and
+  `unpair` removes it, as does pairing that host again with `pair --replace`.
+  One such file no longer stops `run`, `status` and `unpair` for the whole
+  machine.
+- **Such a pairing cannot hold the anchor or be approved, and no host is told
+  of it.** `claim-anchor` marked it active and anchored the machine to it; it
+  now refuses, says why, and changes nothing. An approval from the anchor
+  host marked it active and started it with the endpoint its file holds; it
+  is now refused. The heartbeat and the anchor host's pairing list leave it
+  out: a host knows only the states active, pending and revoked, and could
+  show a pairing in any other state as active.
+- **A harness run's agent credential is readable only by the harness.** The
+  credential file was readable by every user on the machine (0644), in a
+  folder anyone could open and write (0777), for the length of the run. A
+  bastion running as root now hands the folder (0700) and the file (0600) to
+  the user the harness image runs its agent as (uid 10005). One that is not
+  root cannot hand them over, so it leaves them open for the agent, and the
+  folder sits inside one that only the bastion's own user can enter.
+- **A harness run's tree is out of other users' reach.** In a worktree run the
+  tree mounted at `/work` was opened to every user (0777), its top folder
+  included, in the shared temporary folder. Any local user could read or
+  change the Host's tree during the run. It now sits in a folder only the
+  bastion's own user can enter, as a git run's tree already did, and a run
+  refuses a tree whose folder other users can enter. Opening the tree for the
+  agent no longer follows a link in it. Before, on a bastion running as root,
+  a link in the repository, to `/etc/shadow` for example, made the linked
+  file world-writable. A file is opened as 0666, or 0777 if it was
+  executable, so a git run no longer commits every file as executable.
+- **A worktree run returns only what is in its tree.** A file swapped for a
+  link while the tree was being packed, or a folder swapped for a link, was
+  read through the link, so a bastion running as root could return any file
+  on the machine to the Host. Each name is now opened inside the folder
+  already open above it, never through a link, and goes in only if it is the
+  plain file or folder that was looked at. On Linux a device or pipe swapped
+  in for a file in that gap is not opened either: opening some devices does
+  something by itself. Links, pipes, devices and sockets are left out
+  (before, each came back as an empty entry of its kind), and the run's
+  result names them in `worktree_skipped`, with `worktree_skipped_count`.
+- **A coding agent can no longer run code as the bastion through the
+  repository's git settings.** In a git run the bastion committed and pushed
+  in the agent's own folder, `.git` included, so a hook, a file system
+  monitor, a filter, a signing program or a changed remote the agent set ran
+  as the bastion's own user, which can be root, or sent the push, with its
+  token, to another server. The bastion now makes its own fresh clone, in a
+  folder the agent cannot reach, copies in the agent's plain files and
+  folders (never a link, never anything of its `.git`), and commits and
+  pushes only there. The branch gets one commit with the agent's final
+  files; the agent's own commits are not pushed one by one. A link the
+  agent made is left out and named in `worktree_skipped`; a link the
+  repository already holds stays as it is. Every git the bastion runs for a
+  harness or a mirror runs with no hooks, no file system monitor, no `ext::`
+  transport, and no system or user git settings of the machine.
+- **The agent in a git run no longer holds the push token, and no process
+  argument shows it.** The agent's clone named the repository with the
+  run's token in it, so the agent could push straight to the repository
+  during the run, past the bastion's copy, and every git the bastion ran
+  for the run had the token in its arguments, which any local user can
+  read. Every git call now names the repository without the token and gets
+  it from its environment, as an `Authorization` header sent to that
+  repository's address only; no clone's config holds it, and a run is
+  refused if the token is in any file of the agent's clone's `.git`.
+- **A user-privilege op is no longer refused because other programs run as
+  its user.** An op's tasks are capped at 64, and the cap counted every task
+  the machine ran as the op's user (`privatae-session`, or `nobody`, which
+  system daemons share), so on a busy machine a user op could not start or
+  could not fork at all. The op now runs in a user namespace of its own,
+  as the same user and seeing every file's real owner, where the cap counts
+  only its own tasks. Where the machine has no user namespaces, the op runs
+  as before.
+- **A harness run's git calls carry the harness identity.** git made one
+  from this machine's user and host name instead, which cost a host name
+  lookup per call (seconds where there is no resolver) and wrote this
+  machine's name into the clone handed to the agent.
+- **A run whose agent container cannot be removed uses nothing of its
+  tree.** A failed removal was ignored, so an agent still running could go
+  on writing the tree while the bastion read it. The run now fails, says
+  so, and copies, returns and pushes nothing.
+- **A git run whose commit fails pushes nothing and fails.** A failed add or
+  commit was ignored and the branch pushed anyway, and the run read as
+  successful. It now ends the run with an error and no push. A run in which
+  the agent changed no file pushes no branch and reports `changed: false`.
+- **Repositories that keep files in Git LFS work in git runs again.** No
+  user git settings are read any more, so the LFS filter `git lfs install`
+  sets there was lost. When `git-lfs` is installed, the bastion now supplies
+  the standard LFS filter itself on its own git commands, sends the large
+  files before the push, and sends them only to the repository's own LFS
+  address, whatever a `.lfsconfig` the agent wrote names. A filter of any
+  other name in a `.gitattributes` still runs nothing. Tested with git-lfs
+  3.7.1.
+- **Names that open as `.git` on Windows or macOS are left out of a git
+  run's copy.** Besides `.git` in any letter case, the copy now leaves out
+  `.git` followed by dots or spaces or a `:`, the short name `GIT~1`, and
+  `.git` with the characters HFS+ ignores, the names git itself refuses, so
+  no file the agent made can be written into the clean clone's own `.git`.
+- **A run's tree has a size limit, and a file is never read into memory
+  whole.** A file of any size in the tree, even one that takes no disk
+  space, was read whole into memory, so an agent could make the bastion run
+  out of memory. A worktree run now returns at most 9 MiB of tree, which is
+  what fits in one message to the Host beside the transcript; a larger tree
+  is refused with `worktree_too_large` and none of it is returned. A git run
+  copies at most 2 GiB, and refuses a larger tree with `tree_too_large`
+  before it pushes anything; each file and folder counts 512 bytes and its
+  name besides its content, so a tree of millions of empty files is refused
+  too, and the copy keeps nothing per file in memory. Of the entries left
+  out, the count is kept in full and the first 100 names. A folder is read
+  512 names at a time, each counted as it is read, so a folder of millions
+  of names is refused without being read whole first. A result too large for one message to the Host
+  is refused with `result_too_large` instead of being lost on the way.
+- **The local console shows a pairing that is not served as "invalid".** A
+  pairing whose file holds an endpoint this build refuses showed as active
+  on the console when its stored state was empty, as it is in older files.
+  It now reads as the setup page and `status` read it.
+- **Built with Go 1.26.10, golang.org/x/net 0.61.0, x/crypto 0.58.0 and x/sys
+  0.49.0.** `govulncheck` finds 13 known vulnerabilities this code reaches in
+  Go 1.25.14 and x/net 0.57.0, which 0.54.1 was built with: in crypto/x509
+  (intermediate certificates since found compromised were still trusted),
+  crypto/tls, net/http and HTTP/2, net/textproto, os and html/template. With
+  these versions it finds none. The
+  build image is still pinned by digest, and CI runs in the same one. The
+  module now needs Go 1.26, as x/net's fixed release does. A published release
+  is still rebuilt by `deploy/verify-release.sh` with the toolchain its own
+  tag pins.
+- **`go test ./...` passes for a contributor who is not root.** A root
+  command now starts in `/` when the process cannot enter root's home, as it
+  already did when that home is missing; the bastion runs these commands only
+  as root, so on a machine nothing changes, and the root-command tests now run
+  as any user. `TestTreeCheckoutMovesOnlyForward`, which needs a tree root
+  owns, skips as another user, and `TestClaimAnchorWithNoToken` checks the
+  refusal without machine authority and then skips the rest, where it passed
+  having checked nothing more.
+- **The tests name no folder of our own build machine.** The sandbox tests'
+  fixture folder is `/srv/privatae-optest` (`/tmp` cannot hold an op's
+  effects), and the action tests' run note asks for any folder outside
+  `/tmp`.
 - **How this repository is published (docs only).** From this release on,
   GitHub receives each change merged since the last release as its own commit,
   titled as the change was, instead of one commit per release. The README,

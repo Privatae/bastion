@@ -76,12 +76,20 @@ type Config struct {
 	// that its file does not hold yet (rotate.go, setUnsaved; guarded by
 	// rotation.mu). Unexported: never in the file.
 	savePending bool
+	// invalid is why loadPairings found this pairing's file unusable (an
+	// endpoint that is not one host:port), naming the file; "" for a usable
+	// one. Such a pairing is listed, so status shows it and unpair removes it,
+	// but it never serves: active() is false. Unexported: never in the file.
+	invalid string
 }
 
 const (
 	pairingActive  = "active"
 	pairingPending = "pending"
 	pairingRevoked = "revoked"
+	// pairingInvalid is reported, never stored: the file holds a value this
+	// build refuses (Config.invalid).
+	pairingInvalid = "invalid"
 
 	// transportUnix is Config.Transport for a Host on this machine.
 	transportUnix = "unix"
@@ -103,11 +111,15 @@ func (c *Config) localTransport() bool { return c.unixTransport() || c.tcpTransp
 // active is the ONE place the state field is interpreted: "" and "active" serve,
 // anything else does not. run.go, the heartbeat and the mgmt lane all ask this.
 func (c *Config) active() bool {
-	return c.State == "" || c.State == pairingActive
+	return c.invalid == "" && (c.State == "" || c.State == pairingActive)
 }
 
-// stateName is the state as reported: the empty legacy value reads "active".
+// stateName is the state as reported: the empty legacy value reads "active",
+// and a pairing whose file is unusable reads "invalid" whatever its state.
 func (c *Config) stateName() string {
+	if c.invalid != "" {
+		return pairingInvalid
+	}
 	if c.State == "" {
 		return pairingActive
 	}
@@ -316,15 +328,34 @@ func (c *Config) updateOnDiskIf(apply func(disk *Config) error) error {
 // updatePairingOnDisk is updateOnDisk for a caller that only has the host
 // name (the mgmt handlers). Returns the pairing as written, or nil with
 // errPairingGone when no such file exists.
+//
+// The copy is checked as loadPairings checks a file, so a caller that starts
+// the pairing from it never serves one whose file this build refuses.
 func updatePairingOnDisk(host string, apply func(disk *Config)) (*Config, error) {
+	pd, err := pairingsDir()
+	if err != nil {
+		return nil, err
+	}
 	c := &Config{HostName: host}
 	var out *Config
-	err := c.updateOnDisk(func(d *Config) {
+	err = c.updateOnDisk(func(d *Config) {
 		apply(d)
 		cp := *d
+		cp.invalid = invalidReason(&cp, filepath.Join(pd, host+".json"))
 		out = &cp
 	})
 	return out, err
+}
+
+// invalidReason is why the pairing c, read from file, is never served, naming
+// the file, or "" when it may be served. It is the check the pairing response
+// and the rotate directive get, for a file an older build saved from either.
+func invalidReason(c *Config, file string) string {
+	if err := checkEndpoints(append([]string{c.Endpoint}, c.Endpoints...)...); err != nil {
+		return fmt.Sprintf("pairing %s: %v — it is not served; pair it again (`privatae-bastion pair --replace <token>`) or remove it (`privatae-bastion unpair %s`)",
+			file, err, c.HostName)
+	}
+	return ""
 }
 
 // unpairHost tears down and deletes one pairing: its file and its grant file.
@@ -495,6 +526,9 @@ func loadPairings() ([]*Config, error) {
 		if err := json.Unmarshal(raw, &c); err != nil {
 			return nil, fmt.Errorf("pairing %s: %w", e.Name(), err)
 		}
+		// One such file must not stop every other pairing, status or unpair:
+		// it loads, never serves.
+		c.invalid = invalidReason(&c, filepath.Join(pd, e.Name()))
 		cfgs = append(cfgs, &c)
 	}
 	sort.Slice(cfgs, func(i, j int) bool { return cfgs[i].HostName < cfgs[j].HostName })

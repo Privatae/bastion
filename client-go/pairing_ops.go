@@ -114,6 +114,14 @@ func handlePairingGrantSync(ws *websocket.Conn, _ string, args []string) {
 		pairingRefuse(ws, "grant_sync", t.Subject, "subject pairing was revoked — pair it again to re-approve")
 		return
 	}
+	// Approving would mark it active and start it with the endpoint its file
+	// holds, which this build refuses. The reason names a local file, so the
+	// host is told only what to do.
+	if c.invalid != "" {
+		anchorMu.Unlock()
+		pairingRefuse(ws, "grant_sync", t.Subject, "subject pairing is not served on this box: its file holds an endpoint this bastion refuses — pair it again to approve it")
+		return
+	}
 	if a := currentAnchor(); a != nil && a.AnchorHost == c.HostName {
 		anchorMu.Unlock()
 		pairingRefuse(ws, "grant_sync", t.Subject, "subject is the anchor itself; the anchor holds no grant")

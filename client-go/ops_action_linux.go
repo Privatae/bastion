@@ -817,13 +817,22 @@ type landlockNetPortAttr struct {
 	Port          uint64
 }
 
+// landlockRulesetAttr is the kernel's struct landlock_ruleset_attr up to
+// "scoped", declared here like landlockNetPortAttr so the call does not move
+// with x/sys's naming of it.
+type landlockRulesetAttr struct {
+	HandledAccessFS  uint64
+	HandledAccessNet uint64
+	Scoped           uint64
+}
+
 // opLandlock: TCP connects to the declared ports only, no TCP bind, and no
 // abstract unix socket or signal that leaves the sandbox. The addresses are
 // the unit's allowlist; the two together are the destinations.
 func opLandlock(ports []uint16) error {
-	attr := unix.LandlockRulesetAttr{
-		Access_net: unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP,
-		Scoped:     unix.LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | unix.LANDLOCK_SCOPE_SIGNAL,
+	attr := landlockRulesetAttr{
+		HandledAccessNet: unix.LANDLOCK_ACCESS_NET_BIND_TCP | unix.LANDLOCK_ACCESS_NET_CONNECT_TCP,
+		Scoped:           unix.LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET | unix.LANDLOCK_SCOPE_SIGNAL,
 	}
 	fd, _, e := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, uintptr(unsafe.Pointer(&attr)), unsafe.Sizeof(attr), 0)
 	if e != 0 {

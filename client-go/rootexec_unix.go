@@ -18,6 +18,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type shellProc struct {
@@ -32,7 +34,10 @@ func startRootExec(command string, stdout, stderr io.Writer, cgroupFD int) (root
 	if u, err := user.Lookup("root"); err == nil && u.HomeDir != "" {
 		home = u.HomeDir
 	}
-	if st, err := os.Stat(home); err != nil || !st.IsDir() {
+	// A home this process cannot enter is no working folder for the command.
+	// The daemon is root here, so that is only a home that is not there; the
+	// tests also run this as an ordinary user, for whom /root is shut.
+	if st, err := os.Stat(home); err != nil || !st.IsDir() || unix.Access(home, unix.X_OK) != nil {
 		home = "/"
 	}
 	cmd := exec.Command("/bin/sh", "-c", command)

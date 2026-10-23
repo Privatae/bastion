@@ -131,7 +131,7 @@ func TestActionManifestRefusesWhatIsNotDeclaredOrNotBounded(t *testing.T) {
 	}
 	// A files op carrying an action op's fields is refused, not read as one.
 	files := strings.Replace(opTestManifest, "modes:", "verbs:\n  - {verb: unit.restart, unit: a.service}\nmodes:", 1)
-	if _, err := parseOpManifest([]byte(strings.Replace(files, "%s/", "/srv/optest/x/", 1))); err == nil || !strings.Contains(err.Error(), "belong to an action op") {
+	if _, err := parseOpManifest([]byte(strings.Replace(files, "%s/", "/srv/privatae-optest/x/", 1))); err == nil || !strings.Contains(err.Error(), "belong to an action op") {
 		t.Fatalf("a files op with verbs: %v", err)
 	}
 }

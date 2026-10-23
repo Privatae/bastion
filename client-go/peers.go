@@ -57,7 +57,10 @@ func peersFor(selfHostName string) []peerAnnounce {
 	}
 	out := make([]peerAnnounce, 0, len(cfgs))
 	for _, c := range cfgs {
-		if c.HostName == "" || c.HostName == selfHostName {
+		// A pairing whose file this build refuses is never served, so it is
+		// no peer; pairingsReport (anchor.go) says why it is left out rather
+		// than sent as "invalid".
+		if c.HostName == "" || c.HostName == selfHostName || c.invalid != "" {
 			continue
 		}
 		// "Since" is first_seen when the pairing carries it (0.16.0+), else the

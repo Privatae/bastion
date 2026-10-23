@@ -231,16 +231,15 @@ func collectUIStatus() uiStatus {
 	running := 0
 	for _, c := range cfgs {
 		p := uiPairing{
-			Host:       c.HostName,
-			State:      c.State,
+			Host: c.HostName,
+			// As the setup page and `status` read it: a pairing whose file
+			// cannot be served is "invalid" whatever its stored state says.
+			State:      c.stateName(),
 			ListenAddr: c.ListenAddr,
 			Listening:  bastionListening(c.ListenAddr),
 			TunnelIP:   c.BastionTunnelIP,
 			FirstSeen:  c.FirstSeen,
 			IsAnchor:   s.AnchorHost != "" && c.HostName == s.AnchorHost,
-		}
-		if p.State == "" {
-			p.State = pairingActive
 		}
 		if p.Listening {
 			running++
@@ -601,7 +600,7 @@ func approvalTarget(host string) (*Config, error) {
 			// below reach cfg.dcnDir(), which is MkdirAll-on-read.
 			if !c.active() {
 				return nil, fmt.Errorf("this machine does not serve %q yet — that pairing is %s",
-					host, c.State)
+					host, c.stateName())
 			}
 			return c, nil
 		}

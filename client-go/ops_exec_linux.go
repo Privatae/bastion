@@ -506,9 +506,16 @@ func opMatchDir(dir, like string) error {
 	return nil
 }
 
+// opUnprivilegedIdentityHook, when set, is the identity a user-privilege op
+// runs as. Only tests set it.
+var opUnprivilegedIdentityHook func() (uint32, uint32, error)
+
 // opUnprivilegedIdentity is the session lane's user (session_unix.go): the
 // dedicated account if it exists, else nobody.
 func opUnprivilegedIdentity() (uint32, uint32, error) {
+	if opUnprivilegedIdentityHook != nil {
+		return opUnprivilegedIdentityHook()
+	}
 	var u *user.User
 	var err error
 	for _, name := range sessionUnprivUsers {
@@ -884,23 +891,46 @@ func opSandboxChildMain(arg string) int {
 		fmt.Fprintln(os.Stderr, "sandbox: no_new_privs:", err)
 		return 125
 	}
-	cmd := exec.Command(spec.Interpreter, opSandboxMount+"/run", "--mode", spec.Mode)
-	cmd.Dir = "/"
-	cmd.Env = []string{
-		"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
-		"HOME=/tmp",
-		"TMPDIR=/tmp",
-		"LANG=C.UTF-8",
-		"PRIVATAE_OP_MODE=" + spec.Mode,
-	}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if spec.AsUser {
+	newCmd := func(ownUserNS bool) *exec.Cmd {
+		cmd := exec.Command(spec.Interpreter, opSandboxMount+"/run", "--mode", spec.Mode)
+		cmd.Dir = "/"
+		cmd.Env = []string{
+			"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+			"HOME=/tmp",
+			"TMPDIR=/tmp",
+			"LANG=C.UTF-8",
+			"PRIVATAE_OP_MODE=" + spec.Mode,
+		}
+		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if !spec.AsUser {
+			cmd.Env = append(cmd.Env, "USER=root")
+			return cmd
+		}
 		cmd.Env = append(cmd.Env, "USER=privatae-op")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: spec.UID, Gid: spec.GID, NoSetGroups: true}}
-	} else {
-		cmd.Env = append(cmd.Env, "USER=root")
+		attr := &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: spec.UID, Gid: spec.GID, NoSetGroups: true}}
+		if ownUserNS {
+			// RLIMIT_NPROC counts every task of a user in its user namespace,
+			// so in the machine's own one the cap above would count whatever
+			// else runs as this user (nobody is shared with system daemons)
+			// and refuse the op on a busy machine. In a user namespace of its
+			// own the count is the op's tasks alone. The map is the identity:
+			// the op is the same user and sees every file's real owner.
+			attr.Cloneflags = syscall.CLONE_NEWUSER
+			attr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1<<31 - 1}}
+			attr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: 0, Size: 1<<31 - 1}}
+		}
+		cmd.SysProcAttr = attr
+		return cmd
 	}
-	if err := cmd.Run(); err != nil {
+	cmd := newCmd(true)
+	err = cmd.Run()
+	if spec.AsUser && err != nil && cmd.Process == nil {
+		// No user namespace here (not built in, or turned off): run the op
+		// as before, with the cap counting the user's other tasks too.
+		cmd = newCmd(false)
+		err = cmd.Run()
+	}
+	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {

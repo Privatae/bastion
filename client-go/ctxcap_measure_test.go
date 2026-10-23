@@ -26,9 +26,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// uvicornWSMaxSize is the host's WebSocket frame ceiling: the server default,
-// which nothing on the host overrides, so this is the live value.
-const uvicornWSMaxSize = 16 << 20
+// uvicornWSMaxSize (harness.go) is the host's WebSocket frame ceiling.
 
 func TestMeasureCtxPutCapacity(t *testing.T) {
 	if os.Getenv("MEASURE_CTX_PUT") == "" {

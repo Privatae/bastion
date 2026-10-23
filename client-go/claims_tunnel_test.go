@@ -90,6 +90,70 @@ func TestATunnelAddressThatIsNotOneHostIsRefused(t *testing.T) {
 	}
 }
 
+// Tunnel endpoints as the host may send them. The first is the hostile
+// shape: the configuration text is one setting per line, so a newline ends
+// the endpoint and starts a setting of the sender's choosing.
+var (
+	badTunnelEndpoints = []string{
+		"203.0.113.7:51820\nallowed_ip=::/0", "[fe80::1%x\nallowed_ip=::/0]:51820",
+		"203.0.113.7:51820\r", "203.0.113.7:51820\t", " 203.0.113.7:51820", "203.0.113.7:51820 ",
+		"relay\x00.example.net:51820", "relay a.example.net:51820", "", "203.0.113.7",
+		"203.0.113.7:0", "203.0.113.7:65536", "203.0.113.7:+80", "relay.example.net:port",
+		"-relay.example.net:51820", "relay..example.net:51820", "[relay.example.net]:51820",
+		"[fe80::1%eth0]:51820", "0.0.0.0:51820", "[::]:51820", "2001:db8::7:51820",
+	}
+	goodTunnelEndpoints = []string{"203.0.113.7:51820", "[2001:db8::7]:51820", "relay-a.example.net:51820"}
+)
+
+// An endpoint that is not one host:port is refused at every place the peer
+// is configured, and nothing is set on the device.
+func TestATunnelEndpointThatIsNotHostPortIsRefused(t *testing.T) {
+	for _, bad := range badTunnelEndpoints {
+		cfg := &Config{WGPrivateKey: testWGKey(t), EndpointPubKey: testWGKey(t),
+			Endpoint: bad, HostTunnelIP: "2001:db8::e:3"}
+		dev := testWGDevice(t, "2001:db8::a:1")
+		if err := configureTunnelPeer(dev, cfg); err == nil {
+			t.Errorf("%q: configureTunnelPeer must refuse", bad)
+		}
+		if err := swapPeer(cfg, dev, bad, testWGKey(t)); err == nil {
+			t.Errorf("%q: swapPeer must refuse", bad)
+		}
+		if peers := wgPeers(t, dev); len(peers) != 0 {
+			t.Errorf("%q: a refused endpoint must leave the device with no peer, it holds %v", bad, peers)
+		}
+	}
+}
+
+// uapiRecorder keeps the configuration text it is given, in place of a device.
+type uapiRecorder struct{ texts []string }
+
+func (r *uapiRecorder) IpcSet(s string) error { r.texts = append(r.texts, s); return nil }
+
+// Whatever endpoint the pairing holds, the text the device is given names
+// one peer with exactly one allowed address, the host's alias, or the
+// pairing is refused before any text is built.
+func TestThePeerConfigurationHasExactlyOneAllowedAddress(t *testing.T) {
+	for _, ep := range append(append([]string{}, goodTunnelEndpoints...), badTunnelEndpoints...) {
+		rec := &uapiRecorder{}
+		cfg := &Config{WGPrivateKey: testWGKey(t), EndpointPubKey: testWGKey(t),
+			Endpoint: ep, HostTunnelIP: "2001:db8::e:3"}
+		if err := configureTunnelPeer(rec, cfg); err != nil {
+			continue
+		}
+		for _, text := range rec.texts {
+			seen := map[string]int{}
+			for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+				k, _, _ := strings.Cut(line, "=")
+				seen[k]++
+			}
+			if seen["allowed_ip"] != 1 || seen["public_key"] != 1 || seen["endpoint"] != 1 ||
+				!strings.Contains(text, "\nallowed_ip=2001:db8::e:3/128\n") {
+				t.Errorf("%q: the configuration must name one peer with one allowed address, got %q", ep, text)
+			}
+		}
+	}
+}
+
 func TestTheTunnelReachesOnlyThePairedHost(t *testing.T) {
 	for _, hostIP := range []string{"2001:db8::e:3", "2001:db8::e:ffff", "2001:db8::1"} {
 		cfg := &Config{

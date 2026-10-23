@@ -522,6 +522,10 @@ func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive 
 	if _, err := hostTunnelAllowedIP(rr.HostTunnelIP); err != nil {
 		return nil, nil, fmt.Errorf("redeem response: %w", err)
 	}
+	// endpoint and endpoints are written into the tunnel's configuration text.
+	if err := checkEndpoints(append([]string{rr.Endpoint}, rr.Endpoints...)...); err != nil {
+		return nil, nil, fmt.Errorf("redeem response: %w", err)
+	}
 	// Belt: the redeemed host_name is authoritative — if it lands on a pairing the
 	// pre-redeem handle check missed, still refuse to overwrite it.
 	if prev := pairingFor(cfgs, rr.HostName); prev != nil {

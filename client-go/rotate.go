@@ -337,6 +337,11 @@ func parseRotateTarget(heartbeatResponse []byte) (candidates []string, pubkey st
 	if json.Unmarshal(heartbeatResponse, &hb) != nil {
 		return nil, ""
 	}
+	// A directive naming any entry that is not one host:port is not acted
+	// on at all, as the pairing response is refused for the same.
+	if checkEndpoints(append([]string{hb.Rotate.Endpoint}, hb.Rotate.Endpoints...)...) != nil {
+		return nil, ""
+	}
 	return candidateList(hb.Rotate.Endpoints, hb.Rotate.Endpoint), strings.TrimSpace(hb.Rotate.EndpointPubKey)
 }
 
@@ -474,20 +479,10 @@ func probeAndCommit(cfg *Config, dev *device.Device, endpoint, pubkey string, li
 // swapPeer replaces the device's single peer in one UAPI transaction — same shape as
 // the boot-time config in run.go. AllowedIPs stays the host's tunnel alias ONLY.
 func swapPeer(cfg *Config, dev *device.Device, endpoint, pubkey string) error {
-	privHex, err := b64ToHex(cfg.WGPrivateKey)
-	if err != nil {
-		return fmt.Errorf("bad private key in config: %w", err)
-	}
-	pubHex, err := b64ToHex(pubkey)
-	if err != nil {
-		return fmt.Errorf("bad endpoint pubkey: %w", err)
-	}
-	hostCIDR, err := hostTunnelAllowedIP(cfg.HostTunnelIP)
+	uapi, err := tunnelPeerUAPI(cfg, endpoint, pubkey, true)
 	if err != nil {
 		return err
 	}
-	uapi := fmt.Sprintf("private_key=%s\nreplace_peers=true\npublic_key=%s\nendpoint=%s\npersistent_keepalive_interval=25\nallowed_ip=%s\n",
-		privHex, pubHex, endpoint, hostCIDR)
 	return dev.IpcSet(uapi)
 }
 

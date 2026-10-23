@@ -303,6 +303,9 @@ func TestTreeCheckoutMovesOnlyForward(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git")
 	}
+	if os.Geteuid() != 0 {
+		t.Skip("needs root: the op moves only a tree root owns, and the fixtures are made by this user")
+	}
 	setupBox(t)
 	useFileRepos(t)
 	base := t.TempDir()

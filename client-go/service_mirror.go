@@ -246,11 +246,12 @@ func mirrorVetHost(ctx context.Context, host string) (string, error) {
 	return ips[0].String(), nil
 }
 
-// runGitEnv runs git with a clean, locked-down config and extra env.
+// runGitEnv runs git with a clean, locked-down config and extra env, and
+// with harnessGitSafe ahead of the caller's arguments.
 func runGitEnv(timeout time.Duration, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", append(append([]string{}, harnessGitSafe...), args...)...)
 	hideConsole(cmd)
 	home, _ := os.MkdirTemp("", "privatae-mirror-home-")
 	defer os.RemoveAll(home)

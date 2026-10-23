@@ -23,10 +23,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 VER="${1:?usage: deploy/build.sh <version>}"
 
-# golang:1.25-alpine as of the digest below (go1.25.14). Move it deliberately,
-# in its own commit, and a release built after that commit is rebuilt with the
-# new one.
-GO_IMAGE="golang@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59"
+# golang:1.26.10-alpine3.24, the multi-arch index digest below (go1.26.10).
+# Move it deliberately, in its own commit, and a release built after that
+# commit is rebuilt with the new one.
+GO_IMAGE="golang@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba"
 
 # The module cache is only a download cache: go.sum checks everything read from
 # it. It is kept between runs so a rebuild does not fetch every module again.

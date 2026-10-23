@@ -7,9 +7,10 @@ package main
 //
 // Run them in a private PID namespace but NOT a private mount namespace: the
 // unit is started by the machine's systemd, in the machine's mounts, and must
-// see the run's tmpfs the test mounted:
+// see the run's tmpfs the test mounted. GOTMPDIR and TMPDIR name a folder
+// on a disk, not under /tmp (a run gets its own /tmp):
 //
-//	GOTMPDIR=/srv/work/tmp-gotest TMPDIR=/srv/work/tmp-gotest unshare --pid --fork go test -run Action .
+//	GOTMPDIR=<dir> TMPDIR=<dir> unshare --pid --fork go test -run Action .
 
 import (
 	"bytes"
