@@ -61,8 +61,8 @@ a dry run first, then an apply bound to the change list the dry run showed.
     kubelet's own eviction line (hard or soft) plus 512 MiB, so the op goes
     before any pod is evicted. A kubelet setting it cannot read raises the
     floor, never lowers it;
-  - the bastion also stops the op when the machine's services, pods or users
-    start waiting on memory: 7 points more of the time than the least they
+  - the bastion also stops the op when the machine's services, pods, users or
+    another op running beside it start waiting on memory: 7 points more of the time than the least they
     had during the run. The op's own waits don't count, and neither does a group that was
     already waiting, such as a pod at its own limit;
   - a machine already under the floor starts no op;

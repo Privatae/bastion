@@ -566,6 +566,13 @@ func main() {
 			os.Exit(125)
 		}
 		os.Exit(opSandboxChildMain(os.Args[2]))
+	case opSandboxScopeSubcommand:
+		// A root op's scope (ops_taskcap_linux.go): never typed by a person;
+		// systemd-run starts it for the daemon.
+		if len(os.Args) < 3 {
+			os.Exit(125)
+		}
+		os.Exit(opSandboxScopeMain(os.Args[2]))
 	case opActionSubcommand, opActionChildSubcommand, opActionProbeSubcommand:
 		// An action op's unit and its sandbox's pid 1 (ops_action_linux.go):
 		// never typed by a person; the daemon starts them.

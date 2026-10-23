@@ -56,8 +56,21 @@ import (
 	"time"
 )
 
+// The names of the ops' slice and of the units in it. The startup sweep stops
+// every unit these name, so they are variables only for the tests, which give
+// themselves names no running bastion uses (ops_names_linux_test.go): a suite
+// run on a machine whose own bastion is running an op never touches it.
+// Nothing else sets them.
+var (
+	opActionSlice = "privatae_ops.slice"
+	// opActionUnitPrefix names an action op's unit.
+	opActionUnitPrefix = "privatae-op-"
+	// opScopeUnitPrefix names a files op's scope. It is not the action ops'
+	// prefix, so their sweep never takes one for an action unit.
+	opScopeUnitPrefix = "privatae-opfiles-"
+)
+
 const (
-	opActionSlice       = "privatae_ops.slice"
 	opMemoryFloorMin    = 1 << 30
 	opMemoryKubeletPad  = 512 << 20
 	opMemoryWatchPeriod = 250 * time.Millisecond
@@ -85,8 +98,13 @@ func opKillUnit(unit string) bool {
 	return exec.Command("systemctl", "kill", "--signal=SIGKILL", unit).Run() == nil
 }
 
-// opOthersStalls is each top-level cgroup's memory stall (PSI some avg10,
-// percent), the ops' own slice left out.
+// opOthersStalls is the memory stall (PSI some avg10, percent) of each
+// top-level cgroup, and of each op's unit or scope in the ops' slice. The
+// slice's own figure is left out, since it holds the op that is measuring;
+// that op's own unit is taken out by opStallsBut. Two ops can run at once
+// (the management lane has more than one worker, and a ship plan runs its
+// own), and a root op runs in a scope in this slice: an action op beside it
+// must still yield when the root op's memory makes the machine wait.
 func opOthersStalls() map[string]float64 {
 	out := map[string]float64{}
 	entries, err := os.ReadDir(opCgroupRoot)
@@ -94,27 +112,48 @@ func opOthersStalls() map[string]float64 {
 		return out
 	}
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == opActionSlice {
+		if !e.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(opCgroupRoot, e.Name(), "memory.pressure"))
-		if err != nil {
+		if e.Name() != opActionSlice {
+			opReadStall(out, e.Name())
 			continue
 		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			if !strings.HasPrefix(line, "some ") {
-				continue
-			}
-			for _, f := range strings.Fields(line) {
-				if v, ok := strings.CutPrefix(f, "avg10="); ok {
-					if x, err := strconv.ParseFloat(v, 64); err == nil {
-						out[e.Name()] = x
-					}
-				}
+		ops, _ := os.ReadDir(filepath.Join(opCgroupRoot, opActionSlice))
+		for _, o := range ops {
+			if o.IsDir() {
+				opReadStall(out, opActionSlice+"/"+o.Name())
 			}
 		}
 	}
 	return out
+}
+
+// opReadStall puts cgroup cg's PSI some avg10 into out, when it can be read.
+func opReadStall(out map[string]float64, cg string) {
+	raw, err := os.ReadFile(filepath.Join(opCgroupRoot, cg, "memory.pressure"))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if !strings.HasPrefix(line, "some ") {
+			continue
+		}
+		for _, f := range strings.Fields(line) {
+			if v, ok := strings.CutPrefix(f, "avg10="); ok {
+				if x, err := strconv.ParseFloat(v, 64); err == nil {
+					out[cg] = x
+				}
+			}
+		}
+	}
+}
+
+// opStallsBut is stalls without the action unit's own cgroup: an op's own
+// stalls never stop it.
+func opStallsBut(stalls map[string]float64, unit string) map[string]float64 {
+	delete(stalls, opActionSlice+"/"+unit+".service")
+	return stalls
 }
 
 // opStallRise is the cgroup whose stall rose most above its lowest reading
@@ -355,7 +394,7 @@ func opMemoryWatch(unit string, floor uint64) (stop func() opMemoryVerdict) {
 		// Each group's lowest reading during the run: a group that spiked as
 		// the run began must not hide a rise the run causes later, and one
 		// held at its own limit throughout still never counts.
-		low := opOthersStalls()
+		low := opStallsBut(opOthersStalls(), unit)
 		for {
 			if raw, err := os.ReadFile(cur); err == nil {
 				if n, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64); err == nil {
@@ -368,7 +407,7 @@ func opMemoryWatch(unit string, floor uint64) (stop func() opMemoryVerdict) {
 			}
 			_, avail, ok := opMemInfo()
 			short := ok && avail <= floor
-			now := opOthersStalls()
+			now := opStallsBut(opOthersStalls(), unit)
 			rise, who := opStallRise(low, now)
 			for cg, x := range now {
 				if l, ok := low[cg]; !ok || x < l {

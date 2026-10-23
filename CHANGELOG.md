@@ -23,6 +23,29 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.55.1
+
+- **A root op's tasks are capped.** An op's tasks were capped at 64 with
+  `RLIMIT_NPROC`, which the kernel never applies to root, so a root op could
+  start as many tasks as it liked until its time limit. A root op now runs
+  in a systemd scope of its own in `privatae_ops.slice` with `TasksMax=96`,
+  which counts every task in it, root's included: the op's 64 and the
+  bastion's two processes that start it. Those two run with one CPU's worth
+  of Go runtime threads (`GOMAXPROCS=1`), so they take the same share of the
+  cap on a machine of any size: with the runtime set for 64 CPUs they took
+  44 of the 96, and set for 256 no root op could start. The scope's process
+  reads its own cgroup's `pids.max` before the op starts, and the op's
+  report carries `tasks_capped` only when that is the cap. Where no scope
+  can be made (no systemd, no pids controller, or `systemd-run` failing),
+  the op runs as before and its report's `tasks_note` says its tasks were
+  not capped, and why. A user op's tasks are held by `RLIMIT_NPROC` as
+  before, and its report says so. A scope is killed with the run at the
+  time limit, when the bastion stops, and by the startup sweep. Two ops can
+  run at once, so an action op's memory watch now reads each other op's
+  unit or scope in the slice as another program: it yields when a root op
+  beside it makes the machine wait on memory, as it did when root ops ran
+  in the bastion's own cgroup, and its own unit still never counts.
+
 ## 0.55.0
 
 - **A local machine's egress lane never reaches the machine itself.** Before,

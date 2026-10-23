@@ -224,6 +224,11 @@ type opReport struct {
 	// per change, in path order. An op_run apply is bound to it (ops.go opTerms.Changes).
 	ChangesSHA256 string   `json:"changes_sha256"`
 	Committed     []string `json:"committed,omitempty"`
+	// TasksCapped: a cap held the run's tasks, root's included, at
+	// opSandboxTasksMax. A root op where none could be held runs uncapped,
+	// and TasksNote says so and why.
+	TasksCapped bool   `json:"tasks_capped,omitempty"`
+	TasksNote   string `json:"tasks_note,omitempty"`
 	// An action op's apply (ops_verbs_linux.go): each verb as it ran, each
 	// check after it, and the receipts for what its program pushed.
 	Verbs       []opVerbResult    `json:"verbs,omitempty"`
@@ -421,18 +426,49 @@ func opRunSandboxed(opDir string, m *opManifest, mode, params string) (*opReport
 	limit := time.Duration(m.TimeLimit) * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, self, opSandboxSubcommand, specPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET | syscall.CLONE_NEWIPC | syscall.CLONE_NEWUTS,
-		Setpgid:    true,
+	// A user op's tasks are held by RLIMIT_NPROC. Root is exempt from it, so
+	// a root op's are held by a scope of its own (ops_taskcap_linux.go), or
+	// by nothing where none can be made, and the report says which.
+	unit := ""
+	if spec.AsUser {
+		rep.TasksCapped = true
+	} else if why := opTasksScopeWhyNot(); why != "" {
+		rep.TasksNote = opTasksNotCapped(why)
+	} else {
+		unit = opScopeUnit(run)
 	}
-	cmd.Stdin = strings.NewReader(params)
-	out := &cappedBuffer{max: opOutputMaxBytes}
-	cmd.Stdout, cmd.Stderr = out, out
-	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
-	cmd.WaitDelay = 2 * time.Second // the pipes close when the namespace is gone; never wait past that
+	var out *cappedBuffer
+	launch := func(unit string) error {
+		cmd := opSandboxCmd(ctx, self, specPath, unit)
+		cmd.Stdin = strings.NewReader(params)
+		out = &cappedBuffer{max: opOutputMaxBytes}
+		cmd.Stdout, cmd.Stderr = out, out
+		// systemd-run hands this environment on to the scope's process.
+		cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", opSandboxHelperEnv}
+		cmd.WaitDelay = 2 * time.Second // the pipes close when the namespace is gone; never wait past that
+		return opRunSandboxCmd(cmd)
+	}
 	start := time.Now()
-	runErr := cmd.Run()
+	runErr := launch(unit)
+	if unit != "" {
+		if ctx.Err() == context.DeadlineExceeded {
+			opKillScope(unit)
+		}
+		switch got, ran := opScopeTasks(run); {
+		case ran && got == strconv.Itoa(opSandboxScopeTasks):
+			rep.TasksCapped = true
+		case ran:
+			rep.TasksNote = opTasksNotCapped(fmt.Sprintf("its scope's pids.max read %q", truncate(got, 200)))
+		case ctx.Err() != nil:
+			rep.TasksNote = opTasksNotCapped("its scope did not start inside the time limit")
+		default:
+			// systemd-run could not make the scope, or the scope's process
+			// died before it recorded the cap: either way nothing ran, and the
+			// op runs as it does where there is no systemd.
+			rep.TasksNote = opTasksNotCapped("its scope never started the op: " + truncate(opLastLine(out.String()), 200))
+			runErr = launch("")
+		}
+	}
 	rep.Seconds = time.Since(start).Seconds()
 	rep.Output = out.String()
 	if ctx.Err() == context.DeadlineExceeded {
@@ -876,8 +912,10 @@ func opSandboxChildMain(arg string) int {
 		return 125
 	}
 	// Rlimits are inherited by the grandchild: no fork bombs, no giant files,
-	// a CPU cap beside the wall-clock one the parent enforces.
-	_ = unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{Cur: 64, Max: 64})
+	// a CPU cap beside the wall-clock one the parent enforces. The kernel
+	// does not hold root to RLIMIT_NPROC; a root op's tasks are capped by
+	// the scope it runs in (ops_taskcap_linux.go).
+	_ = unix.Setrlimit(unix.RLIMIT_NPROC, &unix.Rlimit{Cur: opSandboxTasksMax, Max: opSandboxTasksMax})
 	_ = unix.Setrlimit(unix.RLIMIT_FSIZE, &unix.Rlimit{Cur: opUpperMaxBytes, Max: opUpperMaxBytes})
 	_ = unix.Setrlimit(unix.RLIMIT_NOFILE, &unix.Rlimit{Cur: 256, Max: 256})
 	_ = unix.Setrlimit(unix.RLIMIT_CPU, &unix.Rlimit{Cur: uint64(spec.TimeLimit), Max: uint64(spec.TimeLimit)})

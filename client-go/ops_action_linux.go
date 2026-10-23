@@ -72,7 +72,6 @@ const (
 	opUIDFile             = "op_uid_next"
 	opActionRunTmpfsBytes = 16 << 20
 	opBuilderInSandbox    = "/run/privatae-builder/buildkitd.sock"
-	opActionUnitPrefix    = "privatae-op-"
 	landlockRuleNetPort   = 2 // LANDLOCK_RULE_NET_PORT
 	// opActionRetryAfter: a machine that could not run action ops is asked
 	// again after this long, not only at the next restart.
@@ -870,6 +869,7 @@ func opStartupSweep() {
 		opKillUnit(u)
 		_ = exec.Command("systemctl", "stop", u).Run()
 	}
+	opSweepScopes()
 	entries, _ := os.ReadDir(root)
 	for _, e := range entries {
 		if !strings.HasPrefix(e.Name(), "run-") {

@@ -29,6 +29,8 @@ type opReport struct {
 	Mode          string            `json:"mode"`
 	Exit          int               `json:"exit"`
 	TimedOut      bool              `json:"timed_out,omitempty"`
+	TasksCapped   bool              `json:"tasks_capped,omitempty"`
+	TasksNote     string            `json:"tasks_note,omitempty"`
 	Seconds       float64           `json:"seconds"`
 	Output        string            `json:"output"`
 	Changes       []opChange        `json:"changes"`
@@ -59,6 +61,10 @@ func opCommitUpper(_ *opReport) ([]string, error) {
 }
 
 func opSandboxChildMain(_ string) int { return 125 }
+
+const opSandboxScopeSubcommand = "__op-sandbox-scope"
+
+func opSandboxScopeMain(_ string) int { return 125 }
 
 func opMountsUnder(_ string) []string { return nil }
 

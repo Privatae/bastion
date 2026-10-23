@@ -726,7 +726,7 @@ func TestMemoryFloorSitsAboveTheKubeletsEviction(t *testing.T) {
 // A kill that does not land (no such unit, no cgroup yet) is never reported
 // as the op stopped.
 func TestTheMemoryWatchReportsOnlyAKillThatLanded(t *testing.T) {
-	stop := opMemoryWatch("privatae-op-nonexistent-optest", 1<<62)
+	stop := opMemoryWatch(opActionUnitPrefix+"nonexistent", 1<<62)
 	time.Sleep(4 * opMemoryWatchPeriod)
 	v := stop()
 	if v.Stopped {

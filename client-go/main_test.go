@@ -45,6 +45,9 @@ func TestMain(m *testing.M) {
 	if len(os.Args) >= 3 && os.Args[1] == opSandboxSubcommand {
 		os.Exit(opSandboxChildMain(os.Args[2]))
 	}
+	if len(os.Args) >= 3 && os.Args[1] == opSandboxScopeSubcommand {
+		os.Exit(opSandboxScopeMain(os.Args[2]))
+	}
 	if len(os.Args) >= 3 && os.Args[1] == opActionSubcommand {
 		os.Exit(opActionOuterMain(os.Args[2]))
 	}
@@ -115,8 +118,13 @@ func TestMain(m *testing.M) {
 	// /proc/101 on the machine running the suite and the decision would depend
 	// on whatever process holds that number. The real-signal test opts back in.
 	procIdentity = func(int) (string, bool, bool) { return "", false, false }
+	// THE SWEEP IS ONE TOO. A test runs the ops' startup sweep for real, and it
+	// stops every op unit its names match: the suite's names are its own, so
+	// it never stops an op the machine's own bastion is running.
+	opIsolateOpsUnits()
 
 	code := m.Run()
+	opIsolatedOpsUnitsDone()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
 }
