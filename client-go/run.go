@@ -664,20 +664,12 @@ func runPairing(ctx context.Context, cfg *Config) error {
 		// may ever wait on that.
 		go runDeltaRefresh(ctx)
 		beat() // first beat: flip online + bind fp now, don't wait a full interval
-		t := time.NewTicker(60 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				// Path failover BEFORE the beat: if the current relay entry has gone dead
-				// (no handshake for RejectAfterTime) the beat could not reach the host
-				// anyway; move to the next candidate first, no platform round trip.
-				maybeFailover(cfg, dev, startedAt)
-				beat()
-			}
-		}
+		// Every 60 s, and at once after a pairing on this box changes state
+		// (beatnow.go), so this Host learns of it without waiting for the tick.
+		// Path failover BEFORE a ticked beat: if the current relay entry has gone
+		// dead (no handshake for RejectAfterTime) the beat could not reach the
+		// host anyway; move to the next candidate first, no platform round trip.
+		runBeatLoop(ctx, 60*time.Second, func() { maybeFailover(cfg, dev, startedAt) }, beat)
 	}()
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux}
@@ -868,16 +860,9 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 		go runOtherBastionRefresh(ctx)
 		go runDeltaRefresh(ctx)
 		beat()
-		t := time.NewTicker(60 * time.Second)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				beat()
-			}
-		}
+		// Every 60 s, and at once after a pairing on this box changes state
+		// (beatnow.go).
+		runBeatLoop(ctx, 60*time.Second, nil, beat)
 	}()
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux}

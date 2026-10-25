@@ -23,6 +23,18 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.55.3
+
+- **A pairing change reaches every Host on the machine at once.** Each pairing
+  beats its Host every 60 seconds, and the beat is how every Host on the
+  machine learns that a pairing went active or was revoked. Approving or
+  revoking a pairing changed it on disk immediately but triggered no beat, so
+  every Host kept the old state for up to a minute: a connection request to a
+  Host the anchor had just approved was refused as not on a shared machine. Now
+  a grant that makes a pairing active, and a revoke, make every running
+  pairing beat right away. A refused grant, or a re-sync of a pairing that is
+  already active, beats nothing.
+
 ## 0.55.2
 
 - **A search reply says how its text was sanitized.** Every successful reply

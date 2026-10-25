@@ -151,6 +151,10 @@ func handlePairingGrantSync(ws *websocket.Conn, _ string, args []string) {
 	started := false
 	if wasPending {
 		started = supervisorStart(c)
+		// Every Host on this box reads this pairing's state from a beat, so
+		// each beats now rather than up to a minute from now (beatnow.go). A
+		// re-sync of an active pairing changes no state, so it beats nothing.
+		kickBeats()
 	}
 	pairingResult(ws, "grant_sync", c.HostName, map[string]any{
 		"state": "ok", "subject": c.HostName, "caps": sortedCaps(t.Caps),
@@ -217,6 +221,9 @@ func handlePairingGrantDrop(ws *websocket.Conn, _ string, args []string) {
 	}
 	anchorMu.Unlock()
 	stopped := stopPairing(subject)
+	// Every other Host on this box learns of the revoke on its next beat, which
+	// is now rather than up to a minute from now (beatnow.go).
+	kickBeats()
 	// A revoked pairing keeps no folder the person shared with it.
 	sharesDropped := dropSharesOf(subject) == nil
 	pairingResult(ws, "grant_drop", subject, map[string]any{
