@@ -248,7 +248,7 @@ func TestMirrorListRefusal(t *testing.T) {
 		"space":        {{URL: "https://github.com/a/b c", Repo: "m/b"}},
 		"tab":          {{URL: "https://github.com/a/b", Repo: "m/\tb"}},
 		"unicode":      {{URL: "https://gíthub.com/a/b", Repo: "m/b"}},
-		"rtl override": {{URL: "https://github.com/a/‮b", Repo: "m/b"}},
+		"rtl override": {{URL: "https://github.com/a/\u202eb", Repo: "m/b"}},
 		"duplicate":    {good[0], {URL: "https://github.com/x/flask.git", Repo: "mirrors/flask"}},
 		"dup any case": {good[0], {URL: "https://github.com/x/flask.git", Repo: "Mirrors/Flask"}},
 	} {

@@ -18,8 +18,47 @@
 #
 # It checks that the test exists, not what it asserts; that part is reviewed
 # by reading the test when a row is added or changed.
+#
+#   deploy/check-claims.sh --skipped <go test -json output> [repo root]
+#
+# reads a `go test -json` run instead and names every cited test that
+# skipped in it, with the reason it gave. It exits non-zero if any did: a CI job
+# that runs a claim's test where it cannot run proves nothing about the claim.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = "--skipped" ]; then
+  RUN="$(cd "$(dirname "${2:?usage: deploy/check-claims.sh --skipped <go test -json output> [repo root]}")" && pwd)/$(basename "$2")"
+  ROOT="${3:-$HERE}"
+  cd "$ROOT"
+  [ -f docs/claims.md ] || { echo "no docs/claims.md in $ROOT" >&2; exit 2; }
+  python3 - "$RUN" <<'PY'
+import json, re, sys
+
+cited = set(re.findall(r"`[\w./-]+_test\.go`: `(\w+)`", open("docs/claims.md", encoding="utf-8").read()))
+skipped, why, ran = {}, {}, set()
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    t = e.get("Test")
+    if not t:
+        continue
+    top = t.split("/")[0]
+    if top not in cited:
+        continue
+    ran.add(top)
+    if e.get("Action") == "output" and "_test.go:" in e.get("Output", ""):
+        why.setdefault(t, e["Output"].strip())
+    if e.get("Action") == "skip":
+        skipped[t] = True
+for t in sorted(skipped):
+    print("SKIPPED " + t + ": " + why.get(t, "(no reason printed)"))
+print("%d cited tests ran here, %d of them skipped" % (len(ran), len(skipped)))
+sys.exit(1 if skipped else 0)
+PY
+  exit $?
+fi
 ROOT="${1:-$HERE}"
 cd "$ROOT"
 [ -f docs/claims.md ] && [ -d client-go ] || { echo "not a repository root (no docs/claims.md or client-go): $ROOT" >&2; exit 2; }

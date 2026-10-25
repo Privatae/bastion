@@ -1,0 +1,3 @@
+# Test tooling for one test lab, built only with -tags lab; it is not part of
+# any release build, so it is left out of the published source.
+client-go/lab.go export-ignore

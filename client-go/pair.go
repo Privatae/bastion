@@ -193,7 +193,7 @@ func pairPrecheck(cfgs []*Config, handle string, replace, forceActive bool) (exi
 	if boxMode() == modeLocal && len(cfgs) > 0 {
 		return nil, "", fmt.Errorf("this bastion is in local mode and already serves %s — a local bastion serves one host. "+
 			"To rotate that host's credentials: `privatae-bastion pair --replace <token>`. "+
-			"To serve several hosts, reinstall as a networked bastion (install.sh --networked, root) and anchor it.",
+			"To serve several hosts, reinstall as a networked bastion (install.sh --networked, root) and anchor it",
 			cfgs[0].HostName)
 	}
 	if forceActive {

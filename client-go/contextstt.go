@@ -859,10 +859,7 @@ func sttIsNonSpeechMark(text string) bool {
 	// ONE group, not two. "(yes) and (no)" ends in a bracket and is speech; the
 	// opening bracket must be closed only at the very end.
 	inner := t[1 : len(t)-1]
-	if strings.IndexByte(inner, closer) >= 0 {
-		return false
-	}
-	return true
+	return strings.IndexByte(inner, closer) < 0
 }
 
 type sttSegment struct {

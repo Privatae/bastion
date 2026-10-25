@@ -232,7 +232,7 @@ func TestAnUndescribableRequestDoesNotGetAPlainApprove(t *testing.T) {
 
 	// It must still be POSSIBLE to approve — this is a warning, not a wall. A
 	// machine that cannot be told "yes" would strand a fleet mid-upgrade.
-	w = uiPost(t, u.handler(), "/approve", url.Values{
+	uiPost(t, u.handler(), "/approve", url.Values{
 		"host": {host}, "id": {id}, "code": {uiCurrentCode(t)}}, cookie)
 	if got := requestsLoad(dcn)[id].State; got != "approved" {
 		t.Fatalf("an informed approval was blocked: state %q", got)

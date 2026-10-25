@@ -23,6 +23,50 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.55.2
+
+- **A search reply says how its text was sanitized.** Every successful reply
+  from the bastion agent (search, read range, catalog) was stamped
+  `sanitized: true`, while the agent the bastion deploys runs in `flag` mode,
+  which replaces e-mail addresses, phone numbers, card, bank and ID numbers,
+  IP and MAC addresses and keys, and leaves names, street addresses and
+  dates of birth in. A reply now carries `sanitize_mode` (the mode this
+  bastion wrote into the agent's manifest, or for an agent run by hand the
+  mode it reports, else `unknown`), `sanitized` true only for `sterilize`,
+  and `sanitize_note` saying what the mode leaves in. A reply cannot raise
+  the mode this bastion wrote.
+- **The README says what the bastion needs.** It said "no Docker, no Python".
+  The bastion itself needs neither, and the README now names the optional
+  features that do: coder runs, the service slot and the memory mirror need a
+  container runtime, folder search needs Python 3.8 or later, Python ops need
+  `/usr/bin/python3`, and the Linux accessibility reader needs python3 with
+  AT-SPI. It also said Go 1.25; `client-go/go.mod` needs 1.26.
+- **GitHub releases carry their files.** A new workflow,
+  `.github/workflows/release.yml`, runs on each release tag (and by hand for
+  an earlier one): `deploy/release-assets.sh` rebuilds the release from its
+  tag, writes the release manifest from the rebuilt binaries with
+  `deploy/manifest.py` (which `publish.sh` now uses too, so the two cannot
+  differ), and fetches the signature published for that manifest. Only when
+  the signature verifies are the six binaries, `version.json`, its signature
+  and `SHA256SUMS` attached to the release. Releases 0.53.2, 0.54.0 and
+  0.54.1 were rebuilt this way and each matched its signed manifest.
+- **The lab harness is out of the release build.** `mode=lab` drove one test
+  lab's own cluster and database, and its layout was in the published source.
+  It is now built only with `-tags lab` and is not in the published source; a
+  release bastion answers a lab run with exit 126, as a bastion without a lab
+  always did.
+- **staticcheck is clean** on linux, darwin and windows, for both Go modules,
+  and CI runs it (`deploy/staticcheck.sh`, a pinned staticcheck release, with
+  the per-OS runs merged so code used on one OS only is not reported unused).
+  Unused code is removed and error strings no longer end in punctuation; no
+  behaviour changes.
+- **The claim tests a container cannot run now run on GitHub.** 25 tests the
+  claims table cites (the op and action-op sandboxes, the egress tests in
+  private namespaces, the root command watch) skipped in CI, because a CI
+  container has no systemd, no namespaces of its own and no nftables. A new
+  job runs every cited test as root on GitHub's discarded virtual machine and
+  fails if any skips; `deploy/check-claims.sh --skipped` names them.
+
 ## 0.55.1
 
 - **A root op's tasks are capped.** An op's tasks were capped at 64 with

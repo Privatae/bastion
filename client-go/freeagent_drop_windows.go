@@ -71,12 +71,6 @@ func faRootStateBase() string {
 	return filepath.Join(d, "freeagent-state")
 }
 
-// faOwnerPlat holds the owner's SID, as text, and their bare user name.
-type faOwnerPlat struct {
-	sid  string
-	user string
-}
-
 // faHandsOverByChown: on Windows the hand-over is a permission entry on the
 // state leaf, inherited by everything later created in it.
 const faHandsOverByChown = false
@@ -430,12 +424,6 @@ func (c *winChild) Wait() error {
 	return nil
 }
 
-func faPathOwner(string) (uint32, uint32, error) {
-	return 0, 0, errors.New("ownership is not read as a uid on windows")
-}
-
-func faChown(string, uint32, uint32) error { return nil }
-
 // sysProcAttr: the Windows drop does not go through a credential; faStartChild
 // starts the child under the owner's token itself.
 func (o *faOwner) sysProcAttr() *syscall.SysProcAttr { return nil }
@@ -457,5 +445,4 @@ func faFdSane(f *os.File) error {
 	return nil
 }
 
-func faInfoOwner(os.FileInfo) (uint32, uint32, bool) { return 0, 0, false }
-func faInfoLinks(os.FileInfo) (uint64, bool)         { return 0, false }
+func faInfoLinks(os.FileInfo) (uint64, bool) { return 0, false }

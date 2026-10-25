@@ -1,0 +1,67 @@
+# Attaches each release's binaries, its signed manifest and the manifest's
+# signature to the release on GitHub, for the copy of this repository there.
+# Gitea reads .gitea/workflows when it exists and then ignores this directory.
+#
+# Nothing here is trusted to say what the release is. deploy/release-assets.sh
+# rebuilds the binaries from the release tag with the tag's own pinned build,
+# writes the release manifest from them, and fetches the signature published
+# for that manifest, which only the release key holder can make and which is
+# named by the manifest's digest. Unless the rebuilt bytes are exactly the
+# signed release, there is no signature by that name and nothing is attached.
+# The release key never comes near this workflow.
+#
+# A tag push runs it once the release is published. Run it by hand
+# (workflow_dispatch, from main) to attach the files to an earlier release
+# whose tag is here; its signature is still published, so that works for any
+# release from 0.53.2 on.
+#
+# No action from the marketplace is used: the commit is fetched with git from
+# this repository's public URL, and the build runs in the Go toolchain image
+# deploy/build.sh pins by digest. The job's token can write the release and
+# is passed only to the last step.
+name: release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: the release tag, vX.Y.Z
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  assets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+    steps:
+      - name: fetch this workflow's commit and the release tags
+        run: |
+          git init -q .
+          git fetch -q --tags "$REPO_URL" "$GITHUB_SHA"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: rebuild the release and check it against its signature
+        run: deploy/release-assets.sh "$TAG" "$RUNNER_TEMP/assets"
+      - name: attach the files to the release
+        # The one step with the token. Its shell, git and Python are named by
+        # path, and Python runs isolated (-I), so nothing an earlier step put
+        # on PATH or in the environment chooses what runs here.
+        shell: /usr/bin/bash -euo pipefail {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          /usr/bin/git show "refs/tags/$TAG:CHANGELOG.md" > "$RUNNER_TEMP/CHANGELOG.md"
+          /usr/bin/python3 -I deploy/github-release.py "$GITHUB_REPOSITORY" "$TAG" "$RUNNER_TEMP/assets" "$RUNNER_TEMP/CHANGELOG.md"

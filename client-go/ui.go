@@ -868,7 +868,7 @@ func localUIEntryURLTo(to string) (entry, addr string, err error) {
 	}
 	if !bastionListening(addr) {
 		return "", addr, fmt.Errorf("the bastion is not running on this machine, so "+
-			"there is nothing to show.\n  Start it with `%s`, then run this again.",
+			"there is nothing to show.\n  Start it with `%s`, then run this again",
 			runCommandHint())
 	}
 	secret, err := loadOrCreateUISecret()

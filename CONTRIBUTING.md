@@ -25,7 +25,14 @@ gofmt -l .            # must print nothing
 go vet ./...
 CGO_ENABLED=0 go build .
 go test ./...
+cd .. && deploy/staticcheck.sh   # must find nothing, on linux, darwin and windows
 ```
+
+Some claim tests need a real machine and root: the op sandboxes, the
+namespace tests and the root command watch skip in a container and as a
+user. GitHub's CI runs every test `docs/claims.md` cites as root on its own
+virtual machine and fails if one skips; to run them yourself, use a machine
+you can throw away.
 
 The backup tests also check this code against the age command itself when
 one is on PATH or named by `AGE_BIN`; CI installs a pinned age release and

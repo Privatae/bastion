@@ -190,8 +190,11 @@ func TestFreeagentProbeAndEnv(t *testing.T) {
 
 func TestFreeagentMap(t *testing.T) {
 	m, why, ok := freeagentMap("search", 200, []byte(`{"hits":[]}`), nil)
-	if !ok || m["state"] != "ok" || m["sanitized"] != true || why != "" {
-		t.Fatalf("200 → ok/sanitized, got %v %q", m, why)
+	if !ok || m["state"] != "ok" || why != "" {
+		t.Fatalf("200 → ok, got %v %q", m, why)
+	}
+	if m["sanitized"] != false || m["sanitize_mode"] != "unknown" || m["sanitize_note"] == nil {
+		t.Fatalf("a reply that names no mode is not called sanitized, got %v", m)
 	}
 	m, _, ok = freeagentMap("read_range", 404, []byte(`{"error":"no such document"}`), nil)
 	if !ok || m["state"] != "gone" {
@@ -296,5 +299,47 @@ func TestDcnOpArgsCarryFreeagentFields(t *testing.T) {
 	}
 	if a.Query != "routers" || a.K != 3 || a.Doc != "abc" || a.EndByte != 9 {
 		t.Fatalf("args not carried: %+v", a)
+	}
+}
+
+// The sanitize fields say what was done to the text. An agent this bastion
+// deployed runs in flag mode, which leaves names in: its replies are never
+// called sanitized, whatever the reply itself claims. An agent run by hand is
+// reported in the mode it names, and only sterilize counts as sanitized.
+func TestASanitizeStampNamesTheModeThatRan(t *testing.T) {
+	for _, c := range []struct {
+		name, mode, body, wantMode string
+		wantSanitized, wantNote    bool
+	}{
+		{"deployed, reply silent", faManagedSanitizeMode, `{"hits":[]}`, "flag", false, true},
+		{"deployed, reply claims sterilize", faManagedSanitizeMode, `{"hits":[],"sanitize_mode":"sterilize","sanitized":true}`, "flag", false, true},
+		{"by hand, flag", "", `{"hits":[],"sanitize_mode":"flag"}`, "flag", false, true},
+		{"by hand, sterilize", "", `{"hits":[],"sanitize_mode":"sterilize","sanitize_note":"x"}`, "sterilize", true, false},
+		{"by hand, silent", "", `{"hits":[],"sanitized":true}`, "unknown", false, true},
+		{"by hand, no sanitize stage", "", `{"hits":[],"sanitize_mode":"none"}`, "none", false, true},
+		{"by hand, a mode this build does not know", "", `{"hits":[],"sanitize_mode":"other"}`, "other", false, true},
+	} {
+		for _, op := range []string{"search", "read_range", "catalog"} {
+			m, why, ok := freeagentMapMode(op, c.mode, 200, []byte(c.body), nil)
+			if !ok || why != "" || m["state"] != "ok" {
+				t.Fatalf("%s/%s: %v %q", c.name, op, m, why)
+			}
+			note, hasNote := m["sanitize_note"].(string)
+			if m["sanitize_mode"] != c.wantMode || m["sanitized"] != c.wantSanitized || hasNote != c.wantNote || (hasNote && note == "") {
+				t.Errorf("%s/%s: got mode %v sanitized %v note %q", c.name, op, m["sanitize_mode"], m["sanitized"], note)
+			}
+		}
+	}
+	if !strings.Contains(faSanitizeNotes["flag"], "names") {
+		t.Fatal("the flag note must say names are left in")
+	}
+}
+
+// The mode the stamp reports for a deployed agent is the mode the bastion
+// writes into its manifest.
+func TestTheDeployedManifestUsesTheStampedMode(t *testing.T) {
+	text := faManifestText("s1", "cn", &dcnTerms{Root: "/tmp/x", Mask: []string{"search"}}, "", "", "m", 8)
+	if !strings.Contains(text, "sanitize:\n  mode: "+faManagedSanitizeMode+"\n") {
+		t.Fatalf("manifest sanitize block:\n%s", text)
 	}
 }

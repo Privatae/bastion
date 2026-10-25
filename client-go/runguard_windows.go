@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 )
 
 // runGuardFile holds the "one running bastion" lock for the life of this
-// process. It is a package var so the handle is never collected and the lock is
-// never released while we are still serving.
-var runGuardFile *os.File
+// process. It is a package-level holder so the handle is never collected and
+// the lock is never released while we are still serving.
+var runGuardFile atomic.Pointer[os.File]
 
 // guardSingleRun refuses to start a SECOND bastion on this machine.
 //
@@ -100,8 +101,8 @@ func guardSingleRun() error {
 				"your hosts, and a second would fight it for the same local ports.\n"+
 				"  Nothing is wrong: you can close this window.\n"+
 				"  If you believe the running one is dead, stop it (Task Manager → "+
-				"privatae-bastion.exe) and run this again."))
+				"privatae-bastion.exe) and run this again"))
 	}
-	runGuardFile = f
+	runGuardFile.Store(f)
 	return nil
 }

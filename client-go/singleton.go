@@ -434,7 +434,7 @@ func singletonGuardAgainst(m *machineMarker) error {
 			"A machine runs one bastion. If you are the owner, run this as that\n"+
 			"bastion's user (or with `sudo -H`) so it pairs into the existing one.\n"+
 			"If someone else owns the bastion here, this machine cannot serve your\n"+
-			"host yet — say so to whoever runs it.",
+			"host yet — say so to whoever runs it",
 		errForkedState, m.StateDir, mine)
 }
 

@@ -500,7 +500,7 @@ func faManifestText(id, cn string, terms *dcnTerms, sweep, recipient, embedModel
 		fmt.Fprintf(&b, "  exclude: [%s]\n", strings.Join(ex, ", "))
 	}
 	fmt.Fprintf(&b, "mask: [%s]\nstages: [%s]\n", strings.Join(mask, ", "), strings.Join(stages, ", "))
-	b.WriteString("sanitize:\n  mode: flag\n")
+	fmt.Fprintf(&b, "sanitize:\n  mode: %s\n", faManagedSanitizeMode)
 	if containsStr(stages, "embed") {
 		fmt.Fprintf(&b, "embed:\n  model: %s\n  dim: %d\n  chunk: {size_tokens: 512, overlap_tokens: 64}\n", yamlStr(embedModel), embedDim)
 	}
@@ -677,7 +677,8 @@ func faManagedConfig(storeID int64) (freeagentConfig, bool) {
 	if err != nil || port <= 0 {
 		return freeagentConfig{}, false
 	}
-	return freeagentConfig{Addr: "127.0.0.1:" + strconv.Itoa(port), Cert: inst.Cert, Key: inst.Key, CA: inst.Cert}, true
+	return freeagentConfig{Addr: "127.0.0.1:" + strconv.Itoa(port), Cert: inst.Cert, Key: inst.Key, CA: inst.Cert,
+		Mode: faManagedSanitizeMode}, true
 }
 
 // ── ensure / reconcile ──────────────────────────────────────────────────────

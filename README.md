@@ -1,14 +1,22 @@
 # privatae-bastion
 
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
-[![Go 1.25+](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](client-go/go.mod)
+[![Go 1.26+](https://img.shields.io/badge/go-1.26%2B-00ADD8.svg)](client-go/go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-lightgrey.svg)](#supported-platforms)
 [![ci](https://git.privatae.ai/privatae/privatae-bastion/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.privatae.ai/privatae/privatae-bastion/actions)
 
 **One static Go binary that gives your AI Host access to a machine without SSH keys: it dials out, checks every signed grant on the machine itself, and keeps its own audit log.**
 
-No Docker, no Python, no database, no separate WireGuard install. You pair the
-binary with a short token from your host, and from then on your host can reach
+The bastion itself needs no Docker, no Python, no database and no separate
+WireGuard install. A few optional features use software the machine must
+already have: coder runs, the service slot and the memory mirror need a
+container runtime (Docker, Podman or nerdctl); folder search runs the bastion
+agent, which needs Python 3.8 or later; host-written ops in Python need
+`/usr/bin/python3`; and reading an app's accessibility tree on Linux needs
+python3 with its AT-SPI bindings. Without them, those features say what is
+missing and the rest works.
+
+You pair the binary with a short token from your host, and from then on your host can reach
 this machine only through the tunnel this bastion dials out and the lanes it
 gates. Your files stay where they are. Nothing on this machine drives the host:
 there is no MCP endpoint here.
@@ -296,7 +304,9 @@ To report a security issue, please do not open a public issue. See
 Every security claim names the test that fails if it stops being true, and
 says where there is none. The full table is one file,
 [docs/claims.md](docs/claims.md); `deploy/check-claims.sh` checks that every
-test it cites exists in `client-go`.
+test it cites exists in `client-go`. On GitHub, CI also runs every cited test
+as root on the runner's own virtual machine, where the sandbox and namespace
+tests a container cannot run do run, and fails if any of them skips.
 
 ## How this repo is published
 
@@ -330,7 +340,7 @@ rather than faked.
 
 ## Build from source
 
-Requires Go 1.25 or newer. The binary is pure Go and builds with `cgo` off.
+Requires Go 1.26 or newer (`client-go/go.mod`). The binary is pure Go and builds with `cgo` off.
 
 ```sh
 git clone https://git.privatae.ai/privatae/privatae-bastion.git
@@ -378,6 +388,24 @@ If the published version has no tag in your clone, the script says so and
 stops without building. If it cannot fetch tags, it says that instead.
 Releases from 0.53.2 on can be checked this way from a clone of this
 repository; the tags of earlier releases are not in it.
+
+Each release on GitHub carries the six binaries, the signed manifest
+`version.json`, its signature `version.json.<first 16 hex of its sha256>.sig`
+and `SHA256SUMS`. The release workflow (`.github/workflows/release.yml`)
+attaches them only after `deploy/release-assets.sh` has rebuilt the binaries
+from the tag and the published signature has verified against the manifest
+written from them, so they are the same bytes the installer and the
+self-updater fetch. To check a download yourself, compare its sha256 with the
+manifest's, and check the manifest's signature against the keys this source
+pins (needs Go):
+
+```sh
+cd deploy/release-sign
+go run . verify bastion <dir>/version.json <dir>/version.json.<…>.sig $(go run . pinned ../../client-go/release_sign.go)
+```
+
+`deploy/release-assets.sh v<version> <dir>` does all of it from a clone,
+rebuild included, for any release from 0.53.2 on.
 
 ## Contributing
 

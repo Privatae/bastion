@@ -535,25 +535,6 @@ func loadPairings() ([]*Config, error) {
 	return cfgs, nil
 }
 
-// loadConfig keeps single-pairing call sites working: with exactly one pairing it
-// returns it. With several it REFUSES — a straggler caller must name a host and
-// fail safe, not silently act on an arbitrary one (that ambiguity is the same
-// family of bug as the single-config unpair).
-func loadConfig() (*Config, error) {
-	cfgs, err := loadPairings()
-	if err != nil {
-		return nil, err
-	}
-	switch len(cfgs) {
-	case 0:
-		return nil, fmt.Errorf("no pairings")
-	case 1:
-		return cfgs[0], nil
-	default:
-		return nil, fmt.Errorf("%d hosts are paired — this operation must name one (see --host)", len(cfgs))
-	}
-}
-
 // hostNames lists the paired host names (for error messages).
 func hostNames(cfgs []*Config) []string {
 	names := make([]string, 0, len(cfgs))

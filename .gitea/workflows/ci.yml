@@ -58,7 +58,10 @@ jobs:
             echo "== gofmt"; out="$(gofmt -l .)"; [ -z "$out" ] || { echo "$out"; exit 1; }
             for os in linux darwin windows; do echo "== go vet ($os)"; GOOS=$os go vet ./...; done
             echo "== go build"; go build -o /tmp/privatae-bastion .
-            echo "== go test"; go test -count=1 ./...'
+            if [ -f lab.go ]; then echo "== go vet -tags lab"; go vet -tags lab ./...; fi
+            echo "== go test"; go test -count=1 ./...
+            echo "== staticcheck"; sh ../deploy/staticcheck.sh
+            echo "== the GitHub release step, against a fake API"; python3 -I ../deploy/test_github_release.py'
       - name: the same for deploy/release-sign
         run: |
           docker run --rm --cpus 6 -e GOMAXPROCS=6 -v "$PWD":/src -w /src/deploy/release-sign \

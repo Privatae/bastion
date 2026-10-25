@@ -200,10 +200,10 @@ func contextAskViaSock(root, name string) (sent bool, host, note string, availab
 	return true, rep.Host, "", true
 }
 
-// contextSockUnsupported is the note used where the platform has no
+// errContextSockUnsupported is the note used where the platform has no
 // implementation yet, so the reason a person sees names the platform rather
 // than pretending the feature is merely broken.
-var contextSockUnsupported = errors.New("peer identity over a local socket is not " +
+var errContextSockUnsupported = errors.New("peer identity over a local socket is not " +
 	"implemented for this platform yet")
 
 func contextSockFmtUser(uid uint32, name string) string {

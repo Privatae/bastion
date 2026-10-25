@@ -446,7 +446,7 @@ func effectOK(f string) error {
 		return errors.New("must be absolute")
 	}
 	if strings.Contains(f, "{") || strings.Contains(f, "..") {
-		return errors.New("no placeholders, no ..")
+		return errors.New("no placeholders, no \"..\"")
 	}
 	if strings.Contains(f, "\\") {
 		// A backslash is filepath.Match's escape: `\n` is a pattern the

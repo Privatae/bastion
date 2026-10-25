@@ -58,10 +58,9 @@ type harnessSpec struct {
 	// push — and spends the person's approval (writes.go), bound to the
 	// harness id, mode, image, repo and branch of THIS run.
 	Approval string `json:"approval,omitempty"`
-	// mode=lab (the Lab Harness): build a sealed lab of N hardened
-	// hosts on THIS box's lab cluster, put the app under test in each, drive the test runbook with
-	// ONE coding-harness pod inside the lab, collect, tear down. Only a lab bastion answers it.
-	Hosts  int               `json:"hosts"`  // how many lab hosts (Entity CRs) to build
+	// mode=lab (the lab harness): test tooling built only with -tags lab
+	// (lab.go). A release build refuses it with exit 126 (lab_off.go).
+	Hosts  int               `json:"hosts"`  // how many lab hosts to build
 	Envs   map[string]string `json:"envs"`   // app settings written to every lab host (.env)
 	Tests  []string          `json:"tests"`  // the runbook: ordered steps, one governed /run each
 	Engine string            `json:"engine"` // which coding harness drives the tests (PRIVATAE_APP_ID)
@@ -693,17 +692,12 @@ func runGit(spec harnessSpec) ([]byte, int) {
 var harnessGitSafe = []string{"-c", "core.hooksPath=" + os.DevNull, "-c", "core.fsmonitor=false",
 	"-c", "protocol.ext.allow=never"}
 
-// harnessGit runs git (in the folder in, if not "") with harnessGitSafe and
+// harnessGitAuth runs git (in the folder in, if not "") with harnessGitSafe and
 // an environment that brings no config of this machine's: no system file, no
 // global file, HOME and XDG_CONFIG_HOME at home (an empty folder), and no
-// GIT_ variable of this process's. Output as runCmd gives it.
-func harnessGit(timeout time.Duration, home, in string, args ...string) (string, error) {
-	return harnessGitAuth(timeout, home, nil, in, args...)
-}
-
-// harnessGitAuth is harnessGit with auth (repoGitAuth's environment) added to
-// the environment, so a credential is never in a process argument, where any
-// local user can read it.
+// GIT_ variable of this process's. auth (repoGitAuth's environment) is added
+// to the environment, so a credential is never in a process argument, where
+// any local user can read it. Output as runCmd gives it.
 func harnessGitAuth(timeout time.Duration, home string, auth []string, in string, args ...string) (string, error) {
 	a := append(append([]string{}, harnessGitSafe...), harnessLFSConfig()...)
 	if in != "" {

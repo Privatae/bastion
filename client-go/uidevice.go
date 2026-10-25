@@ -16,7 +16,7 @@ package main
 // machine itself — everything that is waiting on the person, in one place. Each
 // device ask has Approve and Deny; several have "Approve all shown". The tray
 // (tray_windows.go) and the notification (notify_windows.go) open this page
-// directly, as a small app window where the system has one (uipopup_*.go), so a
+// directly, as a small app window where the system has one (uipopup_windows.go), so a
 // waiting approval is one click from the taskbar with no menu in between.
 //
 // WHAT IS NOT CHANGED. Signing is deviceApprove's, exactly as the console does
@@ -345,29 +345,6 @@ func deviceAskServer(id string) string {
 		return r.Server
 	}
 	return "that machine"
-}
-
-// openApprovalsPopup is what the tray's approvals line and a click on the
-// approval notification do: open /approvals, signed in, as a small window.
-//
-// It goes through localUIEntryURLTo exactly as openLocalUI goes through
-// localUIEntryURL — a one-use ticket minted against the running daemon — so it
-// cannot hand out a link that does not authenticate, and the ticket's redirect
-// lands on the page itself rather than on a menu.
-// approvalsOpener is what a click on an approval notification opens: the
-// daemon's own popup, or, in the tray beside a system service, the tray's page
-// (tray_pipe_windows.go sets it before the notifier starts).
-var approvalsOpener = openApprovalsPopup
-
-func openApprovalsPopup(from string) {
-	entry, _, err := localUIEntryURLTo(uiApprovalsPath)
-	if err != nil {
-		uilogf("%s: %v\n", from, err)
-		return
-	}
-	if err := openPopupWindow(entry); err != nil {
-		uilogf("%s: %v\n", from, err)
-	}
 }
 
 // uiApprovalsPath is the one place a sign-in ticket may land other than "/".

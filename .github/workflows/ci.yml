@@ -87,6 +87,12 @@ jobs:
           out="$(gofmt -l .)"; [ -z "$out" ] || { echo "$out"; exit 1; }
           for os in linux darwin windows; do GOOS=$os go vet ./...; done
           go test -count=1 ./...
+      - name: staticcheck on linux, darwin and windows
+        # The pinned staticcheck release, built with this toolchain from the
+        # module proxy and checked against the checksum database.
+        run: sh deploy/staticcheck.sh
+      - name: the release workflow's GitHub step, against a fake API
+        run: python3 -I deploy/test_github_release.py
 
   personal-data:
     runs-on: ubuntu-24.04
@@ -113,6 +119,7 @@ jobs:
           test "$(grep -c "^      image: $want\$" .github/workflows/ci.yml)" -eq 3
           test "$(grep -c '^      image: ' .github/workflows/ci.yml)" -eq 3
           grep -q "^  GO_IMAGE: $want\$" .gitea/workflows/ci.yml
+          grep -q "^      GO_IMAGE: $want\$" .github/workflows/ci.yml
       - name: no person's data in the tree
         # Reads files, runs nothing from the tree. The term check needs the
         # maintainers' key and the entity-id check the reserved ids, which
@@ -163,3 +170,72 @@ jobs:
         # A short pass on every commit. Run deploy/fuzz.sh with its default of
         # 20 seconds before changing a wall a host's input goes through.
         run: bash deploy/fuzz.sh 5
+
+  claims-on-a-machine:
+    # The claim tests a container cannot run: the op and action-op sandboxes
+    # (root, systemd units, overlayfs, a cgroup with the pids controller),
+    # the egress tests in private user and network namespaces, and the root
+    # command watch (nftables). They run here on the runner's own virtual
+    # machine, as root, because that is what they test: the bastion as a
+    # networked machine's system service. The machine is GitHub's and is
+    # discarded after the job. The toolchain is the one in the pinned image.
+    # Every test docs/claims.md cites is run, and the job fails if any of
+    # them skips.
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # This job runs on the runner itself, not in the image, and Ubuntu
+    # 24.04's sh is dash 0.5.12-6ubuntu5, which has no pipefail (Debian added
+    # it in 0.5.12-7): `set -o pipefail` there is a fatal error. bash has it.
+    defaults:
+      run:
+        shell: bash -eu {0}
+    env:
+      GO_IMAGE: golang@sha256:27f2d3b83cfc5803c8078f8e730af0f7c431bf067afaec8f60a36fb763187cba
+    steps:
+      - name: fetch the commit
+        run: |
+          set -o pipefail
+          git init -q .
+          git fetch -q --depth=1 "$REPO_URL" "$WANT"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$WANT"
+      - name: tools, and the pinned toolchain on the machine
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nftables iproute2 poppler-utils >/dev/null
+          # The forge-token claim test needs git 2.46 or later; Ubuntu 24.04's
+          # own git is 2.43.
+          if ! git version | awk '{split($3, v, "."); exit !(v[1] > 2 || (v[1] == 2 && v[2] >= 46))}'; then
+            sudo add-apt-repository -y ppa:git-core/ppa >/dev/null
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null
+          fi
+          git version
+          docker create --name go "$GO_IMAGE" >/dev/null
+          sudo docker cp go:/usr/local/go /opt/go-pinned
+          docker rm go >/dev/null
+          /opt/go-pinned/bin/go version
+      - name: age
+        # The same pinned age release as the test job.
+        run: |
+          case "$(uname -m)" in
+            x86_64)  a=amd64; sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;;
+            aarch64) a=arm64; sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;;
+            *) echo "no pinned age release for $(uname -m)"; exit 1 ;;
+          esac
+          curl -fsSL -o "$RUNNER_TEMP/age.tgz" "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-$a.tar.gz"
+          echo "$sum  $RUNNER_TEMP/age.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/age.tgz" -C "$RUNNER_TEMP" age/age
+          echo "AGE_BIN=$RUNNER_TEMP/age/age" >> "$GITHUB_ENV"
+      - name: every cited test, as root
+        working-directory: client-go
+        run: |
+          set -o pipefail
+          tests="$(grep -o '_test\.go`: `[A-Za-z0-9_]*`' ../docs/claims.md | sed 's/.*`: `//; s/`$//' | sort -u | paste -sd'|' -)"
+          test -n "$tests"
+          sudo env PATH="/opt/go-pinned/bin:$PATH" HOME="$HOME" AGE_BIN="$AGE_BIN" PRIVATAE_REQUIRE_AGE=1 GOTOOLCHAIN=local CGO_ENABLED=0 \
+            GOFLAGS=-mod=readonly GOMODCACHE="$HOME/go/pkg/mod" GOCACHE="$HOME/.cache/go-build" \
+            go test -count=1 -json -run "^($tests)\$" . > "$RUNNER_TEMP/claims.json" || {
+              grep -h '"Action":"fail"' "$RUNNER_TEMP/claims.json" | head -40; exit 1; }
+      - name: none of them skipped
+        run: bash deploy/check-claims.sh --skipped "$RUNNER_TEMP/claims.json"

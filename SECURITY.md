@@ -115,7 +115,9 @@ the folder you granted. The agent is a separate program in its own repository
 (`privatae/bastion-agent`), and it reads your files in order to index them. What
 leaves your machine is what its manifest and your grant allow. Its extraction
 and PII redaction happen inside it, so check that repository, not this one,
-for how well those work.
+for how well those work. The bastion runs it in `flag` mode, which does not
+find names, street addresses or dates of birth, and every search reply says so
+([DCN stores](docs/context.md#distributed-context-network-dcn-stores)).
 
 **The Host.** The bastion holds your Host to your grant and your approvals.
 What the Host does with what you share with it is the Host's own software, and

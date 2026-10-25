@@ -11,6 +11,7 @@ package main
 //	go test -c -o /tmp/b.test . && BASTION_MIRROR_E2E=1 /tmp/b.test -test.run TestMirrorEndToEnd -test.v
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -89,7 +90,9 @@ func TestMirrorEndToEnd(t *testing.T) {
 	}
 
 	// Read the server's own view over its socket: both repos exist, with commits.
-	hc := &http.Client{Transport: &http.Transport{Dial: func(_, _ string) (net.Conn, error) { return net.Dial("unix", sock) }}}
+	hc := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	}}}
 	// Gitea indexes a pushed repo in a background queue, so poll for a moment.
 	for _, repo := range []string{"rig/nocode", "rig/example"} {
 		var last string

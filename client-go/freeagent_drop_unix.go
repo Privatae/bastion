@@ -20,9 +20,6 @@ func faDropSupported() bool { return true }
 // own 0700 leaf.
 func faRootStateBase() string { return "/var/lib/privatae/freeagent" }
 
-// faOwnerPlat: a unix owner is fully described by its uid, gid, name and home.
-type faOwnerPlat struct{}
-
 // faHandsOverByChown: on unix every file root writes for the child is handed
 // over by changing its owner.
 const faHandsOverByChown = true

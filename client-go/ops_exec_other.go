@@ -20,9 +20,6 @@ type opChange struct {
 	Digest string `json:"sha256,omitempty"`
 	Diff   string `json:"diff,omitempty"`
 	Note   string `json:"note,omitempty"`
-
-	src  string
-	from string
 }
 
 type opReport struct {
@@ -41,7 +38,6 @@ type opReport struct {
 	Checks        []opVerbResult    `json:"checks,omitempty"`
 	Receipts      []opSignedReceipt `json:"receipts,omitempty"`
 
-	run     string
 	cleanup func()
 }
 

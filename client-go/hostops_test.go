@@ -484,7 +484,7 @@ func TestRepeatedRefusedWritesQuarantineThePairing(t *testing.T) {
 	for i := 0; i < quarantineStrikes; i++ {
 		driveJob(t, tAnchor, putJob(""), ctx, "")
 	}
-	if u := quarantinedUntil(tAnchor, time.Now()); u.IsZero() || u.Sub(time.Now()) > quarantineBase+time.Minute {
+	if u := quarantinedUntil(tAnchor, time.Now()); u.IsZero() || time.Until(u) > quarantineBase+time.Minute {
 		t.Fatalf("a cleared hold is forgiven — the next one is the base length again: %v", u)
 	}
 	// Strikes double when the hold lapses on its own.
@@ -494,7 +494,7 @@ func TestRepeatedRefusedWritesQuarantineThePairing(t *testing.T) {
 	for i := 0; i < quarantineStrikes; i++ {
 		driveJob(t, tAnchor, putJob(""), ctx, "")
 	}
-	if u := quarantinedUntil(tAnchor, time.Now()); u.IsZero() || u.Sub(time.Now()) < 2*quarantineBase-time.Minute {
+	if u := quarantinedUntil(tAnchor, time.Now()); u.IsZero() || time.Until(u) < 2*quarantineBase-time.Minute {
 		t.Fatalf("a repeat hold doubles: %v", u)
 	}
 }

@@ -45,6 +45,29 @@ func openPopupWindow(url string) error {
 	return openBrowser(url)
 }
 
+// approvalsOpener is what a click on an approval notification opens: the
+// daemon's own popup, or, in the tray beside a system service, the tray's page
+// (tray_pipe_windows.go sets it before the notifier starts).
+var approvalsOpener = openApprovalsPopup
+
+// openApprovalsPopup is what the tray's approvals line and a click on the
+// approval notification do: open /approvals, signed in, as a small window.
+//
+// It goes through localUIEntryURLTo exactly as openLocalUI goes through
+// localUIEntryURL — a one-use ticket minted against the running daemon — so it
+// cannot hand out a link that does not authenticate, and the ticket's redirect
+// lands on the page itself rather than on a menu.
+func openApprovalsPopup(from string) {
+	entry, _, err := localUIEntryURLTo(uiApprovalsPath)
+	if err != nil {
+		uilogf("%s: %v\n", from, err)
+		return
+	}
+	if err := openPopupWindow(entry); err != nil {
+		uilogf("%s: %v\n", from, err)
+	}
+}
+
 // findEdge looks where Edge installs: machine-wide under both Program Files
 // roots, and per-user under LOCALAPPDATA. "" when it is in none of them.
 func findEdge() string {

@@ -655,6 +655,9 @@ func cmdBackupDecide(host, prefix string, approve bool) error {
 			}
 		}
 		r, err = resealApprove(dir, who, id, code)
+		if err != nil {
+			return err
+		}
 	} else {
 		r, err = resealRefuse(dir, resealWho{Name: cfg.HostName}, id, "")
 	}

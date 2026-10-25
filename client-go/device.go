@@ -296,13 +296,6 @@ func nonceSave(m map[string]string) error {
 	return atomicWrite(p, raw)
 }
 
-func nonceSeen(nonce string) bool {
-	deviceMu.Lock()
-	defer deviceMu.Unlock()
-	_, ok := nonceLoad()[nonce]
-	return ok
-}
-
 // burnNonce records the nonce until its approval's expiry (after which a
 // replay fails on expiry anyway).
 func burnNonce(a *deviceApproval) {
@@ -329,17 +322,6 @@ func approvalOK(dir, approval, purpose string) error {
 		return err
 	}
 	return stepupCheckApproval(dir, approval, purpose)
-}
-
-// approvalKind names how an approval was given, for the audit line.
-func approvalKind(approval string) string {
-	switch {
-	case strings.TrimSpace(approval) == "":
-		return ""
-	case isDeviceApproval(approval):
-		return "device"
-	}
-	return "console"
 }
 
 // approvalRequired: does a change on this box need the person's approval?

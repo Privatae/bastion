@@ -60,6 +60,27 @@ type freeagentConfig struct {
 	Cert string // PEM: the client identity this box presents
 	Key  string
 	CA   string // PEM: the root the local agent's server cert must chain to
+	// Mode is the sanitize mode this bastion wrote into the agent's manifest
+	// (faManagedSanitizeMode for every agent it deploys), or "" for an agent
+	// someone runs by hand, whose manifest this bastion did not write.
+	Mode string
+}
+
+// faManagedSanitizeMode is the sanitize mode the bastion writes into every
+// manifest it deploys (faManifestText). Flag mode is the agent's rules pass
+// only: it replaces e-mail addresses, phone numbers, card, bank and ID
+// numbers, IP and MAC addresses and keys, and does not find names, street
+// addresses or dates of birth.
+const faManagedSanitizeMode = "flag"
+
+// faSanitizeNotes says, for each mode a reply can carry, what personal data
+// may still be in the text, in the words the host relays. A mode with no entry
+// here is reported as not known to remove personal data.
+var faSanitizeNotes = map[string]string{
+	"flag": "rules only: e-mail addresses, phone numbers, card, bank and ID numbers, IP and MAC addresses " +
+		"and keys were replaced; names, street addresses and dates of birth were not",
+	"sterilize": "",
+	"none":      "the agent's manifest has no sanitize stage, so nothing in the text was replaced",
 }
 
 func freeagentEnv() (freeagentConfig, bool) {
@@ -252,6 +273,16 @@ func freeagentProbe() (bool, bool) {
 // local agent's own 403 (grant/mask) and 503 (manifest not
 // serving) are refusals with the reason it gave; 404 on read_range is gone.
 func freeagentMap(op string, status int, body []byte, err error) (map[string]any, string, bool) {
+	return freeagentMapMode(op, "", status, body, err)
+}
+
+// freeagentMapMode is freeagentMap for an agent whose manifest this bastion
+// wrote with sanitize mode `mode` ("" when it did not write it). A successful
+// reply says how its text was sanitized: `sanitize_mode` is the mode this
+// bastion wrote, else the one the agent reports, else "unknown"; `sanitized`
+// is true only for "sterilize", the mode that looks for names; and
+// `sanitize_note` says what the mode leaves in.
+func freeagentMapMode(op, mode string, status int, body []byte, err error) (map[string]any, string, bool) {
 	if err != nil {
 		return map[string]any{"state": "offline", "detail": "freeagent: " + err.Error()}, "", true
 	}
@@ -267,7 +298,7 @@ func freeagentMap(op string, status int, body []byte, err error) (map[string]any
 		return nil, "freeagent: malformed reply", false
 	case status == http.StatusOK:
 		payload["state"] = "ok"
-		payload["sanitized"] = true
+		faStampSanitize(payload, mode)
 		return payload, "", true
 	case status == http.StatusNotFound && op == "read_range":
 		return map[string]any{"state": "gone", "detail": reason}, "", true
@@ -286,10 +317,33 @@ func freeagentMap(op string, status int, body []byte, err error) (map[string]any
 	}
 }
 
+// faStampSanitize writes the three sanitize fields onto a successful reply.
+// The mode this bastion wrote wins over the one the reply carries: a reply
+// cannot make text it never sterilized read as sterilized.
+func faStampSanitize(payload map[string]any, mode string) {
+	if mode == "" {
+		mode, _ = payload["sanitize_mode"].(string)
+	}
+	if mode == "" {
+		mode = "unknown"
+	}
+	note, known := faSanitizeNotes[mode]
+	if !known {
+		note = "the local agent did not say how this text was sanitized; it may contain personal data"
+	}
+	payload["sanitize_mode"] = mode
+	payload["sanitized"] = mode == "sterilize"
+	delete(payload, "sanitize_note")
+	if note != "" {
+		payload["sanitize_note"] = note
+	}
+}
+
 // handleDcnSearch — op `dcn_search`: args = <store_id> <json {query, k}>. Gated
 // by the synced grant with the 'search' mask, then forwarded to the
-// local agent's /search. Hits are sanitized windows with document ids the host
-// feeds back to read_range.
+// local agent's /search. Hits are windows of the agent's sanitized text, with
+// document ids the host feeds back to read_range; faStampSanitize says which
+// sanitize mode produced them.
 func handleDcnSearch(ws *websocket.Conn, dir string, args []string) {
 	storeID, a, ok := dcnParseArgs(ws, args)
 	if !ok {
@@ -319,7 +373,7 @@ func handleDcnSearch(ws *websocket.Conn, dir string, args []string) {
 	}
 	status, body, err := freeagentCall(c, http.MethodPost, "/search",
 		map[string]any{"query": q, "k": k})
-	payload, why, ok := freeagentMap("search", status, body, err)
+	payload, why, ok := freeagentMapMode("search", c.Mode, status, body, err)
 	if !ok {
 		dcnRefuse(ws, dir, "search", storeID, "", why)
 		return
@@ -394,7 +448,7 @@ func handleDcnCatalog(ws *websocket.Conn, dir string, args []string) {
 			"state": "offline", "detail": "no catalog yet — the local agent's first sweep has not finished; try again later"})
 		return
 	}
-	payload, why, ok := freeagentMap("catalog", status, body, err)
+	payload, why, ok := freeagentMapMode("catalog", c.Mode, status, body, err)
 	if !ok {
 		dcnRefuse(ws, dir, "catalog", storeID, "kind:"+kind, why)
 		return
@@ -427,7 +481,7 @@ func handleDcnReadRangeDoc(ws *websocket.Conn, dir string, storeID int64, a *dcn
 	}
 	status, body, err := freeagentCall(c, http.MethodPost, "/read_range",
 		map[string]any{"doc": a.Doc, "start": start, "end": end})
-	payload, why, ok := freeagentMap("read_range", status, body, err)
+	payload, why, ok := freeagentMapMode("read_range", c.Mode, status, body, err)
 	if !ok {
 		dcnRefuse(ws, dir, "read_range", storeID, "doc:"+a.Doc, why)
 		return

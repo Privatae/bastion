@@ -33,11 +33,11 @@ const contextSockDir = `C:\ProgramData\privatae-bastion`
 func contextSockDialable(string) string { return "" }
 
 func contextSockListen(path string) (net.Listener, error) {
-	return nil, contextSockUnsupported
+	return nil, errContextSockUnsupported
 }
 
 func contextPeerUser(c net.Conn) (string, error) {
-	return "", contextSockUnsupported
+	return "", errContextSockUnsupported
 }
 
 var _ = os.Remove

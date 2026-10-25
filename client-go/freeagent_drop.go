@@ -81,9 +81,17 @@ type faOwner struct {
 	gid  uint32
 	name string
 	home string
-	// plat is what this platform needs beyond the above: nothing on unix, the
+	// plat is what this platform needs beyond the above: nothing on unix (an
+	// owner there is fully described by its uid, gid, name and home), the
 	// owner's SID on Windows (freeagent_drop_windows.go).
 	plat faOwnerPlat
+}
+
+// faOwnerPlat holds the owner's SID, as text, and their bare user name. Only
+// Windows fills it; it stays zero on unix.
+type faOwnerPlat struct {
+	sid  string
+	user string
 }
 
 // faResolveOwner decides the identity for a store's agent. Where this

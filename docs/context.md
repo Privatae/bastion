@@ -17,3 +17,13 @@ audited on this machine. The vocabulary is reads plus **one write lane**: a
 signed move plan that you confirmed on this machine, which archives files and
 never deletes them. Dropping a grant removes the grant, not your files.
 **No delete op exists.**
+
+A grant with `search` runs the bastion agent on the folder. Its search
+results, read ranges and catalog cards come from the agent's sanitized text,
+and each reply says how that text was sanitized: `sanitize_mode` is the mode
+in the agent's manifest, `sanitized` is true only for `sterilize`, and
+`sanitize_note` says what the mode leaves in. The bastion deploys the agent in
+`flag` mode, which replaces e-mail addresses, phone numbers, card, bank and ID
+numbers, IP and MAC addresses and keys, and does **not** find names, street
+addresses or dates of birth. So a Host reading your folder through search
+sees those.

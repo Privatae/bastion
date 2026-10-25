@@ -228,7 +228,7 @@ func TestSessionFramingResizeAndTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript missing: %v", err)
 	}
-	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
+	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("transcript mode %o, want 0600", st.Mode().Perm())
 	}
 	raw, _ := os.ReadFile(p)
@@ -613,9 +613,6 @@ func TestSessionWorkerLaneRouting(t *testing.T) {
 // TestSessionRefusesTerminalServers: tmux/screen are servers that outlive the
 // session's kill, so they are never the session shell even when /etc/shells lists them.
 func TestSessionRefusesTerminalServers(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix spawner")
-	}
 	shells := filepath.Join(t.TempDir(), "shells")
 	_ = os.WriteFile(shells, []byte("/usr/bin/tmux\n/usr/bin/screen\n/bin/sh\n"), 0o644)
 	old := sessionShellsPath

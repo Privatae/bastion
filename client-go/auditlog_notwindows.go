@@ -32,9 +32,3 @@ func systemAuditWrite(line []byte) {
 		auditSyslog = nil
 	}
 }
-
-// registerAuditEventSource has nothing to register outside Windows: syslog
-// takes any tag.
-func registerAuditEventSource() error { return nil }
-
-func removeAuditEventSource() {}

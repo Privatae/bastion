@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -62,48 +61,6 @@ func drive(t *testing.T, backupRoot string, req backupFetchReq) (string, string,
 			return out, errOut, code
 		}
 	}
-}
-
-func awaitJob(t *testing.T, backupRoot, id string) backupJob {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		out, _, code := drive(t, backupRoot, backupFetchReq{Op: "status", JobID: id})
-		if code != 0 {
-			t.Fatalf("status exited %d", code)
-		}
-		var j backupJob
-		if err := json.Unmarshal([]byte(out), &j); err != nil {
-			t.Fatalf("status is not JSON: %v (%s)", err, out)
-		}
-		if j.State != "running" {
-			return j
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	t.Fatal("job never left running")
-	return backupJob{}
-}
-
-func startAndAwait(t *testing.T, root string, req backupFetchReq) backupJob {
-	t.Helper()
-	out, errOut, code := drive(t, root, req)
-	if code != 0 {
-		t.Fatalf("start exited %d: %s", code, errOut)
-	}
-	var started struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
-	}
-	if err := json.Unmarshal([]byte(out), &started); err != nil {
-		t.Fatalf("start reply is not JSON: %v (%s)", err, out)
-	}
-	if started.State == "done" { // already-present short circuit
-		var j backupJob
-		_ = json.Unmarshal([]byte(out), &j)
-		return j
-	}
-	return awaitJob(t, root, started.ID)
 }
 
 func artifactServer(t *testing.T, body []byte) (*httptest.Server, string) {

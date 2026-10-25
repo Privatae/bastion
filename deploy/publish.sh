@@ -85,37 +85,11 @@ fi
 # same script and compares every digest.
 "$HERE/deploy/build.sh" "$VER"
 
-# version manifest: {version, built_from, binaries:{os-arch:{url,sha256}}} — built with python
-# (clean JSON; the host + the bastion self-update read this to decide "out of date").
-python3 - "$VER" "$GITSHA" "$HERE/client-go/dist" > "$HERE/client-go/dist/version.json" <<'PY'
-import sys, os, hashlib, json
-ver, sha, dist = sys.argv[1], sys.argv[2], sys.argv[3]
-binaries = {}
-for f in sorted(os.listdir(dist)):
-    if not f.startswith("privatae-bastion-"):
-        continue
-    h = hashlib.sha256(open(os.path.join(dist, f), "rb").read()).hexdigest()
-    # ?v=<version> IS LOAD-BEARING, not decoration. dl.privatae.ai sits behind
-    # Cloudflare, which caches these objects and keys on the full URL including
-    # the query string. Without it a publish replaces the bytes on both edges,
-    # both edges verify, the manifest is fresh — and Cloudflare keeps serving the
-    # PREVIOUS binary to anyone whose request lands on a warm edge. The client
-    # downloads the old bytes, compares them against the new digest, and aborts
-    # with "sha256 mismatch" — which reads like a corrupt build and is actually a
-    # stale cache. Measured publishing 0.23.0: windows-amd64.exe came
-    # back cf-cache-status HIT, age 3917, carrying 0.22.0's bytes. It was the
-    # ONLY stale one, because it was the only object anything had requested since
-    # the previous publish — so this breaks one platform at a time, at random,
-    # for whoever happens to have downloaded last. The worst possible shape.
-    #
-    # A new version string is a new cache key is a guaranteed miss. Needs no
-    # Cloudflare credential and cannot be forgotten at publish time. update.go
-    # downloads binaries[key].url verbatim, so bastions already in the field pick
-    # this up from the manifest with no client change.
-    binaries[f[len("privatae-bastion-"):]] = {
-        "url": f"https://dl.privatae.ai/dl/{f}?v={ver}", "sha256": h}
-json.dump({"version": ver, "built_from": sha, "binaries": binaries}, sys.stdout, indent=2)
-PY
+# The version manifest, written by deploy/manifest.py: release-assets.sh writes
+# it again from a rebuild of the release's tag, and the two must give the same
+# bytes for the signature to verify there. The host and every bastion's
+# self-update read it to decide "out of date".
+python3 "$HERE/deploy/manifest.py" "$VER" "$GITSHA" "$HERE/client-go/dist" > "$HERE/client-go/dist/version.json"
 
 MAN="$HERE/client-go/dist/version.json"
 MAN_SHA="$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$MAN")"

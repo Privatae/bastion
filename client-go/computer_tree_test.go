@@ -47,7 +47,7 @@ func TestBoundTreeRecountsAndCaps(t *testing.T) {
 		t.Fatalf("full tree: count=%d trunc=%v %+v", count, trunc, out)
 	}
 	// the cap holds on THIS side even if a helper lied about truncation
-	out, count, trunc = boundTree([]*computerNode{win}, 3)
+	_, count, trunc = boundTree([]*computerNode{win}, 3)
 	if count != 3 || !trunc {
 		t.Fatalf("capped: count=%d trunc=%v", count, trunc)
 	}

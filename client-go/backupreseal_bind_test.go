@@ -10,6 +10,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -147,5 +148,38 @@ func TestHostNumberComesFromTheTunnelAddress(t *testing.T) {
 		if n, ok := hostNumberOf(ip); ok {
 			t.Errorf("%q read as host number %d", ip, n)
 		}
+	}
+}
+
+// With a second factor enrolled, a wrong code is refused by resealApprove,
+// and cmdBackupDecide returns that refusal. It once checked the outer err
+// while the approval's error went to the one its `who, err :=` declared, so
+// a wrong code fell through to r.State on a nil request and panicked.
+func TestResealDecideWithAWrongCodeReturnsTheRefusal(t *testing.T) {
+	dirs := withFixturePairings(t, map[string]int64{fixtureHost: fixtureEntity})
+	fx := newBackupFixture(t, "")
+	fx.installAsBastionKey(t)
+	own, _ := age.GenerateX25519Identity()
+	id := resealStartAs(t, fixtureHost, dirs[fixtureHost], resealReq{Op: "start", Sidecar: string(fx.sidecar(t)),
+		To: own.Recipient().String(), Stamp: fixtureStamp, HostLabel: "B"})
+	if err := stepupSave(dirs[fixtureHost], &stepupFile{SecretB32: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+		EnrolledAt: "2026-08-29T00:00:00Z", LastCounter: -1}); err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.WriteString("not-a-code\n")
+	_ = w.Close()
+	realStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = realStdin; _ = r.Close() })
+
+	if err := cmdBackupDecide(fixtureHost, id, true); err == nil {
+		t.Fatal("a wrong second-factor code approved the request")
+	}
+	if st := resealStatusAs(t, fixtureHost, dirs[fixtureHost], id); st["state"] == "done" || st["sidecar"] != "" {
+		t.Fatalf("a wrong code handed the backup key over: %v", st)
 	}
 }

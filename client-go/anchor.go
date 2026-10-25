@@ -854,7 +854,7 @@ func unapprovedAttempts(now time.Time) []peerAnnounce {
 		if err != nil || now.Sub(since) < unapprovedAfter {
 			continue
 		}
-		out = append(out, peerAnnounce{HostName: e.HostName, Handle: e.Handle, State: e.State, Since: e.Since})
+		out = append(out, peerAnnounce(e))
 	}
 	return out
 }
@@ -1118,7 +1118,7 @@ func cmdClaimAnchor(token string, rotate bool, owner, host string) error {
 		case len(cfgs) == 0:
 			return fmt.Errorf("this box has no pairing yet — pair it to your host first (`privatae-bastion pair <token>`, token from Network → Set up a bastion), then `privatae-bastion claim-anchor` with no token")
 		default:
-			return fmt.Errorf("this box serves %d hosts — say which one should hold the anchor:\n%s\n  e.g. `privatae-bastion claim-anchor --host %s`\nThe anchor host approves every pairing made here from then on; the other pairings keep the lanes they already have.",
+			return fmt.Errorf("this box serves %d hosts — say which one should hold the anchor:\n%s\n  e.g. `privatae-bastion claim-anchor --host %s`\nThe anchor host approves every pairing made here from then on; the other pairings keep the lanes they already have",
 				len(cfgs), "    "+strings.Join(hostNames(cfgs), "\n    "), hostNames(cfgs)[0])
 		}
 		// A pairing whose file this build refuses is never served, so the box
