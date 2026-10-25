@@ -166,6 +166,13 @@ jobs:
           git fetch -q --depth=1 "$REPO_URL" "$WANT"
           git checkout -q --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$WANT"
+      - name: the fuzz runner fails on a failing input and on nothing else
+        # fuzz.sh does not fail on Go's own -fuzztime report, on the Go
+        # releases whose fuzzer reports its deadline as a failure, and fails on
+        # anything else; this checks both, with planted failing inputs, before
+        # the targets run, and fails once the image's Go no longer needs the
+        # workaround.
+        run: bash deploy/test_fuzz.sh
       - name: every fuzz target, 5 seconds each
         # A short pass on every commit. Run deploy/fuzz.sh with its default of
         # 20 seconds before changing a wall a host's input goes through.
