@@ -43,9 +43,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -126,16 +128,79 @@ func startContextSock(done <-chan struct{}) {
 		_ = ln.Close()
 		_ = os.Remove(p)
 	}()
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go contextSockServe(c)
-		}
-	}()
+	go contextSockAccept(ln)
 	uilogf("context socket listening on %s\n", p)
+}
+
+// The socket is 0666 and the daemon runs as root (or SYSTEM), so every user on
+// the machine can make it read. These bound what they can make it hold: an ask
+// is a folder path and a display name, far under contextAskMaxBytes, and no
+// more than contextSockMaxInFlight asks are read at once. Past that a
+// connection is told the daemon is busy and closed; the asker tries again.
+//
+// One person may hold at most contextSockMaxPerUser of those slots, keyed on
+// the identity the kernel gives (never on anything the asker says): without
+// it, one user opening contextSockMaxInFlight idle connections and dialling
+// again as each deadline ran out kept every other user's asks "busy" for as
+// long as they liked. A person adds a folder at a time; four at once is far
+// past that.
+const (
+	contextAskMaxBytes     = 64 << 10
+	contextSockMaxInFlight = 32
+)
+
+// contextSockMaxPerUser is a var only so the test of the overall cap can lift
+// it (every test connection is the same user).
+var contextSockMaxPerUser = 4
+
+var contextSockUsers = struct {
+	sync.Mutex
+	held map[string]int
+}{held: map[string]int{}}
+
+// contextSockTakeUser takes one of user's slots, or reports there is none.
+func contextSockTakeUser(user string) bool {
+	contextSockUsers.Lock()
+	defer contextSockUsers.Unlock()
+	if contextSockUsers.held[user] >= contextSockMaxPerUser {
+		return false
+	}
+	contextSockUsers.held[user]++
+	return true
+}
+
+func contextSockReleaseUser(user string) {
+	contextSockUsers.Lock()
+	defer contextSockUsers.Unlock()
+	if contextSockUsers.held[user]--; contextSockUsers.held[user] <= 0 {
+		delete(contextSockUsers.held, user)
+	}
+}
+
+// contextSockAccept serves ln until it is closed, at most
+// contextSockMaxInFlight connections at a time.
+func contextSockAccept(ln net.Listener) {
+	slots := make(chan struct{}, contextSockMaxInFlight)
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		select {
+		case slots <- struct{}{}:
+			go func() {
+				defer func() { <-slots }()
+				contextSockServe(c)
+			}()
+		default:
+			go func() {
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(time.Second))
+				_ = json.NewEncoder(c).Encode(contextAskReply{Why: "the bastion is busy " +
+					"answering other asks on this machine; try again in a moment"})
+			}()
+		}
+	}
 }
 
 func contextSockServe(c net.Conn) {
@@ -154,8 +219,15 @@ func contextSockServe(c net.Conn) {
 		return
 	}
 
+	if !contextSockTakeUser(user) {
+		_ = json.NewEncoder(c).Encode(contextAskReply{User: user, Why: "the bastion is busy " +
+			"answering other asks of yours; try again in a moment"})
+		return
+	}
+	defer contextSockReleaseUser(user)
+
 	var req contextAskRequest
-	if err := json.NewDecoder(c).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(c, contextAskMaxBytes)).Decode(&req); err != nil {
 		_ = json.NewEncoder(c).Encode(contextAskReply{User: user, Why: "the request could not be read"})
 		return
 	}
