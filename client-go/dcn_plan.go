@@ -191,10 +191,28 @@ func dcnReportPath(root string, planID int64) string {
 	return p
 }
 
-// dcnApplyPlan runs the plan: check, rename in order (each re-checked just
-// before it runs; rolling back on the first failure), verify, report. Every
-// path it touches has passed dcnCheckPlan.
+// dcnApplyPlan is dcnApplyPlanIn on root opened where it leads now (the op
+// handler opens the PINNED folder instead, dcn_store.go).
 func dcnApplyPlan(root string, excludes []string, plan *dcnPlanTerms) map[string]any {
+	real, err := dcnRealRoot(root)
+	if err != nil {
+		return map[string]any{"state": "refused", "mode": "apply", "plan_id": plan.PlanID,
+			"reason": "the store's folder cannot be opened: " + err.Error()}
+	}
+	r, err := dcnOpenRootAt(real)
+	if err != nil {
+		return map[string]any{"state": "refused", "mode": "apply", "plan_id": plan.PlanID, "reason": err.Error()}
+	}
+	defer r.Close()
+	return dcnApplyPlanIn(r, root, excludes, plan)
+}
+
+// dcnApplyPlanIn runs the plan: check, rename in order (each re-checked just
+// before it runs; rolling back on the first failure), verify, report. Every
+// path it touches has passed dcnCheckPlan, and every change is made through
+// r, the store's handle, so a folder that becomes a link to somewhere else
+// between the check and the rename is refused rather than followed.
+func dcnApplyPlanIn(r *os.Root, root string, excludes []string, plan *dcnPlanTerms) map[string]any {
 	problems := dcnCheckPlan(root, excludes, plan.Moves)
 	if len(problems) > 0 {
 		return map[string]any{"state": "refused", "mode": "apply", "plan_id": plan.PlanID,
@@ -207,11 +225,11 @@ func dcnApplyPlan(root string, excludes []string, plan *dcnPlanTerms) map[string
 	// and what is NOT (so the user knows exactly what is still displaced).
 	rollback := func() (back, stuck []string) {
 		for i := len(applied) - 1; i >= 0; i-- {
-			if _, err := os.Lstat(applied[i].src); err == nil {
+			if _, err := r.Lstat(applied[i].src); err == nil {
 				stuck = append(stuck, applied[i].from) // something now sits at the source; never replace it
 				continue
 			}
-			if err := os.Rename(applied[i].dst, applied[i].src); err == nil {
+			if err := r.Rename(applied[i].dst, applied[i].src); err == nil {
 				back = append(back, applied[i].from)
 			} else {
 				stuck = append(stuck, applied[i].from)
@@ -230,10 +248,17 @@ func dcnApplyPlan(root string, excludes []string, plan *dcnPlanTerms) map[string
 		return rep
 	}
 	for i, m := range plan.Moves {
-		src, _ := dcnResolvePath(root, m.From)
-		dst, _ := cleanRel(root, m.To)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fail(i, m, "could not create the target folder: "+err.Error())
+		srcAbs, _ := dcnResolvePath(root, m.From)
+		dstAbs, _ := cleanRel(root, m.To)
+		src, serr := dcnRel(root, srcAbs)
+		dst, derr := dcnRel(root, dstAbs)
+		if serr != nil || derr != nil {
+			return fail(i, m, "path escapes the store root")
+		}
+		if d := filepath.Dir(dst); d != "." {
+			if err := r.MkdirAll(d, 0o755); err != nil {
+				return fail(i, m, "could not create the target folder: "+err.Error())
+			}
 		}
 		// Re-check the instant before the rename: the world may have changed since
 		// the pre-check (a file appeared at the target; a parent became a symlink).
@@ -241,13 +266,12 @@ func dcnApplyPlan(root string, excludes []string, plan *dcnPlanTerms) map[string
 		if _, ok := dcnResolvePath(root, m.To); !ok {
 			return fail(i, m, "target's parent no longer resolves inside the store root")
 		}
-		if _, err := os.Lstat(dst); err == nil {
+		if _, err := r.Lstat(dst); err == nil {
 			return fail(i, m, "target appeared since the check (a plan never overwrites)")
 		}
-		if err := os.Rename(src, dst); err != nil {
+		if err := r.Rename(src, dst); err != nil {
 			why := err.Error()
-			var le *os.LinkError
-			if errors.As(err, &le) && errors.Is(le.Err, syscall.EXDEV) {
+			if errors.Is(err, syscall.EXDEV) {
 				why = "target is on a different filesystem than the source (a plan only renames; it never copies and removes)"
 			}
 			return fail(i, m, why)
@@ -257,14 +281,16 @@ func dcnApplyPlan(root string, excludes []string, plan *dcnPlanTerms) map[string
 	// Verify pass: every target present, every source gone, declared sizes hold.
 	var mismatches []dcnPlanProblem
 	for i, m := range plan.Moves {
-		src, _ := dcnResolvePath(root, m.From)
-		dst, _ := cleanRel(root, m.To)
-		info, err := os.Lstat(dst)
+		srcAbs, _ := dcnResolvePath(root, m.From)
+		dstAbs, _ := cleanRel(root, m.To)
+		src, _ := dcnRel(root, srcAbs)
+		dst, _ := dcnRel(root, dstAbs)
+		info, err := r.Lstat(dst)
 		if err != nil {
 			mismatches = append(mismatches, dcnPlanProblem{i, m.From, m.To, "target missing after move"})
 			continue
 		}
-		if _, err := os.Lstat(src); err == nil {
+		if _, err := r.Lstat(src); err == nil {
 			mismatches = append(mismatches, dcnPlanProblem{i, m.From, m.To, "source still present after move"})
 		}
 		if m.SizeBytes != nil && !info.IsDir() && info.Size() != *m.SizeBytes {
@@ -372,9 +398,19 @@ func handleDcnPlanApply(ws *websocket.Conn, dir string, args []string) {
 	// a retry (a lost reply, a host re-run) gets the earlier report back BEFORE
 	// any gate can turn it into a refusal. (The signed expiry is the guard that
 	// does not depend on a file the user can remove.)
+	store, err := dcnOpenStore(dir, storeID, terms)
+	if err != nil {
+		dcnRefuse(ws, dir, op, storeID, planKey, err.Error())
+		return
+	}
+	defer store.Close()
 	repPath := dcnReportPath(terms.Root, plan.PlanID)
+	repRel := ""
 	if repPath != "" {
-		if prev, err := os.ReadFile(repPath); err == nil {
+		repRel, _ = dcnRel(terms.Root, repPath)
+	}
+	if repRel != "" {
+		if prev, err := store.ReadFile(repRel); err == nil {
 			var old map[string]any
 			if json.Unmarshal(prev, &old) == nil && old["state"] == "ok" {
 				old["note"] = "already applied on this machine; this is the earlier report"
@@ -398,13 +434,13 @@ func handleDcnPlanApply(ws *websocket.Conn, dir string, args []string) {
 			return
 		}
 	}
-	rep := dcnApplyPlan(terms.Root, terms.Excludes, plan)
+	rep := dcnApplyPlanIn(store, terms.Root, terms.Excludes, plan)
 	if rep["state"] == "ok" && plan.Approval != "" {
 		markApprovalUsed(dir, plan.Approval) // single use: the files have moved
 	}
-	if repPath != "" {
+	if repRel != "" {
 		if raw, err := json.MarshalIndent(rep, "", "  "); err == nil {
-			_ = atomicWrite(repPath, raw) // the machine's own record; best-effort
+			_ = dcnRootAtomicWrite(store, repRel, raw) // the machine's own record; best-effort
 		}
 	}
 	dcnResult(ws, dir, op, storeID, planKey, rep)

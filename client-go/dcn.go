@@ -26,6 +26,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -74,6 +75,10 @@ type dcnGrantRec struct {
 	// the signed bytes (a public key; the terms stay exactly what was
 	// signed). The managed local agent seals the store's catalog to it.
 	SealRecipient string `json:"seal_recipient,omitempty"`
+	// RootReal is where the granted folder led when this box installed the
+	// grant: its real path, pinned here (dcn_store.go), outside the signed
+	// bytes. An op whose root leads anywhere else is refused.
+	RootReal string `json:"root_real,omitempty"`
 }
 
 // dcnTerms is parsed FROM the verified canonical bytes — never from anything else.
@@ -524,6 +529,17 @@ func handleDcnGrantSync(ws *websocket.Conn, dir string, args []string) {
 		dcnRefuse(ws, dir, "grant_sync", payload.StoreID, "", "grant does not verify: "+err.Error())
 		return
 	}
+	// The folder this grant names is pinned as it resolves now; a re-sync or a
+	// renewal of the same root keeps the pin it already has (dcn_store.go).
+	if prev, held := f.Stores[fmt.Sprint(payload.StoreID)]; held {
+		prevRoot := ""
+		if pt, perr := dcnVerifyRec(f.VerifyPubkey, prev); perr == nil {
+			prevRoot = pt.Root
+		}
+		rec.RootReal = dcnPinFor(&prev, prevRoot, terms.Root)
+	} else {
+		rec.RootReal = dcnPinFor(nil, "", terms.Root)
+	}
 	if hn, _ := os.Hostname(); hn != "" && terms.Server != "" && terms.Server != hn {
 		dcnRefuse(ws, dir, "grant_sync", payload.StoreID, "",
 			fmt.Sprintf("grant is for server '%s', this box is '%s'", terms.Server, hn))
@@ -658,15 +674,26 @@ func handleDcnList(ws *websocket.Conn, dir string, args []string) {
 	if terms == nil {
 		return
 	}
-	base := terms.Root
+	base := "."
 	if a.Prefix != "" {
 		p, ok := dcnResolvePath(terms.Root, a.Prefix)
 		if !ok {
 			dcnRefuse(ws, dir, "list", storeID, a.Prefix, "prefix escapes the store root")
 			return
 		}
-		base = p
+		rel, err := dcnRel(terms.Root, p)
+		if err != nil {
+			dcnRefuse(ws, dir, "list", storeID, a.Prefix, "prefix escapes the store root")
+			return
+		}
+		base = filepath.ToSlash(rel)
 	}
+	r, err := dcnOpenStore(dir, storeID, terms)
+	if err != nil {
+		dcnRefuse(ws, dir, "list", storeID, a.Prefix, err.Error())
+		return
+	}
+	defer r.Close()
 	limit := a.Limit
 	if limit <= 0 || limit > dcnMaxListEntries {
 		limit = dcnMaxListEntries
@@ -678,12 +705,14 @@ func handleDcnList(ws *websocket.Conn, dir string, args []string) {
 	}
 	var files []entry
 	truncated := false
-	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+	// Walked through the store's handle: a link that leads out of it is not
+	// followed, whatever the names do during the walk.
+	_ = fs.WalkDir(r.FS(), base, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // unreadable subtree: skip, never abort the listing
 		}
-		rel, rerr := filepath.Rel(terms.Root, p)
-		if rerr != nil || rel == "." {
+		rel := filepath.FromSlash(p)
+		if rel == "." {
 			return nil
 		}
 		if dcnExcluded(terms.Excludes, rel) {
@@ -727,8 +756,23 @@ func handleDcnStat(ws *websocket.Conn, dir string, args []string) {
 		dcnRefuse(ws, dir, "stat", storeID, a.Path, "path escapes the store root")
 		return
 	}
-	info, err := os.Stat(abs)
+	rel, err := dcnRel(terms.Root, abs)
 	if err != nil {
+		dcnRefuse(ws, dir, "stat", storeID, a.Path, err.Error())
+		return
+	}
+	r, err := dcnOpenStore(dir, storeID, terms)
+	if err != nil {
+		dcnRefuse(ws, dir, "stat", storeID, a.Path, err.Error())
+		return
+	}
+	defer r.Close()
+	info, err := r.Stat(rel)
+	if err != nil {
+		if dcnEscaped(err) {
+			dcnRefuse(ws, dir, "stat", storeID, a.Path, "path escapes the store root")
+			return
+		}
 		if os.IsNotExist(err) {
 			dcnResult(ws, dir, "stat", storeID, a.Path, map[string]any{
 				"state": "gone", "path": a.Path})
@@ -771,8 +815,25 @@ func handleDcnReadRange(ws *websocket.Conn, dir string, args []string) {
 		dcnRefuse(ws, dir, "read_range", storeID, a.Path, "path escapes the store root")
 		return
 	}
-	fh, err := os.Open(abs)
+	rel, err := dcnRel(terms.Root, abs)
 	if err != nil {
+		dcnRefuse(ws, dir, "read_range", storeID, a.Path, err.Error())
+		return
+	}
+	r, err := dcnOpenStore(dir, storeID, terms)
+	if err != nil {
+		dcnRefuse(ws, dir, "read_range", storeID, a.Path, err.Error())
+		return
+	}
+	defer r.Close()
+	// Opened through the store's handle: a name swapped for a link to a file
+	// outside the store after the check above is refused, never followed.
+	fh, err := r.Open(rel)
+	if err != nil {
+		if dcnEscaped(err) {
+			dcnRefuse(ws, dir, "read_range", storeID, a.Path, "path escapes the store root")
+			return
+		}
 		if os.IsNotExist(err) {
 			dcnResult(ws, dir, "read_range", storeID, a.Path, map[string]any{
 				"state": "gone", "path": a.Path})
