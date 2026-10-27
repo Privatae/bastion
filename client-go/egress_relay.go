@@ -18,31 +18,47 @@ const egressWorkerCount = 4
 // it unchanged. The host frames the proxied client stream as binary messages: 'D'+payload =
 // data, 'E' = end-of-stream. Reads surface the host's bytes; writes go back as 'D' frames;
 // Close/CloseWrite send 'E'.
+//
+// A 'D' frame is STREAMED into the caller's buffer, never read whole: the host picks a
+// frame's length, and one frame of any length must cost this machine no more memory
+// than the read it is asked for.
 type wsConn struct {
-	ws   *websocket.Conn
-	rbuf []byte
-	wmu  sync.Mutex
+	ws  *websocket.Conn
+	cur io.Reader // the rest of the 'D' frame being read, or nil
+	wmu sync.Mutex
 }
 
 func (c *wsConn) Read(p []byte) (int, error) {
-	for len(c.rbuf) == 0 {
-		mt, data, err := c.ws.ReadMessage()
+	for {
+		if c.cur != nil {
+			n, err := c.cur.Read(p)
+			if err == io.EOF {
+				c.cur = nil
+				err = nil
+			}
+			if n > 0 || err != nil {
+				return n, err
+			}
+			continue
+		}
+		mt, r, err := c.ws.NextReader()
 		if err != nil {
 			return 0, err
 		}
-		if mt != websocket.BinaryMessage || len(data) == 0 {
-			continue
+		if mt != websocket.BinaryMessage {
+			continue // NextReader discards what is left of it
 		}
-		switch data[0] {
+		var tag [1]byte
+		if _, err := io.ReadFull(r, tag[:]); err != nil {
+			continue // an empty frame
+		}
+		switch tag[0] {
 		case 'D':
-			c.rbuf = data[1:]
+			c.cur = r
 		case 'E':
 			return 0, io.EOF
 		}
 	}
-	n := copy(p, c.rbuf)
-	c.rbuf = c.rbuf[n:]
-	return n, nil
 }
 
 func (c *wsConn) Write(p []byte) (int, error) {

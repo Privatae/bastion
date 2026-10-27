@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -26,7 +27,11 @@ type egressDialer func(ctx context.Context, network, addr string) (net.Conn, err
 // under its address, and nothing in the mgmt op table gates it.
 func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	defer client.Close()
-	br := bufio.NewReader(client)
+	// The request line and headers are read under a bound, the one Go's own HTTP
+	// server uses (http.DefaultMaxHeaderBytes, 1 MiB): the host sends them, and a
+	// head that never ends must not grow in this machine's memory.
+	headLim := &io.LimitedReader{R: client, N: egressMaxHeadBytes}
+	br := bufio.NewReader(headLim)
 	line, err := br.ReadString('\n')
 	if err != nil {
 		return
@@ -54,6 +59,10 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 			hostHdr = strings.TrimSpace(h[5:])
 		}
 	}
+
+	// The head is in; what follows is the stream itself, unbounded. What the
+	// reader already buffered past the head stays first in line.
+	headLim.N = 1<<63 - 1
 
 	if why := capsAllow(self, "egress"); why != "" {
 		_, _ = client.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nX-Privatae-Refused: " + why + "\r\n\r\n"))
@@ -111,6 +120,9 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	}
 	splice(br, client, upstream)
 }
+
+// egressMaxHeadBytes bounds an egress request's line and headers together.
+const egressMaxHeadBytes = http.DefaultMaxHeaderBytes
 
 // ensurePort returns host:port, adding defPort when target has no explicit port.
 func ensurePort(target, defPort string) string {
