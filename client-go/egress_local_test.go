@@ -7,8 +7,10 @@ package main
 
 // The egress lane on a local (unanchored) box. It refuses this machine and
 // its link-local addresses, so a host cannot reach this machine's services
-// (ollama above all) around the switches that govern them, and it keeps the
-// person's LAN. An anchored box is unchanged: the public internet only.
+// (ollama above all) around the switches that govern them, and, since
+// 2026-10-26, the network around it as well: the LAN and the mesh
+// (egress_network_test.go). An anchored box is unchanged: the public internet
+// only.
 
 import (
 	"bufio"
@@ -57,13 +59,14 @@ func localEgressFixture(t *testing.T) {
 		"self.example.test":   {"192.168.50.7"},
 		"nas.example.test":    {"192.168.50.30"},
 		"dual.example.test":   {"2001:db8::8", "198.51.100.8"},
+		"site.example.test":   {"198.51.100.9"},
 	})
 }
 
 // MUTATION: restore the early return for an unanchored box in egressVettedAddrs.
 // RESULT: red — 127.0.0.1:11434 is handed to the dial, and a name is dialled
 // as a name instead of the address that was vetted.
-func TestLocalEgressRefusesThisMachineAndKeepsTheLAN(t *testing.T) {
+func TestLocalEgressRefusesThisMachineAndTheLAN(t *testing.T) {
 	localEgressFixture(t)
 	ctx := context.Background()
 	for _, hp := range []string{
@@ -75,24 +78,22 @@ func TestLocalEgressRefusesThisMachineAndKeepsTheLAN(t *testing.T) {
 		"203.0.113.5:80",     // a range a `local` route delivers here
 		"ollama.example.test:11434", "mixed.example.test:443", "self.example.test:11434",
 		"unknown.example.test:443",
+		// the network around this machine (egress_network_test.go has the rest)
+		"192.168.50.20:8080", "10.1.2.3:443", "172.16.4.4:22", "[fd12:3456::9]:80", "100.64.0.9:80",
+		"nas.example.test:443",
 	} {
 		if addr, why := egressVettedAddr(ctx, hp); why == "" || addr != "" {
 			t.Errorf("%s must be refused on a local box, got dial %q", hp, addr)
 		}
 	}
 	for hp, want := range map[string][]string{
-		"192.168.50.20:8080":    {"192.168.50.20:8080"},
-		"10.1.2.3:443":          {"10.1.2.3:443"},
-		"172.16.4.4:22":         {"172.16.4.4:22"},
-		"[fd12:3456::9]:80":     {"[fd12:3456::9]:80"},
-		"100.64.0.9:80":         {"100.64.0.9:80"},
 		"198.51.100.8:443":      {"198.51.100.8:443"},
-		"nas.example.test:443":  {"192.168.50.30:443"},
+		"site.example.test:443": {"198.51.100.9:443"},
 		"dual.example.test:443": {"[2001:db8::8]:443", "198.51.100.8:443"},
 	} {
 		got, why := egressVettedAddrs(ctx, hp)
 		if why != "" || !reflect.DeepEqual(got, want) {
-			t.Errorf("%s is the LAN or the internet, so a local box dials %v: got %v %q", hp, want, got, why)
+			t.Errorf("%s is the internet, so a local box dials %v: got %v %q", hp, want, got, why)
 		}
 	}
 }
@@ -114,8 +115,8 @@ func TestAnchoredEgressStillRefusesTheLAN(t *testing.T) {
 }
 
 // Through the lane itself, with a real dialer: a request for this machine is
-// answered 403 and never reaches the listener; a LAN request is dialled at its
-// vetted address; a dual-stack name falls back to its second address.
+// answered 403 and never reaches the listener; a public name is dialled at
+// its vetted address; a dual-stack name falls back to its second address.
 func TestLocalEgressLaneNeverDialsThisMachine(t *testing.T) {
 	localEgressFixture(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -164,11 +165,11 @@ func TestLocalEgressLaneNeverDialsThisMachine(t *testing.T) {
 		asked = append(asked, addr)
 		return nil, errors.New("stop here")
 	}
-	if line := ask(recording, "CONNECT nas.example.test:443 HTTP/1.1\r\n\r\n"); !strings.HasPrefix(line, "HTTP/1.1 502") {
-		t.Fatalf("a LAN destination is dialled (and this dial fails): %q", line)
+	if line := ask(recording, "CONNECT site.example.test:443 HTTP/1.1\r\n\r\n"); !strings.HasPrefix(line, "HTTP/1.1 502") {
+		t.Fatalf("a public destination is dialled (and this dial fails): %q", line)
 	}
-	if !reflect.DeepEqual(asked, []string{"192.168.50.30:443"}) {
-		t.Fatalf("the vetted LAN address, never the name: %v", asked)
+	if !reflect.DeepEqual(asked, []string{"198.51.100.9:443"}) {
+		t.Fatalf("the vetted address, never the name: %v", asked)
 	}
 
 	asked = nil

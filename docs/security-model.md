@@ -92,8 +92,12 @@
   the rest of `64:ff9b::/32`, the three deprecated IPv6 forms, and any
   address this machine takes as its own, checked as above and also inside an
   IPv4-mapped, NAT64 or 6to4 address. It
-  keeps your LAN: a private, CGNAT or reserved address that is not this
-  machine's is dialled. A container or VM on a network made on this machine
+  refuses the network around this machine as well, as an anchored machine's
+  lane does: a private, ULA, CGNAT or reserved address, by address or by any
+  address a name resolves to. Your own machines are reached through their
+  approved lanes, never through egress. (Before this, a local machine's lane
+  kept your LAN: such an address that was not this machine's was dialled.)
+  A container or VM on a network made on this machine
   is this machine, not the LAN; on macOS and Windows, which have no route
   lookup here, such an address is dialled. Every address a name resolves to is checked there
   too, and only those addresses are dialled, in order, the next as soon as

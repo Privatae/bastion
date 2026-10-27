@@ -269,8 +269,8 @@ Each point in full: [docs/security-model.md](docs/security-model.md); the link a
 - **Egress for someone else reaches the public internet, never this
   machine**: a coder run's proxy and an anchored machine's egress lane refuse
   internal addresses and this machine's own (a coder run reaches a LAN host
-  you named). A local machine's egress lane refuses this machine and keeps
-  your LAN. An address that reaches this machine only through a 1:1 NAT is
+  you named). A local machine's egress lane refuses this machine and your
+  LAN too; your own machines are reached through their approved lanes. An address that reaches this machine only through a 1:1 NAT is
   not covered. ([full text](docs/security-model.md))
 - **A terminal is checked here and logged.** On a local machine it opens when
   the host asks; on an anchored one each needs an approval for that session;

@@ -1010,15 +1010,15 @@ func TestAnchoredEgressRefusesLoopbackAndPrivateDestinations(t *testing.T) {
 	if addr, why := egressVettedAddr(ctx, "localhost:80"); why == "" || addr != "" {
 		t.Fatalf("a refused name yields no address: %q %q", addr, why)
 	}
-	// A local box refuses this machine too, and keeps its LAN
-	// (egress_local_test.go has the rest).
+	// A local box refuses this machine too, and the network around it
+	// (egress_local_test.go and egress_network_test.go have the rest).
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	stubOwnAddrs(t, loopbackOnly, localRange())
 	if why := egressInternalRefusal(ctx, "127.0.0.1:11434"); why == "" {
 		t.Fatal("a local box must refuse its own ollama on the egress lane")
 	}
-	if addr, why := egressVettedAddr(ctx, "192.168.1.1:80"); why != "" || addr != "192.168.1.1:80" {
-		t.Fatalf("a local box keeps its LAN: %q %q", addr, why)
+	if addr, why := egressVettedAddr(ctx, "192.168.1.1:80"); why == "" || addr != "" {
+		t.Fatalf("a local box refuses its LAN on the egress lane: %q %q", addr, why)
 	}
 }
 

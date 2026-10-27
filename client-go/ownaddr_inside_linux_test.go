@@ -286,7 +286,8 @@ func TestNetworksInsideThisMachineAreThisMachine(t *testing.T) {
 	}
 
 	// The local egress lane on an unanchored box: an inside address, by address
-	// and by name, is refused as this machine; the LAN passes.
+	// and by name, is refused as this machine; the LAN is refused as the network
+	// around it; the public internet passes.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	if currentAnchor() != nil || boxMode() != modeLocal {
 		t.Fatal("the namespaced run must be a local, unanchored box")
@@ -301,12 +302,16 @@ func TestNetworksInsideThisMachineAreThisMachine(t *testing.T) {
 			t.Errorf("local egress: %s is on a network inside this machine and must be refused as this machine, got %v %q", hp, got, why)
 		}
 	}
-	for hp, want := range map[string]string{"10.77.0.9:445": "10.77.0.9:445", "192.168.50.9:631": "192.168.50.9:631",
-		"nas.example.test:445": "10.77.0.9:445", "198.51.100.9:443": "198.51.100.9:443",
-		"[2001:db8:ff::9]:443": "[2001:db8:ff::9]:443", "192.168.60.9:445": "192.168.60.9:445",
-		"10.88.0.9:80": "10.88.0.9:80", "10.89.0.9:80": "10.89.0.9:80", "[2001:db8:88::9]:80": "[2001:db8:88::9]:80"} {
+	for _, hp := range []string{"10.77.0.9:445", "192.168.50.9:631", "nas.example.test:445", "192.168.60.9:445",
+		"10.88.0.9:80", "10.89.0.9:80"} {
+		if got, why := egressVettedAddrs(ctx, hp); !strings.Contains(why, "approved lanes") {
+			t.Errorf("local egress: %s is the LAN and must be refused as the network around this machine, got %v %q", hp, got, why)
+		}
+	}
+	for hp, want := range map[string]string{"198.51.100.9:443": "198.51.100.9:443",
+		"[2001:db8:ff::9]:443": "[2001:db8:ff::9]:443", "[2001:db8:88::9]:80": "[2001:db8:88::9]:80"} {
 		if got, why := egressVettedAddrs(ctx, hp); why != "" || len(got) != 1 || got[0] != want {
-			t.Errorf("local egress: %s is the LAN and passes as %s: %v %q", hp, want, got, why)
+			t.Errorf("local egress: %s leaves this machine for the internet and passes as %s: %v %q", hp, want, got, why)
 		}
 	}
 	// A coder run's proxy refuses the public range on an inside network too

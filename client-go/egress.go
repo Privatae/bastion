@@ -157,11 +157,14 @@ func splice(clientReader io.Reader, client, upstream net.Conn) {
 // included), and any address the machine takes as its own (ownaddr.go), such
 // as a public one on its NIC or a range a `local` route delivers here.
 //
-// What differs is the network around it. On an ANCHORED box the lane reaches
-// the public internet and nothing else: private, CGNAT and reserved addresses
-// (the LAN, the mesh) are refused too. On a LOCAL box the LAN stays reachable:
-// the host there is the one the person paired, and their own network is
-// theirs to reach.
+// The network around it is refused too, on every box: the lane reaches the
+// public internet and nothing else, so private, CGNAT and reserved addresses
+// (the LAN, the mesh) are refused, by address and by any address a name
+// resolves to. A LOCAL box used to keep its LAN reachable here; it no longer
+// does (2026-10-26): the Host's egress gate holds every dial it makes to the
+// same rule, and a person's own machines
+// are reached through their approved lanes, never through egress. Only the
+// wording differs between the two kinds of box.
 //
 // Resolution failures refuse too: a name this box cannot resolve is not one
 // it can vouch for.
@@ -244,6 +247,19 @@ func egressVettedAddrs(ctx context.Context, hostport string) ([]string, string) 
 				"internet only on an anchored machine, never this machine, its network or the mesh"
 		}
 		return nil, "refused: egress to " + host + " — that is this machine; this lane never reaches this machine"
+	}
+	// The network around this machine, on a local box as on an anchored one
+	// (above): any one address of the name that is not the public internet
+	// refuses it. Checked after this machine's own addresses, so those keep
+	// saying "that is this machine".
+	if !anchored {
+		for _, ip := range addrs {
+			if internalIP(ip) {
+				return nil, "refused: egress to " + host + " (" + ip.String() + ") — this lane reaches the " +
+					"public internet only, never this machine's network or the mesh; reach your own " +
+					"machines through their approved lanes"
+			}
+		}
 	}
 	out := make([]string, 0, len(addrs))
 	for _, ip := range addrs {
