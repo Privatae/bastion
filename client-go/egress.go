@@ -42,10 +42,10 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	}
 	method, target := parts[0], parts[1]
 
-	// Buffer the head so a plain-HTTP request can be replayed verbatim; capture Host.
+	// Buffer the head: a plain-HTTP request is parsed from it and rebuilt
+	// (parseEgressRequest), never replayed verbatim.
 	var head strings.Builder
 	head.WriteString(line)
-	hostHdr := ""
 	for {
 		h, err := br.ReadString('\n')
 		if err != nil {
@@ -55,9 +55,6 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 		if h == "\r\n" || h == "\n" {
 			break
 		}
-		if len(h) >= 5 && strings.EqualFold(h[:5], "host:") {
-			hostHdr = strings.TrimSpace(h[5:])
-		}
 	}
 
 	// The head is in; what follows is the stream itself, unbounded. What the
@@ -65,7 +62,7 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	headLim.N = 1<<63 - 1
 
 	if why := capsAllow(self, "egress"); why != "" {
-		_, _ = client.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nX-Privatae-Refused: " + why + "\r\n\r\n"))
+		writeEgressRefusal(client, "403 Forbidden", why, why)
 		return
 	}
 
@@ -73,14 +70,22 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	defer cancel()
 
 	if strings.EqualFold(method, "CONNECT") {
-		dialAddrs, why := egressVettedAddrs(ctx, ensurePort(target, "443"))
+		// The target is read the way the Host's egress gate reads it
+		// (parseEgressAuthority): userinfo, an unbracketed IPv6 literal or a
+		// malformed port is refused, never guessed at.
+		host, port, ok := parseEgressAuthority(target, 443)
+		if !ok {
+			writeEgressRefusal(client, "400 Bad Request", egressNoHost, egressNoHost)
+			return
+		}
+		dialAddrs, why := egressVettedAddrs(ctx, egressHostPort(host, port))
 		if why != "" {
-			_, _ = client.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nX-Privatae-Refused: " + why + "\r\n\r\n"))
+			writeEgressRefusal(client, "403 Forbidden", why, why)
 			return
 		}
 		upstream, err := dialEach(ctx, dialOut, dialAddrs)
 		if err != nil {
-			_, _ = client.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+			writeEgressRefusal(client, "502 Bad Gateway", egressUnreachable, "")
 			return
 		}
 		if _, err := client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
@@ -91,34 +96,27 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 		return
 	}
 
-	// Plain HTTP, absolute-form: "GET http://host/path HTTP/1.1".
-	host := hostHdr
-	if i := strings.Index(target, "://"); i >= 0 {
-		rest := target[i+3:]
-		if s := strings.IndexByte(rest, '/'); s >= 0 {
-			host = rest[:s]
-		} else {
-			host = rest
-		}
-	}
-	if host == "" {
+	// Plain HTTP: ONE request per connection, parsed and rebuilt so the
+	// destination reads the host, port and body the lane vetted, sent with
+	// `Connection: close` (egress_http.go). Anything the Host sends after that
+	// request's body closes the connection unforwarded: a keep-alive connection
+	// can no longer carry later requests past the vetting.
+	req, refused := parseEgressRequest(head.String())
+	if refused != nil {
+		writeEgressRefusal(client, refused.status, refused.body, refused.body)
 		return
 	}
-	dialAddrs, why := egressVettedAddrs(ctx, ensurePort(host, "80"))
+	dialAddrs, why := egressVettedAddrs(ctx, egressHostPort(req.host, req.port))
 	if why != "" {
-		_, _ = client.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nX-Privatae-Refused: " + why + "\r\n\r\n"))
+		writeEgressRefusal(client, "403 Forbidden", why, why)
 		return
 	}
 	upstream, err := dialEach(ctx, dialOut, dialAddrs)
 	if err != nil {
-		_, _ = client.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"))
+		writeEgressRefusal(client, "502 Bad Gateway", egressUnreachable, "")
 		return
 	}
-	if _, err := upstream.Write([]byte(head.String())); err != nil {
-		_ = upstream.Close()
-		return
-	}
-	splice(br, client, upstream)
+	oneEgressExchange(br, client, upstream, req)
 }
 
 // egressMaxHeadBytes bounds an egress request's line and headers together.

@@ -23,6 +23,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -150,17 +151,32 @@ func coderVettedAddrs(ctx context.Context, hostport string, allowLAN []string) (
 }
 
 func coderRefuse(c net.Conn, why string) {
-	_, _ = c.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\nX-Privatae-Refused: " +
-		strings.NewReplacer("\r", " ", "\n", " ").Replace(why) + "\r\n\r\n"))
+	writeEgressRefusal(c, "403 Forbidden", why, why)
 }
 
 // handleCoderEgressConn serves one connection from a run: HTTP CONNECT or an
 // absolute-form plain HTTP request, the same parsing as handleEgressConn.
 // Destinations are never logged; refusals are counted on the run.
+// coderEgressMaxHeadBytes bounds a request's line and headers together.
+const coderEgressMaxHeadBytes = 64 << 10
+
+// coderEgressMaxConns bounds the connections one run's proxy carries at once.
+// A whole Chromium profile opens at most 256 sockets at a time (its socket
+// pool limit), and package managers far fewer, so four times the browser's
+// figure never refuses real work; past it a connection is answered 503 and
+// closed, and each one held costs this machine at most its head and two copy
+// buffers.
+const coderEgressMaxConns = 1024
+
 func handleCoderEgressConn(client net.Conn, allowLAN []string, refused *int64) {
 	defer client.Close()
 	_ = client.SetReadDeadline(time.Now().Add(30 * time.Second))
-	br := bufio.NewReader(client)
+	// The request line and headers are read under one bound, the head limit
+	// below has always named: the run's own processes send them, and a line
+	// that never ends must not grow in this machine's memory before that
+	// limit is looked at.
+	headLim := &io.LimitedReader{R: client, N: coderEgressMaxHeadBytes}
+	br := bufio.NewReader(headLim)
 	line, err := br.ReadString('\n')
 	if err != nil {
 		return
@@ -172,7 +188,6 @@ func handleCoderEgressConn(client net.Conn, allowLAN []string, refused *int64) {
 	method, target := parts[0], parts[1]
 	var head strings.Builder
 	head.WriteString(line)
-	hostHdr := ""
 	for {
 		h, err := br.ReadString('\n')
 		if err != nil {
@@ -182,38 +197,41 @@ func handleCoderEgressConn(client net.Conn, allowLAN []string, refused *int64) {
 		if h == "\r\n" || h == "\n" {
 			break
 		}
-		if head.Len() > 64<<10 {
+		if head.Len() > coderEgressMaxHeadBytes {
 			return
-		}
-		if len(h) >= 5 && strings.EqualFold(h[:5], "host:") {
-			hostHdr = strings.TrimSpace(h[5:])
 		}
 	}
 	_ = client.SetReadDeadline(time.Time{})
+	// The head is in; what follows is the stream itself. What the reader
+	// already buffered past the head stays first in line.
+	headLim.N = 1<<63 - 1
 	ctx, cancel := context.WithTimeout(context.Background(), egressDialTimeout)
 	defer cancel()
 
+	// Read the way the bastion's own egress lane reads it (egress_http.go): a
+	// CONNECT target through parseEgressAuthority, and plain HTTP as ONE
+	// request, rebuilt and sent with `Connection: close`, so the run's later
+	// requests on a keep-alive connection never reach the destination unvetted.
 	connect := strings.EqualFold(method, "CONNECT")
 	hp := ""
+	var req egressRequest
 	if connect {
-		hp = ensurePort(target, "443")
-	} else {
-		host := hostHdr
-		if i := strings.Index(target, "://"); i >= 0 {
-			rest := target[i+3:]
-			if s := strings.IndexAny(rest, "/?#"); s >= 0 {
-				host = rest[:s]
-			} else {
-				host = rest
-			}
-			if at := strings.LastIndexByte(host, '@'); at >= 0 {
-				host = host[at+1:]
-			}
-		}
-		if host == "" {
+		host, port, ok := parseEgressAuthority(target, 443)
+		if !ok {
+			atomic.AddInt64(refused, 1)
+			writeEgressRefusal(client, "400 Bad Request", egressNoHost, egressNoHost)
 			return
 		}
-		hp = ensurePort(host, "80")
+		hp = egressHostPort(host, port)
+	} else {
+		r, bad := parseEgressRequest(head.String())
+		if bad != nil {
+			atomic.AddInt64(refused, 1)
+			writeEgressRefusal(client, bad.status, bad.body, bad.body)
+			return
+		}
+		req = r
+		hp = egressHostPort(req.host, req.port)
 	}
 	dialAddrs, why := coderVettedAddrs(ctx, hp, allowLAN)
 	if why != "" {
@@ -223,15 +241,14 @@ func handleCoderEgressConn(client net.Conn, allowLAN []string, refused *int64) {
 	}
 	upstream, err := dialEach(ctx, coderDialOut, dialAddrs)
 	if err != nil {
-		_, _ = client.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+		writeEgressRefusal(client, "502 Bad Gateway", egressUnreachable, "")
 		return
 	}
-	if connect {
-		if _, err := client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-			_ = upstream.Close()
-			return
-		}
-	} else if _, err := upstream.Write([]byte(head.String())); err != nil {
+	if !connect {
+		oneEgressExchange(br, client, upstream, req)
+		return
+	}
+	if _, err := client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 		_ = upstream.Close()
 		return
 	}
@@ -277,6 +294,7 @@ func coderListenEgress(runID, dir string, uid int) error {
 	}
 	run := &coderEgressRun{ln: ln}
 	coderEgress[runID] = run
+	slots := make(chan struct{}, coderEgressMaxConns)
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -285,7 +303,20 @@ func coderListenEgress(runID, dir string, uid int) error {
 			}
 			// allow_lan is read per connection: the owner's edit applies to
 			// running runs at once.
-			go handleCoderEgressConn(c, loadCoderConfig().AllowLAN, &run.refused)
+			select {
+			case slots <- struct{}{}:
+				go func() {
+					defer func() { <-slots }()
+					handleCoderEgressConn(c, loadCoderConfig().AllowLAN, &run.refused)
+				}()
+			default:
+				go func() {
+					defer c.Close()
+					_ = c.SetWriteDeadline(time.Now().Add(time.Second))
+					why := "this run already has " + strconv.Itoa(coderEgressMaxConns) + " connections open"
+					writeEgressRefusal(c, "503 Service Unavailable", why, why)
+				}()
+			}
 		}
 	}()
 	return nil

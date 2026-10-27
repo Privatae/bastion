@@ -491,6 +491,12 @@ func ensureMirrorNet(rt, name string) (string, string, error) {
 // container and a BASE_BACKUP of the user's memory. Nothing here is defence in
 // depth; this is the depth.
 //
+// mirrorForwardMaxConns bounds the connections the forwarder carries at once.
+// The replica holds at most two (`pg_basebackup -X stream` while it seeds; one
+// walreceiver after), so four times that leaves room for a diagnostic session
+// and a reconnect that overlaps the connection it replaces.
+const mirrorForwardMaxConns = 8
+
 // One WebSocket per accepted connection, because `pg_basebackup -X stream`
 // holds two replication connections at once and multiplexing them would mean
 // inventing a framing layer for no gain.
@@ -507,6 +513,11 @@ func serveMirrorForward(ctx context.Context, gw, subnet, wsURL string,
 			allowed = n
 		}
 	}
+	// Connections carried at once, across both listeners. Loopback is let in
+	// for diagnostics, so any local user can connect, and each connection is a
+	// WebSocket to the host and two pumps here; past the cap one is closed at
+	// once and its client tries again.
+	slots := make(chan struct{}, mirrorForwardMaxConns)
 	for _, addr := range []string{
 		net.JoinHostPort(gw, strconv.Itoa(mirrorForwardPort)),
 		net.JoinHostPort("127.0.0.1", strconv.Itoa(mirrorForwardPort)),
@@ -527,7 +538,15 @@ func serveMirrorForward(ctx context.Context, gw, subnet, wsURL string,
 					_ = c.Close()
 					continue
 				}
-				go pipeMirrorConn(ctx, c, dialer, wsURL, bearer)
+				select {
+				case slots <- struct{}{}:
+					go func() {
+						defer func() { <-slots }()
+						pipeMirrorConn(ctx, c, dialer, wsURL, bearer)
+					}()
+				default:
+					_ = c.Close()
+				}
 			}
 		}(ln)
 	}
@@ -578,15 +597,17 @@ func pipeMirrorConn(ctx context.Context, local net.Conn, dialer *websocket.Diale
 		done <- struct{}{}
 	}()
 	go func() {
+		// Each host frame is streamed into the replica's socket as it arrives,
+		// never held whole: the host picks a frame's length (lane_bounds.go).
 		for {
-			mt, data, err := ws.ReadMessage()
+			mt, r, err := ws.NextReader()
 			if err != nil {
 				break
 			}
-			if mt != websocket.BinaryMessage || len(data) == 0 {
-				continue
+			if mt != websocket.BinaryMessage {
+				continue // NextReader drops what is left of it
 			}
-			if _, werr := local.Write(data); werr != nil {
+			if _, err := io.Copy(local, r); err != nil {
 				break
 			}
 		}

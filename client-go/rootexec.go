@@ -686,11 +686,8 @@ func handleRootExec(ws *websocket.Conn, spec sessionSpec, self string, env sessi
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
-		for {
-			if _, _, err := ws.ReadMessage(); err != nil {
-				return
-			}
-		}
+		// Each frame is dropped as it arrives (lane_bounds.go), never held whole.
+		_ = drainLane(ws)
 	}()
 	done := make(chan int, 1)
 	go func() { done <- proc.Wait() }()

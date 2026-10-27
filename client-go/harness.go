@@ -252,16 +252,39 @@ func harnessGate(self, dcnDir string, spec harnessSpec) string {
 // `BEARER <bearer> lane=session`); a harness worker refuses it so a shell can never hold
 // an agent worker for hours.
 func handleHarnessConn(ws *websocket.Conn, self, dcnDir string) {
-	mt, data, err := ws.ReadMessage()
-	if err != nil || mt != websocket.BinaryMessage || len(data) == 0 {
+	// The spec is read up to harnessSpecMaxBytes (lane_bounds.go) and refused
+	// past it; a frame of any other tag is not read at all.
+	tag, body, tooBig, err := readLaneJob(ws, func(t byte) int64 {
+		if t == 'H' {
+			return harnessSpecMaxBytes
+		}
+		return 0
+	})
+	if err != nil {
 		return
 	}
-	if data[0] == 'S' {
+	if tag == 'S' {
 		sendHarness(ws, 'E', []byte("this is a harness worker; sessions go to a worker that said lane=session\n"))
 		sendHarnessExit(ws, 1)
 		return
 	}
-	if data[0] != 'H' {
+	if tag != 'H' {
+		return
+	}
+	if tooBig {
+		// Gated like a spec that does not parse (below): a pairing the caps
+		// refuse learns nothing more from a frame that was too large.
+		if why := capsAllow(self, "harness:run"); why != "" {
+			b, _ := json.Marshal(map[string]any{"ok": false, "error": why})
+			sendHarness(ws, 'J', b)
+			sendHarnessExit(ws, 126)
+			return
+		}
+		b, _ := json.Marshal(map[string]any{"ok": false, "error": fmt.Sprintf(
+			"the harness spec is more than the %d MiB a job on this lane may be; nothing of it was read as a job",
+			harnessSpecMaxBytes>>20)})
+		sendHarness(ws, 'J', b)
+		sendHarnessExit(ws, 1)
 		return
 	}
 	// The gate depends on WHAT is asked: a service-slot job (service.go) is the
@@ -270,7 +293,7 @@ func handleHarnessConn(ws *websocket.Conn, self, dcnDir string) {
 	// before its parse error is reported, exactly as it always was, so an
 	// unauthorized pairing learns nothing from a malformed frame.
 	var spec harnessSpec
-	perr := json.Unmarshal(data[1:], &spec)
+	perr := json.Unmarshal(body, &spec)
 	gateOp := "harness:run"
 	if perr == nil && spec.Mode == "service" {
 		gateOp = serviceGateOp(spec.ServiceOp)
@@ -332,12 +355,10 @@ func handleHarnessConn(ws *websocket.Conn, self, dcnDir string) {
 	go func() { b, c := runHarness(spec); resCh <- harnessRes{b, c} }()
 	closed := make(chan struct{})
 	go func() {
-		for {
-			if _, _, err := ws.ReadMessage(); err != nil { // host close or drop
-				close(closed)
-				return
-			}
-		}
+		// Nothing the host sends during a run is read as anything: each frame
+		// is dropped as it arrives (lane_bounds.go), never held whole.
+		_ = drainLane(ws) // returns on a host close or drop
+		close(closed)
 	}()
 	ticker := time.NewTicker(8 * time.Second)
 	defer ticker.Stop()
@@ -951,12 +972,30 @@ func driveHarnessAgent(rt, dir string, spec harnessSpec, maxMin int) (agentRes m
 		return nil, fmt.Errorf("harness /run: %v", err)
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(resp.Body)
+	rb, err := readHarnessRunReply(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	var res map[string]interface{}
 	if err := json.Unmarshal(rb, &res); err != nil {
 		return nil, fmt.Errorf("harness /run bad json (HTTP %d): %s", resp.StatusCode, truncate(string(rb), 200))
 	}
 	return res, nil
+}
+
+// readHarnessRunReply reads the agent container's answer to /run. The
+// container writes it, and it goes back to the host in one lane message, so it
+// is read to the most that message carries (uvicornWSMaxSize) and no further:
+// a reply that never ends must not grow in this machine's memory.
+func readHarnessRunReply(body io.Reader) ([]byte, error) {
+	rb, err := io.ReadAll(io.LimitReader(body, uvicornWSMaxSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("harness /run: reading the reply: %v", err)
+	}
+	if len(rb) > uvicornWSMaxSize {
+		return nil, fmt.Errorf("harness /run: the reply is more than the %d MiB the lane to the host carries", uvicornWSMaxSize>>20)
+	}
+	return rb, nil
 }
 
 // harnessAgentUID is the user the harness image runs its agent as, the owner

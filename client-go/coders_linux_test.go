@@ -474,8 +474,14 @@ func TestCoderEgressProxyOverTheSocket(t *testing.T) {
 	} {
 		head, c := ask(req)
 		c.Close()
-		if !strings.HasPrefix(head, "HTTP/1.1 403") || !strings.Contains(head, "X-Privatae-Refused:") {
-			t.Fatalf("must be refused with 403 + X-Privatae-Refused: %q -> %q", req, head)
+		want := "HTTP/1.1 403"
+		if strings.Contains(req, "user@") {
+			// Userinfo is refused outright, before any lookup, as the Host's
+			// egress gate refuses it (parseEgressAuthority); still counted.
+			want = "HTTP/1.1 400"
+		}
+		if !strings.HasPrefix(head, want) || !strings.Contains(head, "X-Privatae-Refused:") {
+			t.Fatalf("must be refused with %s + X-Privatae-Refused: %q -> %q", want, req, head)
 		}
 	}
 	head, c := ask("CONNECT public.example:443 HTTP/1.1\r\n\r\n")

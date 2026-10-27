@@ -113,13 +113,26 @@ func runSessionWorkers(pctx context.Context, self string, wsURL string, tlsCfg *
 // session; an H frame is refused with a plain line (harness jobs belong on the
 // harness workers) so a host that routes wrongly learns it at once.
 func handleSessionWorkerConn(ws *websocket.Conn, self string, senv sessionEnv) {
-	mt, data, err := ws.ReadMessage()
-	if err != nil || mt != websocket.BinaryMessage || len(data) == 0 {
+	// The spec is read up to sessionSpecMaxBytes (lane_bounds.go) and refused
+	// past it; a frame of any other tag is not read at all.
+	tag, body, tooBig, err := readLaneJob(ws, func(t byte) int64 {
+		if t == 'S' {
+			return sessionSpecMaxBytes
+		}
+		return 0
+	})
+	if err != nil {
 		return
 	}
-	switch data[0] {
+	switch tag {
 	case 'S':
-		handleSessionConn(ws, data, self, senv)
+		if tooBig {
+			sendSession(ws, 'E', []byte(fmt.Sprintf("the session spec is more than the %d KiB a session may ask with; nothing of it was read\n",
+				sessionSpecMaxBytes>>10)))
+			sendSessionExit(ws, 1)
+			return
+		}
+		handleSessionConn(ws, append([]byte{'S'}, body...), self, senv)
 	case 'H':
 		sendSession(ws, 'E', []byte("this is a session worker (lane=session); harness jobs go to a harness worker\n"))
 		sendSessionExit(ws, 1)
@@ -573,23 +586,29 @@ func handleSessionConn(ws *websocket.Conn, first []byte, self string, env sessio
 	closed := make(chan struct{})
 	go func() {
 		defer close(closed)
+		// Each frame is streamed (lane_bounds.go): input goes into the pty as it
+		// arrives, never held whole, and a frame is at most sessionInputMaxBytes.
+		ws.SetReadLimit(sessionInputMaxBytes)
 		for {
-			mt, data, err := ws.ReadMessage()
+			mt, r, err := ws.NextReader()
 			if err != nil {
 				return
 			}
-			if mt != websocket.BinaryMessage || len(data) == 0 {
-				continue
+			if mt != websocket.BinaryMessage {
+				continue // NextReader drops what is left of it
 			}
-			switch data[0] {
+			var tag [1]byte
+			if _, err := io.ReadFull(r, tag[:]); err != nil {
+				continue // an empty frame
+			}
+			switch tag[0] {
 			case 'I':
 				lastInput.Store(time.Now().UnixNano())
-				if len(data) > 1 {
-					_, _ = proc.Write(data[1:])
-				}
+				_, _ = io.Copy(proc, r)
 			case 'R':
 				var rz sessionResize
-				if json.Unmarshal(data[1:], &rz) == nil && rz.Cols > 0 && rz.Rows > 0 {
+				b, _ := io.ReadAll(io.LimitReader(r, sessionResizeMaxBytes))
+				if json.Unmarshal(b, &rz) == nil && rz.Cols > 0 && rz.Rows > 0 {
 					_ = proc.Resize(rz.Cols, rz.Rows)
 				}
 			}

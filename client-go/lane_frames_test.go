@@ -179,13 +179,17 @@ func TestEgressLargeUploadPassesTheHeadBound(t *testing.T) {
 	go func() {
 		_, _ = hostEnd.Write(append([]byte(head), body...))
 	}()
-	got := make([]byte, len(head)+len(body))
+	// The lane rebuilds a plain-HTTP head (egress_http.go): this request comes
+	// out the same, with `Connection: close` added as its last header.
+	want := head[:len(head)-len("\r\n")] + "Connection: close\r\n\r\n"
+	got := make([]byte, len(want)+len(body))
 	_ = upFar.SetReadDeadline(time.Now().Add(20 * time.Second))
 	if _, err := io.ReadFull(upFar, got); err != nil {
 		t.Fatalf("upstream got %v", err)
 	}
-	if string(got[:len(head)]) != head || !bytes.Equal(got[len(head):], body) {
-		t.Fatalf("upstream did not receive the head and the %d-byte body intact", len(body))
+	if string(got[:len(want)]) != want || !bytes.Equal(got[len(want):], body) {
+		t.Fatalf("upstream did not receive the head (%q) and the %d-byte body intact",
+			got[:len(want)], len(body))
 	}
 	_ = hostEnd.Close()
 	_ = upFar.Close()

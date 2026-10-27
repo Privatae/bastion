@@ -617,8 +617,11 @@ func runPairing(ctx context.Context, cfg *Config) error {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+cfg.Bearer)
 			if resp, err := upstream.Do(req); err == nil {
-				body, _ := io.ReadAll(resp.Body)
+				body, ok := readHeartbeatReply(resp)
 				resp.Body.Close()
+				if !ok {
+					return // a reply past its bound is no answer (lane_bounds.go)
+				}
 				if resp.StatusCode < 300 {
 					// last_ok per pairing (anchor.go): the anchor rotation's
 					// silence path reads this — 14 days with no 2xx from the
@@ -841,8 +844,11 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 			if err != nil {
 				return
 			}
-			body, _ := io.ReadAll(resp.Body)
+			body, ok := readHeartbeatReply(resp)
 			resp.Body.Close()
+			if !ok {
+				return // a reply past its bound is no answer (lane_bounds.go)
+			}
 			if resp.StatusCode < 300 {
 				recordPairingOK(cfg.HostName)
 			}
