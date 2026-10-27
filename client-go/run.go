@@ -730,14 +730,19 @@ func unixLaneDialer(cfg *Config) (func(ctx context.Context) (net.Conn, error), *
 // parked harness workers, sessions, git, the heartbeat and what its reply
 // directs. Absent, because they listen on the tunnel's stack or move the
 // tunnel: the ollama, LLM and PII forwards, the service slots, and endpoint
-// rotation and failover. A unix pairing's coder run has its control plane on
-// a socket in RunsDir (coder_socket.go), not a tunnel port; a tcp pairing has
-// no coder runs.
+// rotation and failover. The model servers the forwards reach are served
+// over the serve lane instead (servelane.go), by service name. A unix
+// pairing's coder run has its control plane on a socket in RunsDir
+// (coder_socket.go), not a tunnel port; a tcp pairing has no coder runs. The
+// heartbeat advertises only what runs here (agents.go, beatLanes).
 func runUnixPairing(ctx context.Context, cfg *Config) error {
 	logf := func(format string, a ...any) { fmt.Printf("["+cfg.HostName+"] "+format, a...) }
 	if !cfg.active() {
 		return errPairingNotActive
 	}
+	// Before any lane: model management for this pairing (modelDaemonTarget)
+	// reaches only a model server on this machine, as the serve lane does.
+	defer markLocalPairing(cfg.HostName)()
 	dialHost, laneTLS, err := localLaneDialer(cfg)
 	if err != nil {
 		return err
@@ -764,6 +769,13 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 		wsURL := fmt.Sprintf("wss://%s:8443/bastion-egress", cfg.HostName)
 		logf("egress workers up — outbound exits THIS machine's internet via %s on %s\n", wsURL, lane)
 		runEgressWorkers(ctx, cfg.HostName, wsURL, laneTLS.Clone(), dialHost, cfg.Bearer, realDialer.DialContext, egressWorkerCount)
+	}()
+	// The serve lane: the model servers set on this machine, which the tunnel
+	// forwards would carry, by service name and never by address.
+	go func() {
+		wsURL := fmt.Sprintf("wss://%s:8443/bastion-serve", cfg.HostName)
+		logf("serve workers up — the model servers set on this machine, by name, via %s on %s\n", wsURL, lane)
+		runServeWorkers(ctx, cfg.HostName, cfg.dcnDir(), wsURL, laneTLS.Clone(), dialHost, cfg.Bearer, serveWorkerCount)
 	}()
 	go func() {
 		wsURL := fmt.Sprintf("wss://%s:8443/bastion-mgmt", cfg.HostName)
@@ -896,7 +908,7 @@ func heartbeatPayload(cfg *Config, dev interface{ IpcGet() (string, error) }, ho
 	for k, v := range pairingEnforcing(cfg.HostName) {
 		enforcing[k] = v
 	}
-	return buildHeartbeatBody(cfg.HostName, hostname, runtime.GOOS, clientVersion, wgPub, cfg.Fingerprint, cfg.BastionTunnelIP, cfg.Endpoint,
+	return buildHeartbeatBodyOn(beatLanesFor(cfg), cfg.HostName, hostname, runtime.GOOS, clientVersion, wgPub, cfg.Fingerprint, cfg.BastionTunnelIP, cfg.Endpoint,
 		rotation.isUnsaved(cfg), currentMirrorReport(cfg.HostName), enforcing,
 		// Read fresh on every beat: a host paired a minute ago must
 		// appear as a peer on the NEXT beat, not after a restart.
@@ -1130,6 +1142,13 @@ func ollamaModels(tunnelIP string) (bool, []string) {
 		addrs = append(addrs, net.JoinHostPort(tunnelIP, "11434"))
 	}
 	addrs = append(addrs, "127.0.0.1:11434")
+	return ollamaModelsAt(addrs)
+}
+
+// ollamaModelsAt is ollamaModels' probe of the addresses given, in order. A
+// local pairing's beat asks it about the one address its serve lane dials
+// (servelane.go), so what the beat says is served is what the lane reaches.
+func ollamaModelsAt(addrs []string) (bool, []string) {
 	cl := &http.Client{Timeout: 3 * time.Second}
 	for _, a := range addrs {
 		resp, err := cl.Get("http://" + a + "/api/tags")
@@ -1178,7 +1197,11 @@ const llmForwardPort = 18080
 // and the operator setting the env IS the opt-in. Same 200-is-alive rule as
 // /api/tags: a live server with an unparseable list still counts.
 func openAICompatModels() (bool, []string) {
-	a := llmTarget()
+	return openAICompatModelsAt(llmTarget())
+}
+
+// openAICompatModelsAt is openAICompatModels' probe of one address.
+func openAICompatModelsAt(a string) (bool, []string) {
 	if a == "" {
 		return false, nil
 	}

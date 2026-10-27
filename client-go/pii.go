@@ -29,7 +29,11 @@ const piiForwardPort = 18081
 // The bearer-authed surface is proxied opaquely — this client never
 // holds the PII_API_KEY.
 func piiProbe() (bool, bool) {
-	a := piiTarget()
+	return piiProbeAt(piiTarget())
+}
+
+// piiProbeAt is piiProbe's probe of one address.
+func piiProbeAt(a string) (bool, bool) {
 	if a == "" {
 		return false, false
 	}

@@ -25,7 +25,13 @@ type egressDialer func(ctx context.Context, network, addr string) (net.Conn, err
 // egress is refused (403, before any dial) unless its pairing grant carries
 // the "egress" cap: this lane makes requests leave THIS machine's connection
 // under its address, and nothing in the mgmt op table gates it.
-func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
+//
+// It reports whether it took the job: true once the request passed every check
+// and was dialled out, whatever the destination then answered; false when the
+// worker closed before a request, or the request was malformed or refused. The
+// worker pool (runEgressWorkers) parks again at once after a job it took, and
+// waits after one it did not.
+func handleEgressConn(client net.Conn, dialOut egressDialer, self string) bool {
 	defer client.Close()
 	// The request line and headers are read under a bound, the one Go's own HTTP
 	// server uses (http.DefaultMaxHeaderBytes, 1 MiB): the host sends them, and a
@@ -34,11 +40,11 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	br := bufio.NewReader(headLim)
 	line, err := br.ReadString('\n')
 	if err != nil {
-		return
+		return false
 	}
 	parts := strings.Fields(strings.TrimSpace(line))
 	if len(parts) < 2 {
-		return
+		return false
 	}
 	method, target := parts[0], parts[1]
 
@@ -49,7 +55,7 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	for {
 		h, err := br.ReadString('\n')
 		if err != nil {
-			return
+			return false
 		}
 		head.WriteString(h)
 		if h == "\r\n" || h == "\n" {
@@ -63,7 +69,7 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 
 	if why := capsAllow(self, "egress"); why != "" {
 		writeEgressRefusal(client, "403 Forbidden", why, why)
-		return
+		return false
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), egressDialTimeout)
@@ -76,24 +82,24 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 		host, port, ok := parseEgressAuthority(target, 443)
 		if !ok {
 			writeEgressRefusal(client, "400 Bad Request", egressNoHost, egressNoHost)
-			return
+			return false
 		}
 		dialAddrs, why := egressVettedAddrs(ctx, egressHostPort(host, port))
 		if why != "" {
 			writeEgressRefusal(client, "403 Forbidden", why, why)
-			return
+			return false
 		}
 		upstream, err := dialEach(ctx, dialOut, dialAddrs)
 		if err != nil {
 			writeEgressRefusal(client, "502 Bad Gateway", egressUnreachable, "")
-			return
+			return true
 		}
 		if _, err := client.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			_ = upstream.Close()
-			return
+			return true
 		}
 		splice(br, client, upstream)
-		return
+		return true
 	}
 
 	// Plain HTTP: ONE request per connection, parsed and rebuilt so the
@@ -104,19 +110,20 @@ func handleEgressConn(client net.Conn, dialOut egressDialer, self string) {
 	req, refused := parseEgressRequest(head.String())
 	if refused != nil {
 		writeEgressRefusal(client, refused.status, refused.body, refused.body)
-		return
+		return false
 	}
 	dialAddrs, why := egressVettedAddrs(ctx, egressHostPort(req.host, req.port))
 	if why != "" {
 		writeEgressRefusal(client, "403 Forbidden", why, why)
-		return
+		return false
 	}
 	upstream, err := dialEach(ctx, dialOut, dialAddrs)
 	if err != nil {
 		writeEgressRefusal(client, "502 Bad Gateway", egressUnreachable, "")
-		return
+		return true
 	}
 	oneEgressExchange(br, client, upstream, req)
+	return true
 }
 
 // egressMaxHeadBytes bounds an egress request's line and headers together.

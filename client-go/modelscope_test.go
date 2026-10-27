@@ -19,7 +19,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -186,17 +188,29 @@ func TestFilterVerdictPolicy(t *testing.T) {
 
 // fakeOllama answers the handful of routes the filter cares about and records
 // what actually reached it — the point of most of these assertions is that a
-// refused request never arrives at all.
+// refused request never arrives at all. Its handler runs on the server's
+// goroutines, beside the test's (and a pairing's beat probes it on its own),
+// so the record is read through requests(), under the lock.
 type fakeOllama struct {
 	srv  *httptest.Server
+	mu   sync.Mutex
 	seen []string
+}
+
+// requests is a copy of what reached the fake so far.
+func (f *fakeOllama) requests() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.seen)
 }
 
 func newFakeOllama(t *testing.T) *fakeOllama {
 	t.Helper()
 	f := &fakeOllama{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
 		f.seen = append(f.seen, r.Method+" "+r.URL.Path)
+		f.mu.Unlock()
 		switch r.URL.Path {
 		case "/api/tags":
 			_, _ = w.Write([]byte(`{"models":[{"name":"qwen4-embed:latest","size":42},` +
@@ -264,8 +278,8 @@ func TestFilteredForwardRefusesAnotherModelAndNeverForwardsIt(t *testing.T) {
 	if b := bodyOf(t, resp); !strings.Contains(b, "llama3:70b") || !strings.Contains(b, "qwen4-embed") {
 		t.Fatalf("the refusal must name what was asked for and what is shared: %s", b)
 	}
-	if len(up.seen) != 0 {
-		t.Fatalf("a refused request reached the upstream: %v", up.seen)
+	if len(up.requests()) != 0 {
+		t.Fatalf("a refused request reached the upstream: %v", up.requests())
 	}
 
 	resp = roundTrip(t, addr, laneOllama, tMember, "POST", "/api/embed",
@@ -273,8 +287,8 @@ func TestFilteredForwardRefusesAnotherModelAndNeverForwardsIt(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the shared model must work: %d", resp.StatusCode)
 	}
-	if len(up.seen) != 1 || up.seen[0] != "POST /api/embed" {
-		t.Fatalf("the allowed request must reach the upstream once: %v", up.seen)
+	if len(up.requests()) != 1 || up.requests()[0] != "POST /api/embed" {
+		t.Fatalf("the allowed request must reach the upstream once: %v", up.requests())
 	}
 }
 
@@ -295,8 +309,8 @@ func TestFilteredForwardRefusesTheStoreMutatingHalf(t *testing.T) {
 			t.Fatalf("%s: status %d, want 403", p, resp.StatusCode)
 		}
 	}
-	if len(up.seen) != 0 {
-		t.Fatalf("a store-mutating request reached ollama: %v", up.seen)
+	if len(up.requests()) != 0 {
+		t.Fatalf("a store-mutating request reached ollama: %v", up.requests())
 	}
 	// ...and using a model is untouched by that refusal.
 	if resp := roundTrip(t, addr, laneOllama, tMember, "POST", "/api/embed",
@@ -344,8 +358,8 @@ func TestAnchoredBoxRefusesModelChangesThroughTheForwardForTheAnchor(t *testing.
 			t.Fatalf("%s for the anchor: status %d, want 403", p, resp.StatusCode)
 		}
 	}
-	if len(up.seen) != 0 {
-		t.Fatalf("a store-mutating request from the anchor reached ollama: %v", up.seen)
+	if len(up.requests()) != 0 {
+		t.Fatalf("a store-mutating request from the anchor reached ollama: %v", up.requests())
 	}
 	if resp := roundTrip(t, addr, laneOllama, tAnchor, "POST", "/api/embed", `{"model":"anything"}`); resp.StatusCode != http.StatusOK {
 		t.Fatalf("the anchor still USES models: %d", resp.StatusCode)
@@ -581,8 +595,8 @@ func TestOversizedBodyIsRefusedNotForwarded(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("a request naming no model must be refused: %d", resp.StatusCode)
 	}
-	if len(up.seen) != 0 {
-		t.Fatalf("it reached the upstream anyway: %v", up.seen)
+	if len(up.requests()) != 0 {
+		t.Fatalf("it reached the upstream anyway: %v", up.requests())
 	}
 }
 
@@ -612,8 +626,8 @@ func TestAScopedPairingCannotRenameAModelIntoItsScope(t *testing.T) {
 			t.Fatalf("%s: the refusal must say why: %s", p, b)
 		}
 	}
-	if len(up.seen) != 0 {
-		t.Fatalf("a rename reached ollama: %v", up.seen)
+	if len(up.requests()) != 0 {
+		t.Fatalf("a rename reached ollama: %v", up.requests())
 	}
 }
 
@@ -803,8 +817,8 @@ func TestAnEndlessHeaderIsCutOff(t *testing.T) {
 		t.Fatal("an endless header was read without limit")
 	}
 	client.Close()
-	if len(up.seen) != 0 {
-		t.Fatalf("it reached the upstream: %v", up.seen)
+	if len(up.requests()) != 0 {
+		t.Fatalf("it reached the upstream: %v", up.requests())
 	}
 }
 

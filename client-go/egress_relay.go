@@ -14,6 +14,15 @@ import (
 
 const egressWorkerCount = 4
 
+// egressRefusedWait is how long a worker waits before it parks again after a
+// job it did not take (malformed, refused) or after its WebSocket closed while
+// parked. A job it took parks the worker again at once, so the person's own
+// traffic is never slowed by it; a Host that answers every worker with a job
+// this machine refuses costs it at most egressWorkerCount dials, handshakes
+// and refusals a second, not as many as the Host can send. The serve lane's
+// workers wait the same (serveRefusedWait).
+var egressRefusedWait = time.Second
+
 // wsConn adapts a worker WebSocket into a net.Conn so the existing handleEgressConn drives
 // it unchanged. The host frames the proxied client stream as binary messages: 'D'+payload =
 // data, 'E' = end-of-stream. Reads surface the host's bytes; writes go back as 'D' frames;
@@ -96,19 +105,25 @@ func (c *wsConn) SetWriteDeadline(t time.Time) error { return c.ws.SetWriteDeadl
 // bastion's tunnel IP) and serves one egress job per worker, reconnecting after each. Each
 // worker authenticates with the bastion's bearer, then blocks until the host dispatches a
 // request; handleEgressConn then dials it out the USER's connection (dialOut) and relays.
+// A worker reconnects at once after a job it took, and after egressRefusedWait after one
+// it refused or a close while parked. The func returned waits until every worker has
+// exited, which is once pctx is done and each one's job has ended.
 //
 // pctx is the pairing's context (run.go): when the anchor revokes a pairing the
 // workers must exit, not re-dial a closed tunnel every 3s for the process's life.
 func runEgressWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer string,
-	dialOut egressDialer, n int) {
+	dialOut egressDialer, n int) (wait func()) {
 	dialer := &websocket.Dialer{
 		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
 		TLSClientConfig:  tlsCfg,
 		HandshakeTimeout: 20 * time.Second,
 	}
+	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			for pctx.Err() == nil {
 				ctx, cancel := context.WithTimeout(pctx, 25*time.Second)
 				ws, _, err := dialer.DialContext(ctx, wsURL, http.Header{})
@@ -124,11 +139,15 @@ func runEgressWorkers(pctx context.Context, self string, wsURL string, tlsCfg *t
 				}
 				stopKA := armWSKeepalive(ws) // ping/read-deadline: a dead tunnel unblocks the park
 				unpark := context.AfterFunc(pctx, func() { _ = ws.Close() })
-				handleEgressConn(&wsConn{ws: ws}, dialOut, self) // blocks until a job, serves it, then returns
+				took := handleEgressConn(&wsConn{ws: ws}, dialOut, self) // blocks until a job, serves it, then returns
 				unpark()
 				stopKA()
 				_ = ws.Close()
+				if !took {
+					sleepCtx(pctx, egressRefusedWait)
+				}
 			}
 		}()
 	}
+	return wg.Wait
 }

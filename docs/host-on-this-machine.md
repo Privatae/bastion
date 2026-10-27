@@ -99,4 +99,28 @@ are checked before the token is read.
 Such a pairing has no WireGuard forwards (inference, PII, service slots) and
 no coder runs: a run's control plane is a tunnel port or a socket in a unix
 pairing's runs directory, and a TCP pairing has neither, so its run-up is
-refused before any container starts.
+refused before any container starts. Its model servers ride the serve lane,
+below.
+
+## The model servers on this machine
+
+A pairing over the socket or the lane port reaches the model servers on this
+machine over the serve lane, `/bastion-serve`, instead of the tunnel's
+forwards. The bastion keeps two workers parked on the Host's lane; the Host
+hands one a connection and names a service: `ollama`, `llm` or `pii`. The
+bastion reaches the server set on this machine for it (`OLLAMA_ADDR`, else
+`127.0.0.1:11434`; `PRIVATAE_LLM_ADDR`; `PRIVATAE_PII_ADDR`), and only when
+every address it names is this machine, a container on a network made here
+included. A server on another computer is refused, and so is an address sent
+in place of a service; nothing is dialled for either. Each connection needs
+the `inference` family and goes through the forwards' filter, so a model
+scope, the `models` switch and an anchor apply as they do over the tunnel.
+One pairing holds at most 16 streams, a stream silent both ways for 10 minutes
+is closed, and each one is written to the pairing's audit log. Model
+management for such a pairing (the model list, pulls and removals) reaches
+`OLLAMA_ADDR` under the same rule, and when an address set here is not this
+computer, the bastion's console says which one and what to set.
+
+The heartbeat lists what the lane serves in `lane_serves`, and advertises
+`embed`, `llm-openai` and `pii` only for those. It never advertises the
+service slots, or coder runs over TCP.

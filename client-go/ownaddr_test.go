@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -33,8 +34,13 @@ func stubOwnAddrs(t *testing.T, ifaces []string, route func(net.IP) (routeKind, 
 	}
 	asked := &[]string{}
 	if route != nil {
+		// Locked: a lane's workers vet their jobs at once, each on its own
+		// goroutine (egress_relay_test.go).
+		var mu sync.Mutex
 		ownRouteLookup = func(ip net.IP) (routeKind, error) {
+			mu.Lock()
 			*asked = append(*asked, ip.String())
+			mu.Unlock()
 			return route(ip)
 		}
 	} else {

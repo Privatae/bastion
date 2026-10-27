@@ -513,6 +513,30 @@ func resolveLLMIPs() map[string]string {
 // identity (tests, tools): mode, anchor and unapproved attempts still travel.
 func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, tunnelIP, endpoint string,
 	savePending bool, mirror *mirrorReport, enforcing map[string]any, peers []peerAnnounce) string {
+	return buildHeartbeatBodyOn(beatLanes{}, self, hostname, platform, version, wgPub, fingerprint, tunnelIP, endpoint,
+		savePending, mirror, enforcing, peers)
+}
+
+// beatLanes is which of a pairing's lanes run, so its beat advertises those
+// and no others. The zero value is a tunnel pairing: the forwards listen on
+// the tunnel's stack and the service slots are reachable there.
+type beatLanes struct {
+	// local: a Host with no platform (run.go runUnixPairing). The forwards and
+	// the service slots are absent; the model servers ride the serve lane
+	// (servelane.go), and the beat says which in lane_serves.
+	local bool
+	// noCoders: a tcp pairing, whose coder runs have no control plane to use
+	// (pair_tcp.go coderTransportRefusal), so it is never offered one.
+	noCoders bool
+}
+
+func beatLanesFor(cfg *Config) beatLanes {
+	return beatLanes{local: cfg.localTransport(), noCoders: cfg.tcpTransport()}
+}
+
+// buildHeartbeatBodyOn is buildHeartbeatBody for a pairing whose lanes are lanes.
+func buildHeartbeatBodyOn(lanes beatLanes, self, hostname, platform, version, wgPub, fingerprint, tunnelIP, endpoint string,
+	savePending bool, mirror *mirrorReport, enforcing map[string]any, peers []peerAnnounce) string {
 	caps := []string{}
 	// WHY SOME CAPABILITIES ARE WITHHELD HERE AND OTHERS ARE NOT — the asymmetry
 	// is real and was undocumented, which is why it reads as an oversight. The
@@ -549,7 +573,17 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 	// gets exactly what it got before: scope.filterModels is the identity then.
 	scope := pairingModelScope(self)
 	reachable, models := false, []string(nil)
-	if inference {
+	// A local pairing has no forward to advertise: its model servers ride the
+	// serve lane, and each lane below is advertised only when lane_serves
+	// carries its service (the target set and this machine's, the server
+	// answering, the family held). Its probes are of the address the lane
+	// dials, never the tunnel's guesses.
+	var served laneServeReport
+	if lanes.local {
+		served = laneServes(self)
+		reachable = containsStr(served.served, "ollama")
+		models = served.models
+	} else if inference {
 		reachable, models = ollamaModels(tunnelIP)
 		models = scope.filterModels(models)
 		// Reachable but nothing shared: advertising `embed` would put this box
@@ -572,7 +606,15 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 	// box running both.
 	llmModels := []string{}
 	llmPort := llmForwardPort
-	if !inference {
+	if lanes.local {
+		// No port listens for it here: the Host reaches the server through the
+		// serve lane, so llm_port is the "no port" value.
+		llmPort = 0
+		if containsStr(served.served, "llm") {
+			caps = append(caps, "llm-openai")
+			llmModels = served.llmModels
+		}
+	} else if !inference {
 		// The host stores 0 as NULL; with llm-openai withheld and
 		// llm_models empty nothing on the host resolves a port for this row.
 		llmPort = 0
@@ -598,7 +640,9 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 	// probe: an up forwarder with a dead upstream is a distinct state the
 	// host wants before committing a fail-closed write path to it.
 	piiAdvertised, piiOK := false, false
-	if inference && scope.allowsPII() {
+	if lanes.local {
+		piiAdvertised, piiOK = containsStr(served.served, "pii"), served.piiOK
+	} else if inference && scope.allowsPII() {
 		piiAdvertised, piiOK = piiProbe()
 	}
 	if piiAdvertised {
@@ -638,7 +682,7 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 	// "build a server on this machine" on it, and an offer the box would refuse
 	// is a control that fails after the user chose it. The slot list rides with
 	// it, withheld (absent, not empty) from a pairing outside the family.
-	servicesOn := servicesCapable(self)
+	servicesOn := !lanes.local && servicesCapable(self)
 	if servicesOn {
 		caps = append(caps, serviceCapability)
 	}
@@ -646,7 +690,10 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 	// only when this machine would accept a run-up from this pairing — Linux,
 	// root, coders on, a runtime, the family, and (anchored) a standing coder
 	// grant. Absent, never empty, otherwise.
-	coders := coderHeartbeat(self)
+	var coders map[string]any
+	if !lanes.noCoders {
+		coders = coderHeartbeat(self)
+	}
 	if coders != nil {
 		caps = append(caps, coderCapability)
 	}
@@ -773,6 +820,13 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 		// names served until this is false. On every beat; a host reads its
 		// absence as a client too old to say.
 		"endpoint_save_pending": savePending,
+	}
+	// What this pairing serves over the serve lane (servelane.go), on a local
+	// pairing only: ["ollama","llm","pii"] or fewer, [] when nothing is. Absent
+	// on a tunnel pairing, which has the forwards instead, and from a bastion
+	// that predates the lane.
+	if lanes.local {
+		body["lane_serves"] = served.served
 	}
 	// The service slots this pairing may reach, with the tunnel port for each
 	// (service.go). Absent when the capability is withheld, never empty-for-no.
@@ -1004,7 +1058,11 @@ func buildHeartbeatBody(self, hostname, platform, version, wgPub, fingerprint, t
 		}
 	}
 	if piiAdvertised {
-		body["pii_port"] = piiForwardPort
+		// pii_port is the tunnel's port; a local pairing has none and reaches
+		// the sterilizer through the serve lane.
+		if !lanes.local {
+			body["pii_port"] = piiForwardPort
+		}
 		body["pii_ok"] = piiOK
 	}
 	if faAdvertised {

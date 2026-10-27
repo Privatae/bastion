@@ -493,7 +493,7 @@ func startLaneHostOn(t *testing.T, raw net.Listener, cert tls.Certificate, clien
 			}
 		}
 	}
-	for _, p := range []string{"/bastion-harness", "/bastion-mgmt", "/bastion-egress"} {
+	for _, p := range []string{"/bastion-harness", "/bastion-mgmt", "/bastion-egress", "/bastion-serve"} {
 		mux.HandleFunc(p, ws)
 	}
 	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
@@ -622,7 +622,8 @@ func TestTheUnixLaneCarriesTheBearerAndTheSameProtocol(t *testing.T) {
 	h.mu.Unlock()
 	if maxPark != harnessWorkerCount || count["/bastion-harness"] < harnessWorkerCount ||
 		count["/bastion-harness session"] != sessionWorkerCount ||
-		count["/bastion-mgmt"] != mgmtWorkerCount || count["/bastion-egress"] != egressWorkerCount {
+		count["/bastion-mgmt"] != mgmtWorkerCount || count["/bastion-egress"] != egressWorkerCount ||
+		count["/bastion-serve"] != serveWorkerCount {
 		t.Fatalf("the worker pools over the socket: %v, parked at once %d", count, maxPark)
 	}
 	select {

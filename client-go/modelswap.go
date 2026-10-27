@@ -419,36 +419,51 @@ func placedByThisHost(root, model string) bool {
 // ── talking to the model daemon ────────────────────────────────────────────
 
 var (
-	modelDaemonMu sync.Mutex
-	modelDaemonUp bool
-	modelDaemonAt time.Time
+	modelDaemonMu   sync.Mutex
+	modelDaemonUp   bool
+	modelDaemonAt   time.Time
+	modelDaemonAddr string // the address the cached answer is for
 )
 
 // modelDaemonReachable probes the SAME address the rest of this binary uses
 // (localOllamaAddr, run.go:714-719) so the box can never advertise management
 // of a daemon the forwards do not point at.
-func modelDaemonReachable() bool {
+func modelDaemonReachable() bool { return modelDaemonReachableAt(localOllamaAddr()) }
+
+// modelDaemonReachableAt is modelDaemonReachable's probe of one address. The
+// cached answer is for the address it was asked of, so a pairing whose
+// address is the vetted one (modelDaemonTarget) never reads another's answer.
+func modelDaemonReachableAt(addr string) bool {
 	modelDaemonMu.Lock()
 	defer modelDaemonMu.Unlock()
-	if !modelDaemonAt.IsZero() && time.Since(modelDaemonAt) < modelDaemonCacheFor {
+	if !modelDaemonAt.IsZero() && modelDaemonAddr == addr && time.Since(modelDaemonAt) < modelDaemonCacheFor {
 		return modelDaemonUp
 	}
 	cl := &http.Client{Timeout: 3 * time.Second}
-	resp, err := cl.Get("http://" + localOllamaAddr() + "/api/tags")
+	resp, err := cl.Get("http://" + addr + "/api/tags")
 	up := false
 	if err == nil {
 		up = resp.StatusCode == http.StatusOK
 		resp.Body.Close()
 	}
-	modelDaemonUp, modelDaemonAt = up, time.Now()
+	modelDaemonUp, modelDaemonAt, modelDaemonAddr = up, time.Now(), addr
 	return up
 }
 
 // resetModelDaemonCache exists for the tests.
 func resetModelDaemonCache() {
 	modelDaemonMu.Lock()
-	modelDaemonUp, modelDaemonAt = false, time.Time{}
+	modelDaemonUp, modelDaemonAt, modelDaemonAddr = false, time.Time{}, ""
 	modelDaemonMu.Unlock()
+}
+
+// modelSelf is the pairing a model:* job came from, or "" when the job was
+// driven without one (modelDaemonTarget then keeps OLLAMA_ADDR, as before).
+func modelSelf(ws *websocket.Conn) string {
+	if a := mgmtAccountOf(ws); a != nil {
+		return a.self
+	}
+	return ""
 }
 
 // modelSwapCapable answers the heartbeat's question: could this box have a
@@ -459,13 +474,19 @@ func modelSwapCapable(self string) bool {
 	if capsAllow(self, modelGateOp) != "" {
 		return false
 	}
-	return modelDaemonReachable()
+	// A Host with no platform is offered management only of a model server on
+	// this machine, and a refused one is not probed at all (modelDaemonTarget).
+	addr, why := modelDaemonTarget(self)
+	if why != "" {
+		return false
+	}
+	return modelDaemonReachableAt(addr)
 }
 
 // modelPostJSON posts one JSON body and returns (status, body). The body is
 // read whatever the status is: a streaming ollama reports a FAILED pull inside
 // a 200 (measured, see the header), so the caller needs both.
-func modelPostJSON(method, path string, payload any, timeout time.Duration) (int, []byte, error) {
+func modelPostJSON(addr, method, path string, payload any, timeout time.Duration) (int, []byte, error) {
 	var rdr io.Reader
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -474,7 +495,7 @@ func modelPostJSON(method, path string, payload any, timeout time.Duration) (int
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, "http://"+localOllamaAddr()+path, rdr)
+	req, err := http.NewRequest(method, "http://"+addr+path, rdr)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -528,8 +549,8 @@ func modelCosine(a, b []float64) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-func modelEmbedOnce(model, text string) ([]float64, error) {
-	status, body, err := modelPostJSON(http.MethodPost, "/api/embed",
+func modelEmbedOnce(addr, model, text string) ([]float64, error) {
+	status, body, err := modelPostJSON(addr, http.MethodPost, "/api/embed",
 		map[string]any{"model": model, "input": []string{text}}, modelProbeTimeout)
 	if err != nil {
 		return nil, err
@@ -549,8 +570,8 @@ func modelEmbedOnce(model, text string) ([]float64, error) {
 	return out.Embeddings[0], nil
 }
 
-func modelGenerateOnce(model, prompt string) (string, error) {
-	status, body, err := modelPostJSON(http.MethodPost, "/api/generate",
+func modelGenerateOnce(addr, model, prompt string) (string, error) {
+	status, body, err := modelPostJSON(addr, http.MethodPost, "/api/generate",
 		map[string]any{"model": model, "prompt": prompt, "stream": false, "think": false}, modelProbeTimeout)
 	if err != nil {
 		return "", err
@@ -573,12 +594,12 @@ func modelGenerateOnce(model, prompt string) (string, error) {
 // probeEmbedModel proves the model EMBEDS: the same text twice must come back
 // as one answer, and a different text must move it. Returns the measured width
 // and "" , or 0 and the reason it is not usable.
-func probeEmbedModel(model string) (int, string) {
-	v1, err := modelEmbedOnce(model, modelProbeTextA)
+func probeEmbedModel(addr, model string) (int, string) {
+	v1, err := modelEmbedOnce(addr, model, modelProbeTextA)
 	if err != nil {
 		return 0, "it was downloaded but does not answer as an embedding model: " + err.Error()
 	}
-	v2, err := modelEmbedOnce(model, modelProbeTextA)
+	v2, err := modelEmbedOnce(addr, model, modelProbeTextA)
 	if err != nil {
 		return 0, "it answered once and then failed: " + err.Error()
 	}
@@ -587,7 +608,7 @@ func probeEmbedModel(model string) (int, string) {
 		return 0, fmt.Sprintf("it gave two different answers to the SAME text (similarity %.4f) — "+
 			"nothing routed at it would be reproducible", same)
 	}
-	v3, err := modelEmbedOnce(model, modelProbeTextB)
+	v3, err := modelEmbedOnce(addr, model, modelProbeTextB)
 	if err != nil {
 		return 0, "the control text failed: " + err.Error()
 	}
@@ -604,15 +625,15 @@ func probeEmbedModel(model string) (int, string) {
 
 // probeGenerateModel proves the model GENERATES: a non-empty answer, and a
 // different prompt must change it (the same constant-answer trap).
-func probeGenerateModel(model string) string {
-	a, err := modelGenerateOnce(model, modelProbePromptA)
+func probeGenerateModel(addr, model string) string {
+	a, err := modelGenerateOnce(addr, model, modelProbePromptA)
 	if err != nil {
 		return "it was downloaded but does not answer as a text model: " + err.Error()
 	}
 	if strings.TrimSpace(a) == "" {
 		return "it answered with nothing at all"
 	}
-	b, err := modelGenerateOnce(model, modelProbePromptB)
+	b, err := modelGenerateOnce(addr, model, modelProbePromptB)
 	if err != nil {
 		return "it answered once and then failed: " + err.Error()
 	}
@@ -704,7 +725,12 @@ func modelReply(ws *websocket.Conn, v any) {
 // here — the two together are what makes an honest proposal possible: the host
 // can see a model is present without being able to claim it may remove it.
 func handleModelList(ws *websocket.Conn, root string, _ []string) {
-	status, body, err := modelPostJSON(http.MethodGet, "/api/tags", nil, modelListTimeout)
+	addr, why := modelDaemonTarget(modelSelf(ws))
+	if why != "" {
+		modelFail(ws, "model:list: "+why)
+		return
+	}
+	status, body, err := modelPostJSON(addr, http.MethodGet, "/api/tags", nil, modelListTimeout)
 	if err != nil {
 		modelFail(ws, "model:list: no model daemon answering on this machine: "+err.Error())
 		return
@@ -974,12 +1000,12 @@ func modelPullRunningNote(j *modelPullJob) string {
 // runBackupFetch updates job.Got inside its read loop (backupfetch.go:309-311):
 // progress that only exists when the transfer ends is not progress. nil is
 // allowed — the direct-call tests pass it.
-func modelPullStreaming(model string, maxBytes int64, note func(want, got int64)) (int64, error) {
+func modelPullStreaming(addr, model string, maxBytes int64, note func(want, got int64)) (int64, error) {
 	body, err := json.Marshal(map[string]any{"model": model, "stream": true})
 	if err != nil {
 		return 0, err
 	}
-	httpReq, err := http.NewRequest(http.MethodPost, "http://"+localOllamaAddr()+"/api/pull",
+	httpReq, err := http.NewRequest(http.MethodPost, "http://"+addr+"/api/pull",
 		bytes.NewReader(body))
 	if err != nil {
 		return 0, err
@@ -1109,6 +1135,17 @@ func modelPullStart(ws *websocket.Conn, root string, req modelReq) {
 		return
 	}
 
+	// WHERE THE PULL GOES, decided once and held for the download and its
+	// probe: a Host with no platform pulls only onto a model server on this
+	// machine (modelDaemonTarget). Refused before the approval is read, so a
+	// pull that cannot go here costs the person nothing. For such a pairing a
+	// name in OLLAMA_ADDR is looked up here; nothing is dialled.
+	addr, why := modelDaemonTarget(modelSelf(ws))
+	if why != "" {
+		modelRefuse(ws, req.Model, why)
+		return
+	}
+
 	// THE APPROVAL GATE. Nothing above this line has touched the network; nothing
 	// below it runs until the user has said yes to THIS proposal on this machine.
 	// The async split moved the download off this frame and deliberately did NOT
@@ -1152,7 +1189,7 @@ func modelPullStart(ws *websocket.Conn, root string, req modelReq) {
 	snap := *job
 	modelPullJobsMu.Unlock()
 
-	go runModelPull(job, root, req)
+	go runModelPull(job, root, req, addr)
 	modelReply(ws, snap)
 }
 
@@ -1167,7 +1204,7 @@ func modelPullStart(ws *websocket.Conn, root string, req modelReq) {
 // bytes on this disk", which is true the moment the download succeeds. A model
 // that downloaded but failed its probe must stay droppable, or a bad pull would
 // leave dead weight on the user's machine that nothing is allowed to remove.
-func runModelPull(job *modelPullJob, root string, req modelReq) {
+func runModelPull(job *modelPullJob, root string, req modelReq, addr string) {
 	set := func(f func(j *modelPullJob)) {
 		modelPullJobsMu.Lock()
 		f(job)
@@ -1201,7 +1238,7 @@ func runModelPull(job *modelPullJob, root string, req modelReq) {
 	// The 200-with-an-error-in-the-body case that stream:false was chosen for is
 	// handled either way: modelBodyError reads EVERY line, so a failure on the
 	// last line of a stream is caught exactly as before.
-	total, err := modelPullStreaming(req.Model, req.MaxBytes,
+	total, err := modelPullStreaming(addr, req.Model, req.MaxBytes,
 		func(want, got int64) { set(func(j *modelPullJob) { j.Want, j.Got = want, got }) })
 	if err != nil {
 		finish("failed", func(j *modelPullJob) {
@@ -1242,9 +1279,9 @@ func runModelPull(job *modelPullJob, root string, req modelReq) {
 	var dim int
 	var why string
 	if req.Role == "embed" {
-		dim, why = probeEmbedModel(req.Model)
+		dim, why = probeEmbedModel(addr, req.Model)
 	} else {
-		why = probeGenerateModel(req.Model)
+		why = probeGenerateModel(addr, req.Model)
 	}
 	if why != "" {
 		finish("done", func(j *modelPullJob) {
@@ -1284,7 +1321,12 @@ func handleModelDrop(ws *websocket.Conn, root string, args []string) {
 			"not remove it. Only a model this host pulled here is its to drop.")
 		return
 	}
-	status, body, err := modelPostJSON(http.MethodDelete, "/api/delete",
+	addr, why := modelDaemonTarget(modelSelf(ws))
+	if why != "" {
+		modelFail(ws, "model:drop: "+why)
+		return
+	}
+	status, body, err := modelPostJSON(addr, http.MethodDelete, "/api/delete",
 		map[string]any{"model": req.Model}, modelListTimeout)
 	if err != nil {
 		modelFail(ws, "model:drop: the model daemon did not answer: "+err.Error())

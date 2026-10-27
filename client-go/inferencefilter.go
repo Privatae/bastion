@@ -133,18 +133,39 @@ func inferenceFilterNeeded(self string, lane inferenceLane, scope modelScope) bo
 //
 // With nothing to enforce it is the original raw splice, byte for byte.
 func proxyInference(in net.Conn, upstream string, lane inferenceLane, self string) {
+	proxyInferenceVia(in, dialUpstream(upstream), lane, self, spliceConnVia)
+}
+
+// upstreamDial opens the connection to the service behind a forward.
+type upstreamDial func() (net.Conn, error)
+
+// dialUpstream is the forwards' dial: TCP to the address, 5 s.
+func dialUpstream(upstream string) upstreamDial {
+	return func() (net.Conn, error) { return net.DialTimeout("tcp", upstream, 5*time.Second) }
+}
+
+// proxyInferenceVia is proxyInference with the dial, and the pass-through for
+// a connection with nothing to enforce, in the caller's hands. The serve lane
+// (servelane.go) uses it so its connections take the same decision and the
+// same filter as the tunnel's, while the dial goes to the address it vetted
+// and is watched by its idle bound.
+func proxyInferenceVia(in net.Conn, dial upstreamDial, lane inferenceLane, self string, pass func(net.Conn, upstreamDial)) {
 	if inferenceFilterNeeded(self, lane, pairingModelScope(self)) {
-		serveInferenceFiltered(in, upstream, lane, self)
+		serveInferenceFilteredVia(in, dial, lane, self)
 		return
 	}
-	spliceConn(in, upstream)
+	pass(in, dial)
 }
 
 // spliceConn is what the forwards did before this file existed, unchanged and
 // in one place now that three call sites share it.
 func spliceConn(in net.Conn, upstream string) {
+	spliceConnVia(in, dialUpstream(upstream))
+}
+
+func spliceConnVia(in net.Conn, dial upstreamDial) {
 	defer in.Close()
-	out, err := net.DialTimeout("tcp", upstream, 5*time.Second)
+	out, err := dial()
 	if err != nil {
 		return
 	}
@@ -163,8 +184,12 @@ func spliceConn(in net.Conn, upstream string) {
 // grant on every request below, so there is nowhere for a caller — including a
 // test — to hand it one the grant does not say.
 func serveInferenceFiltered(in net.Conn, upstream string, lane inferenceLane, self string) {
+	serveInferenceFilteredVia(in, dialUpstream(upstream), lane, self)
+}
+
+func serveInferenceFilteredVia(in net.Conn, dial upstreamDial, lane inferenceLane, self string) {
 	defer in.Close()
-	out, err := net.DialTimeout("tcp", upstream, 5*time.Second)
+	out, err := dial()
 	if err != nil {
 		writeFilterError(in, nil, http.StatusBadGateway, "the service behind this lane is not answering")
 		return

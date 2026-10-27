@@ -27,6 +27,42 @@
   directories that are root's and not writable by others unless sticky), or
   no socket is made in it. On an anchored machine its run-up needs the
   standing coder grant like any pairing's.
+- **A Host with no platform reaches your model servers by name, never by
+  address.** A pairing with a Host on this machine, or in a VM on it, has no
+  tunnel and so no forwards. Its model servers ride the serve lane instead:
+  the bastion keeps two workers parked on the Host's lane, and the Host hands
+  one a connection that names a service, `ollama`, `llm` or `pii`. The
+  bastion dials the address set on this machine for that service
+  (`OLLAMA_ADDR`, `PRIVATAE_LLM_ADDR`, `PRIVATAE_PII_ADDR`), and only when
+  every address it names is this machine: loopback, an address on its
+  interfaces, or one the kernel delivers here, which includes a container on
+  a network made on this machine. A server on another computer, an address
+  or URL sent in place of a service, and a name the lane does not carry are
+  each refused with a reason before anything is dialled. Each connection
+  needs the `inference` family and goes through the forwards' own filter:
+  the model scope, `/api/pull`, `/api/delete` and the other store paths
+  refused without `models` (on an anchored machine, always), and the model
+  lists rewritten. One pairing holds at most 16 streams here, and the 17th is
+  refused as busy. A stream with no byte either way for 10 minutes is closed;
+  a response's length is not capped. Each job is written to the pairing's
+  audit log. Such a pairing's heartbeat lists what the lane serves
+  (`lane_serves`) and advertises `embed`, `llm-openai` and `pii` only for
+  those, and it never advertises the service slots, or coder runs over TCP,
+  which do not run there. Before this, it advertised all of them with
+  nothing serving them. Model management for such a pairing is held to the
+  same rule: the beat's model-swap probe, `model:list`, `model:pull` with its
+  probes, and `model:drop` reach `OLLAMA_ADDR` only when it is this machine,
+  at the addresses checked; otherwise each is refused with the reason before
+  anything is dialled or an approval is read, and the machine's console says
+  which address is not used and what to set. A target set by name is dialled
+  at each address it was checked for, in turn, as a plain dial of the name
+  is, so `localhost` reaches a server listening on 127.0.0.1 only when the
+  name answers `::1` first; no other address is dialled. A tunnel pairing
+  keeps `OLLAMA_ADDR` wherever it points, as its forwards do. A worker whose
+  job is refused (malformed, refused or busy) waits a second before it parks
+  again, so a Host that refuses or misuses every job cannot make this machine
+  dial in a loop. The egress lane's workers do the same: one that took a job
+  parks again at once, and one whose job was refused waits a second.
 - **Scoped tunnel.** The WireGuard peer's only allowed address is the paired
   host's single tunnel address, so the tunnel can reach nothing else. A
   pairing that offers anything wider is refused, and a pairing file that

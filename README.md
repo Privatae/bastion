@@ -248,6 +248,10 @@ Each point in full: [docs/security-model.md](docs/security-model.md); the link a
   connection is accepted. ([tunnel](docs/lanes.md#tunnel))
 - **A Host on this machine gets the same walls**: mutual TLS against the CA
   pinned at pairing, and the bearer on every lane. ([page](docs/host-on-this-machine.md))
+- **A Host with no platform reaches your model servers by name, never by
+  address**: it names `ollama`, `llm` or `pii`, and the bastion reaches the
+  server set on this machine for it, through the forwards' filter, only when
+  that address is this machine. ([page](docs/host-on-this-machine.md#the-model-servers-on-this-machine))
 - **Scoped tunnel.** The WireGuard peer's only allowed address is the paired
   host's single tunnel address. ([tunnel](docs/lanes.md#tunnel))
 - **No MCP endpoint.** Nothing on this machine drives the host.

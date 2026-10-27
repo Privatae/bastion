@@ -417,7 +417,8 @@ func TestTheTCPLaneCarriesTheCertTheBearerAndTheSameProtocol(t *testing.T) {
 	h.mu.Unlock()
 	if maxPark != harnessWorkerCount || count["/bastion-harness"] < harnessWorkerCount ||
 		count["/bastion-harness session"] != sessionWorkerCount ||
-		count["/bastion-mgmt"] != mgmtWorkerCount || count["/bastion-egress"] != egressWorkerCount {
+		count["/bastion-mgmt"] != mgmtWorkerCount || count["/bastion-egress"] != egressWorkerCount ||
+		count["/bastion-serve"] != serveWorkerCount {
 		t.Fatalf("the worker pools over the port: %v, parked at once %d", count, maxPark)
 	}
 	for _, n := range sni {
