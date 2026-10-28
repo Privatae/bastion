@@ -23,6 +23,57 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.56.0
+
+- **New: a Host with no platform can use the model servers on this
+  computer.** A Host running on this computer, or in a virtual machine on it,
+  can reach the model servers here (Ollama, a local language model server, a
+  personal-data filter) by name through the bastion, and is told which of
+  them it can use. It starts working once your Host supports it.
+- **Changed: for a Host with no platform, model management reaches only this
+  computer.** Listing, downloading and removing models for such a Host now
+  reach the model server set here only when that server is on this computer.
+  One set to another computer is refused, and the bastion's log says which
+  setting is not used and what to set. Such a Host is also told only of
+  the model servers it can use, and no longer of the service slots, or of
+  coder runs when it is in a virtual machine, since neither runs for it.
+- **Changed: on a local machine, the internet lane reaches only public
+  addresses.** A Host can no longer use a local machine's internet lane (the
+  egress lane) to reach devices on your home or office network at their
+  private addresses, such as 192.168.x.x or 10.x.x.x, or the private ranges
+  many VPNs use, as was already the case on an anchored machine. Your own
+  machines are reached through their approved lanes. A device that has a
+  public address, as many do over IPv6, is still reached at that address.
+- **Changed: plain-HTTP requests through the bastion are checked one per
+  connection.** On the internet lane and a coder run's web proxy, a
+  plain-HTTP (not HTTPS) connection now carries one request, which is checked
+  before it is sent on; anything sent after it closes the connection. Before,
+  later requests on the same connection reached the destination unchecked. A
+  malformed or ambiguous request is refused, and every refusal now says why.
+- **Safer: file access in a folder you shared stays inside it.** When a Host
+  lists, reads or moves files in a folder you shared with it, the bastion
+  stays inside that folder. If the folder, or any folder on its path, is later
+  swapped for a link to somewhere else, the bastion refuses until the folder
+  is shared again, and a file or folder inside it swapped for a link is never
+  followed out of it. Search, which goes through the folder's own search
+  agent, is not part of this change.
+- **Safer: the bastion limits how much it holds of what a Host sends.** On
+  the internet lane, the terminal and root commands, coder runs, the memory
+  mirror (the copy of your Host's database kept here) and the bastion's
+  check-in with its Host, a message from the Host is read only up to a set
+  size and refused past it, or passed along or dropped as it arrives. A Host
+  can no longer make the bastion hold a message of any size in memory. A
+  coder run's web proxy now carries at most 1024 connections at once, and the
+  memory mirror at most 8.
+- **Safer: asking to share a folder with a Host has limits.** Any user on the
+  computer can send that ask to the bastion, so each ask is now read only up
+  to a set size, and the number of asks open at once is capped, per user and
+  in total; past the cap, the ask is told the bastion is busy and to try
+  again.
+- **For contributors: the fuzz check in CI no longer fails on a timing bug in
+  Go's own fuzzer.** A real failure still fails it. The program itself is
+  unchanged by this.
+
 ## 0.55.3
 
 - **A pairing change reaches every Host on the machine at once.** Each pairing
