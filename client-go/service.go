@@ -288,15 +288,38 @@ func serviceArgs(spec harnessSpec) []string {
 
 // serviceOwnerRefusal: on an anchored box a member pairing may not replace or
 // stop a slot another host built. The anchor pairing may (its user is the
-// machine's admin), and an unanchored local box serves one host.
+// machine's admin). A local box has no anchor to be that admin, and serves a
+// second host only on its person's yes (pair_terminal.go); once it serves two,
+// each host changes only the slots it built. With one host there is nobody to
+// keep apart (a host renamed since it built a slot still owns it), and
+// pairings that cannot be read are treated as two.
 func serviceOwnerRefusal(self string, r *serviceRecord) string {
 	if r == nil || r.Owner == "" || r.Owner == self {
 		return ""
+	}
+	if boxMode() == modeLocal {
+		if !localServesSeveralHosts() {
+			return ""
+		}
+		return "refused: slot '" + r.Name + "' was built by " + r.Owner + "; on a local machine that serves several Hosts each changes only the servers it built"
 	}
 	if why := anchorOnly(self, "changing a server another host built"); why != "" {
 		return "refused: slot '" + r.Name + "' was built by " + r.Owner + "; " + why
 	}
 	return ""
+}
+
+// localServesSeveralHosts: this is a local machine that serves more than one
+// Host (the second added on its person's yes, pair_terminal.go), so what one
+// Host built or started here is kept from the others. Pairings that cannot be
+// read count as several. False on a networked machine, whose anchor rule
+// (anchorOnly) keeps its Hosts apart.
+func localServesSeveralHosts() bool {
+	if boxMode() != modeLocal {
+		return false
+	}
+	cfgs, err := loadPairings()
+	return err != nil || len(cfgs) > 1
 }
 
 func serviceFail(res map[string]interface{}, msg string) ([]byte, int) {

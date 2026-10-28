@@ -495,10 +495,24 @@ func TestServiceOwnerRuleOnAnAnchoredBox(t *testing.T) {
 	if why := serviceOwnerRefusal(tMember, &serviceRecord{Name: "forge", Owner: tMember}); why != "" {
 		t.Fatalf("the builder may change its own server: %s", why)
 	}
-	// Local box: one host, no owner rule to apply.
+	// Local box with one host: nobody to keep apart, as before.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := (&Config{HostName: tMember, ListenAddr: "127.0.0.1:7878"}).save(); err != nil {
+		t.Fatal(err)
+	}
 	if why := serviceOwnerRefusal(tMember, r); why != "" {
-		t.Fatalf("a local bastion serves one host: %s", why)
+		t.Fatalf("a local machine with one host applies no owner rule: %s", why)
+	}
+	// Local box serving a second host (added on its person's yes): each host
+	// changes only the servers it built.
+	if err := (&Config{HostName: tAnchor, ListenAddr: "127.0.0.1:7879"}).save(); err != nil {
+		t.Fatal(err)
+	}
+	if why := serviceOwnerRefusal(tMember, r); why == "" || !strings.Contains(why, "built by "+tAnchor) {
+		t.Fatalf("on a local machine serving two hosts one must not change the other's server: %q", why)
+	}
+	if why := serviceOwnerRefusal(tMember, &serviceRecord{Name: "forge", Owner: tMember}); why != "" {
+		t.Fatalf("on a local machine a host changes its own server: %s", why)
 	}
 }
 
@@ -851,4 +865,29 @@ func TestSpliceUnixCarriesBothWays(t *testing.T) {
 		t.Fatalf("splice: %q %v", got, err)
 	}
 	_ = a.Close()
+}
+
+// A coder run on a local machine that serves two Hosts is stopped only by
+// the Host that started it, as a server is changed only by the Host that
+// built it. With one Host there is nobody to keep apart.
+func TestCoderRunOwnerRuleOnALocalBoxServingTwoHosts(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := (&Config{HostName: tMember, ListenAddr: "127.0.0.1:7878"}).save(); err != nil {
+		t.Fatal(err)
+	}
+	if why := coderOwnerRefusal(tMember, tAnchor); why != "" {
+		t.Fatalf("a local machine with one host applies no owner rule: %s", why)
+	}
+	if err := (&Config{HostName: tAnchor, ListenAddr: "127.0.0.1:7879"}).save(); err != nil {
+		t.Fatal(err)
+	}
+	if why := coderOwnerRefusal(tMember, tAnchor); why == "" || !strings.Contains(why, "started by "+tAnchor) {
+		t.Fatalf("on a local machine serving two hosts one must not stop the other's run: %q", why)
+	}
+	if why := coderOwnerRefusal(tMember, ""); why == "" {
+		t.Fatal("on a local machine serving two hosts a run of unknown owner proves nothing about self")
+	}
+	if why := coderOwnerRefusal(tMember, tMember); why != "" {
+		t.Fatalf("a host stops its own run: %s", why)
+	}
 }

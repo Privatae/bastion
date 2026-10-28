@@ -1229,9 +1229,16 @@ func coderContainerGone(rt, cname string) bool {
 // anchor pairing on an anchored box (serviceOwnerRefusal's rule).
 // An unknown owner proves nothing about self, so it gets the anchor-only rule
 // too: every run this bastion starts records and labels its owner.
+//
+// A local machine has no anchor, so anchorOnly lets every pairing through
+// there; once it serves several Hosts (localServesSeveralHosts), each stops
+// only the runs it started, as with the servers each built.
 func coderOwnerRefusal(self, owner string) string {
 	if owner != "" && owner == self {
 		return ""
+	}
+	if localServesSeveralHosts() {
+		return "refused: that run was started by " + orUnknown(owner) + "; on a local machine that serves several Hosts each stops only the runs it started"
 	}
 	if why := anchorOnly(self, "stopping a run another host started"); why != "" {
 		return "refused: that run was started by " + orUnknown(owner) + "; " + why

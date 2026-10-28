@@ -7,6 +7,9 @@
 | `pair --replace <token>` | Re-pair an existing host: rotates its credentials, keeps its port, context store and DCN state. |
 | `pair [--replace] --redeem-url unix:///<socket> <token>` | Pair with a Host on this machine over its enroll socket. Its CA is pinned for life. See [A Host on this machine](host-on-this-machine.md). |
 | `pair [--replace] --redeem-url https://<host>:<port>/<path> --host-ca <pem> <token>` | Pair with a Host in a VM on this machine over its enroll port, trusting that CA alone. Its CA is pinned for life. See [A Host in a VM on this machine](host-on-this-machine.md#a-host-in-a-vm-on-this-machine). |
+| `pair <pairing code>` | Pair with the one code (`skp_…`) a Cloud Host's "Set up a bastion" card gives: it carries the enroll address and the fingerprint of the Host's CA, and the CA is taken from the enroll port only under that fingerprint. On a local machine that already serves a Host it asks, on this machine's terminal, whether to add this one; only a yes adds it. |
+| | The card's one line installs the bastion, pairs it with that code and starts it: `curl -fsSL https://privatae.ai/bastion/install.sh \| PRIVATAE_PAIR_CODE='skp_…' sh` on macOS and Linux (the code goes in the environment, never in an argument, which the process list would show), and `& ([scriptblock]::Create((irm https://privatae.ai/bastion/install.ps1))) -Pair 'skp_…'` on Windows. Either hands the code to `pair -` on standard input. |
+| | `pair` exits 0 when it paired, 3 when this machine is already paired with that Host (nothing changed), and anything else on a failure. |
 | `run` | Bring up the tunnel and lanes for every paired host. |
 | `status` | Show every pairing and its tunnel status. |
 | `ui` | Open the local console in your browser. |

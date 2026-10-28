@@ -21,7 +21,17 @@
 # OWN account keeps the same profile — but "Run as different user" does not, and
 # the bastion would then read an empty directory and refuse to see its pairings.
 # This is the Windows shape of the same trap `sudo -H` exists for on Unix.
-param([switch]$Networked)
+#
+# -Pair '<code>': pair as well, with the code from your Host's "Set up a
+# bastion" card, and start the bastion so it serves now and at every sign-in.
+# The one line the card gives is
+#     & ([scriptblock]::Create((irm https://privatae.ai/bastion/install.ps1))) -Pair 'skp_…'
+# The code reaches the bastion on standard input, never as an argument, so it
+# is not in the process list. On a machine whose bastion is already the
+# Windows service (installed with -Networked, or by `npx cseries`), -Pair pairs
+# that service from an Administrator PowerShell instead of installing a second
+# bastion beside it.
+param([switch]$Networked, [string]$Pair)
 #
 # Brought into the repo (this file previously existed ONLY as bytes in the
 # edge webroot, so what customers piped to `iex` had no review history) and
@@ -35,6 +45,18 @@ $base = 'https://dl.privatae.ai'
 $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') {'arm64'} else {'amd64'}
 $key  = "windows-$arch.exe"
 
+# Checked before anything is downloaded. Never echoed: it holds the token.
+if ($Pair -and -not $Pair.StartsWith('skp_')) {
+    throw "-Pair takes the pairing code from your Host's card, which starts skp_. Nothing was installed."
+}
+# A machine whose bastion already runs as the Windows service is paired
+# through that service. A per-user install beside it would be a second
+# bastion, which the service's own guard refuses to pair anyway.
+if ($Pair -and -not $Networked -and (Get-Service -Name 'PrivataeBastion' -ErrorAction SilentlyContinue)) {
+    $Networked = $true
+    Write-Host "This computer's bastion runs as the Windows service PrivataeBastion; pairing that service."
+}
+
 if ($Networked) {
     # Checked before anything is downloaded, so a refusal leaves nothing behind
     # and is one clear sentence at the moment it can be acted on.
@@ -43,7 +65,7 @@ if ($Networked) {
     if (-not $isAdmin) {
         throw ("-Networked needs an elevated terminal. A networked bastion runs as a Windows service, " +
                "and whoever administers the machine is what stands behind it.`n" +
-               "Close this window, right-click your terminal, choose 'Run as administrator', and run it again.")
+               "Close this window, right-click your terminal, choose 'Run as administrator', and run the same line again.")
     }
 }
 
@@ -223,11 +245,54 @@ if ($Networked) {
     Write-Host ""
     Write-Host "The bastion runs as the Windows service 'PrivataeBastion' (LocalSystem). It starts"
     Write-Host "serving as soon as this machine is paired."
+    if (-not $Pair) {
     Write-Host "Next, anchor this machine to the Host that should govern it:"
     Write-Host "  privatae-bastion claim-anchor"
     Write-Host "  (add --host <name> if this machine already serves several Hosts)"
     Write-Host "Every host paired after the anchor waits, pending, until that Host approves it."
-} else {
+    }
+} elseif (-not $Pair) {
     Write-Host "Open a NEW terminal, then:  privatae-bastion pair <token>"
+}
+
+if ($Pair) {
+    Write-Host ""
+    # The full path, never the name on PATH, which this window may not have
+    # picked up yet. The code goes on standard input: `pair -` reads its first
+    # line. `pair` exits 3 when this computer is already paired with that Host,
+    # which is success here too. On a computer that already serves another
+    # Host, `pair` asks in this window whether to add this one.
+    $Pair | & $exe pair -
+    $rc = $LASTEXITCODE
+    if ($rc -eq 0) { $done = 'This computer is paired.' }
+    elseif ($rc -eq 3) { $done = 'This computer was already paired with this Host; nothing changed there.' }
+    else { throw "Pairing did not finish (the reason is above). The bastion is installed; nothing else changed." }
+
+    # A running bastion reads a new pairing at its next start, so it is
+    # restarted, not just started.
+    if ($Networked) {
+        Restart-Service -Name 'PrivataeBastion'
+        $how = 'The bastion runs as the Windows service PrivataeBastion, and starts with Windows.'
+    } else {
+        # Every copy is stopped first, from wherever it was started (a terminal,
+        # an older install, a detached copy after a self-update): each would
+        # hold this machine's first control port, 127.0.0.1:7878, and the new
+        # one would fail to start beside it.
+        Stop-ScheduledTask -TaskName 'PrivataeBastion' -ErrorAction SilentlyContinue
+        Get-Process -Name 'privatae-bastion' -ErrorAction SilentlyContinue | ForEach-Object {
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+        try {
+            Start-ScheduledTask -TaskName 'PrivataeBastion'
+            $how = 'The bastion is running, and starts again each time you sign in to Windows.'
+        } catch {
+            Start-Process -FilePath $exe -ArgumentList 'run' -WindowStyle Hidden
+            $how = "The bastion is running until you sign out (its sign-in task could not be started: $($_.Exception.Message))."
+        }
+    }
+    Start-Sleep -Seconds 3
+    & $exe status
+    Write-Host ""
+    Write-Host "$done $how"
 }
 Write-Host "privatae-bastion is free software under the GNU GPL v3 or later: https://privatae.ai/bastion/LICENSE.txt"

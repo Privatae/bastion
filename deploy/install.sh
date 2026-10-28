@@ -6,7 +6,33 @@
 #   sudo -H privatae-bastion pair <token>
 # Run as your own user (a desktop), it installs the LOCAL bastion for that user.
 #
+# PRIVATAE_PAIR_CODE='<code>' pairs as well, with the code from your Host's "Set
+# up a bastion" card, and starts the bastion so it serves now and after a
+# restart. The one line the card gives is
+#   curl -fsSL https://privatae.ai/bastion/install.sh | PRIVATAE_PAIR_CODE='skp_…' sh
+#
 set -e
+# The pairing code comes from the environment, never from an argument: an
+# argument sits in this shell's command line for the whole install, where any
+# user of this machine can read it with ps, and one at the same address could
+# redeem it first. A process's environment is readable only by its owner and
+# root. It is read here, before this script starts any program, and unset at
+# once, so no program it starts inherits it. Never echoed: it holds the token.
+pair_code=${PRIVATAE_PAIR_CODE-}
+pair_given=${PRIVATAE_PAIR_CODE+1}
+unset PRIVATAE_PAIR_CODE
+if [ -n "$pair_given" ]; then
+  # skp_ and base64url: anything else is a line that lost part of the code.
+  case "$pair_code" in
+    skp_*[!A-Za-z0-9_-]* | skp_) pair_code="" ;;
+    skp_?*) ;;
+    *) pair_code="" ;;
+  esac
+  if [ -z "$pair_code" ]; then
+    echo "ERROR: PRIVATAE_PAIR_CODE is not a pairing code. Copy the whole line from your Host's card again (the code starts skp_). Nothing was installed." >&2
+    exit 2
+  fi
+fi
 # dl.privatae.ai, not privatae.ai/bastion: the download host is served from each
 # edge's OWN local disk, so installs survive losing the platform datacentre, and
 # DNS points it at the edge with the bandwidth for an install wave (~15MB a
@@ -33,7 +59,9 @@ for a in "$@"; do
   case "$a" in
     --networked) networked=1 ;;
     --local) local=1 ;;
-    *) echo "unknown option: $a" >&2; exit 2 ;;
+    # An unknown argument is never echoed: it may be a pairing code given in
+    # the wrong place, and a log of the failed install must not hold it.
+    *) echo "ERROR: unknown option. This installer takes --networked or --local; a pairing code goes in PRIVATAE_PAIR_CODE, as your Host's card shows. Nothing was installed." >&2; exit 2 ;;
   esac
 done
 if [ "$networked" = 1 ] && [ "$local" = 1 ]; then
@@ -52,6 +80,179 @@ paired_local() {
     for f in "$d"/pairings/*.json; do [ -f "$f" ] && return 0; done
   done
   return 1
+}
+
+# pair_as ROOT OS BIN ARGS...: run the bastion as the state it serves. As
+# root that is the service's HOME (the unit's /root, launchd's /var/root),
+# whatever HOME `sudo` left behind; as yourself it is your own.
+pair_as() {
+  pa_root=$1; pa_os=$2; shift 2
+  if [ "$pa_root" = 1 ]; then
+    if [ "$pa_os" = darwin ]; then HOME=/var/root "$@"; else HOME=/root "$@"; fi
+  else
+    "$@"
+  fi
+}
+
+# bastion_copy PID: 0 when PID is a process of this user running a program
+# named privatae-bastion, from any path, including one replaced on disk since
+# it started. A process that has exited, or another user's, is not.
+bastion_copy() {
+  [ -O "/proc/$1" ] || return 1
+  bc_exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
+  case "${bc_exe##*/}" in
+    "privatae-bastion" | "privatae-bastion (deleted)") return 0 ;;
+  esac
+  return 1
+}
+
+# stop_user_copies: stop every copy of this user's bastion (Linux), as
+# install.ps1 does on Windows: one left running in a terminal, from an older
+# install or another path. `run` holds the machine's run lock, so the copy the
+# service starts would only wait behind it, and that copy never reads the new
+# pairing; an older build would fail on 127.0.0.1:7878 and restart for ever.
+# Asked to stop, then killed after 10 seconds. Says on stderr how many.
+stop_user_copies() {
+  suc_pids=""
+  for suc_d in /proc/[0-9]*; do
+    suc_pid=${suc_d#/proc/}
+    bastion_copy "$suc_pid" || continue
+    kill "$suc_pid" 2>/dev/null && suc_pids="$suc_pids $suc_pid"
+  done
+  [ -n "$suc_pids" ] || return 0
+  set -- $suc_pids
+  echo "Stopped $# copy(ies) of the bastion running outside its service (a terminal, or another install)." >&2
+  for suc_i in 1 2 3 4 5 6 7 8 9 10; do
+    suc_left=""
+    for suc_pid in $suc_pids; do bastion_copy "$suc_pid" && suc_left="$suc_left $suc_pid"; done
+    [ -n "$suc_left" ] || return 0
+    sleep 1
+  done
+  for suc_pid in $suc_left; do kill -9 "$suc_pid" 2>/dev/null || true; done
+}
+
+# user_unit_stays_up: 0 when the user unit privatae-bastion is running and
+# has kept the same process across a few seconds, longer than its
+# RestartSec, so a copy that fails at start and is restarted is caught.
+# Otherwise says what systemd shows, on stderr.
+user_unit_stays_up() {
+  sleep 1
+  uu_first=$(systemctl --user show -p MainPID --value privatae-bastion 2>/dev/null) || uu_first=""
+  sleep 4
+  uu_pid=$(systemctl --user show -p MainPID --value privatae-bastion 2>/dev/null) || uu_pid=""
+  uu_state=$(systemctl --user show -p ActiveState --value privatae-bastion 2>/dev/null) || uu_state=""
+  uu_sub=$(systemctl --user show -p SubState --value privatae-bastion 2>/dev/null) || uu_sub=""
+  if [ "$uu_state" = active ] && [ "$uu_sub" = running ] && [ -n "$uu_pid" ] && [ "$uu_pid" != 0 ] && [ "$uu_pid" = "$uu_first" ]; then
+    return 0
+  fi
+  echo "The bastion's user service privatae-bastion is not staying up (systemd shows it ${uu_state:-unknown}/${uu_sub:-unknown}, and it has restarted)." >&2
+  echo "Its log says why:  journalctl --user -u privatae-bastion" >&2
+  return 1
+}
+
+# start_bastion BIN ROOT OS: start, or restart, the bastion so it serves every
+# pairing now and starts again by itself. A running bastion reads a new
+# pairing at its next start, so a restart is what a fresh pairing needs.
+# Prints one plain sentence saying how it will run.
+start_bastion() {
+  sb_bin=$1; sb_root=$2; sb_os=$3
+  if [ "$sb_root" = 1 ] && [ "$sb_os" = linux ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl restart privatae-bastion || return 1
+    echo "The bastion runs as the system service privatae-bastion, and starts at boot."
+    return 0
+  fi
+  if [ "$sb_root" = 1 ] && [ "$sb_os" = darwin ] && [ -f /Library/LaunchDaemons/ai.privatae.bastion.plist ]; then
+    /bin/launchctl kickstart -k system/ai.privatae.bastion || return 1
+    echo "The bastion runs as the system service ai.privatae.bastion, and starts at boot."
+    return 0
+  fi
+  if [ "$sb_root" != 1 ] && [ "$sb_os" = linux ] && command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    # A systemd user unit: yours, no root. It starts when you sign in; with
+    # lingering on, at boot and after you sign out as well.
+    sb_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    mkdir -p "$sb_dir"
+    cat > "$sb_dir/privatae-bastion.service" <<UNIT
+[Unit]
+Description=Privatae bastion - serves this machine to your Hosts (tunnel + lanes)
+[Service]
+Type=simple
+ExecStart=$sb_bin run
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=default.target
+UNIT
+    systemctl --user daemon-reload && systemctl --user enable privatae-bastion >/dev/null 2>&1 || return 1
+    # Its own copy first, then every other: what is left running after this
+    # is only what the unit starts.
+    systemctl --user stop privatae-bastion >/dev/null 2>&1 || true
+    stop_user_copies
+    systemctl --user restart privatae-bastion || return 1
+    user_unit_stays_up || return 1
+    if loginctl enable-linger "$(id -un)" >/dev/null 2>&1; then
+      echo "The bastion runs as your systemd user service privatae-bastion, and starts at boot."
+    else
+      echo "The bastion runs as your systemd user service privatae-bastion while you are signed in."
+      echo "To keep it running at boot and after you sign out:  sudo loginctl enable-linger $(id -un)"
+    fi
+    return 0
+  fi
+  if [ "$sb_root" != 1 ] && [ "$sb_os" = darwin ]; then
+    # A LaunchAgent: yours, no root, started each time you log in.
+    sb_plist="$HOME/Library/LaunchAgents/ai.privatae.bastion.user.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    cat > "$sb_plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.privatae.bastion.user</string>
+  <key>ProgramArguments</key><array><string>$sb_bin</string><string>run</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+PLIST
+    /bin/launchctl bootout "gui/$(id -u)/ai.privatae.bastion.user" >/dev/null 2>&1 || true
+    /bin/launchctl bootstrap "gui/$(id -u)" "$sb_plist" || return 1
+    echo "The bastion runs as your LaunchAgent ai.privatae.bastion.user, and starts each time you log in."
+    return 0
+  fi
+  # No service manager this script can use: run it now, detached, once every
+  # other copy of it has stopped (stop_user_copies says why).
+  if [ "$sb_os" = linux ] && [ "$sb_root" != 1 ]; then stop_user_copies; fi
+  nohup "$sb_bin" run >/dev/null 2>&1 &
+  sb_pid=$!
+  sleep 3
+  if [ "$sb_os" = linux ] && ! bastion_copy "$sb_pid"; then
+    echo "The bastion stopped as soon as it started. Run it in a terminal to see why:  $sb_bin run" >&2
+    return 1
+  fi
+  echo "The bastion is running, until this machine restarts. Start it again with:  $sb_bin run"
+}
+
+# pair_and_start BIN CODE ROOT OS: pair with CODE, handed to `pair -` on
+# standard input and never as an argument, where the process list would show
+# it. Then start the bastion and show its status. `pair` exits 3 when this
+# machine is already paired with that Host, which is success here too.
+pair_and_start() {
+  ps_bin=$1; ps_code=$2; ps_root=$3; ps_os=$4
+  ps_rc=0
+  printf '%s\n' "$ps_code" | pair_as "$ps_root" "$ps_os" "$ps_bin" pair - || ps_rc=$?
+  case "$ps_rc" in
+    0) ps_done="This machine is paired." ;;
+    3) ps_done="This machine was already paired with this Host; nothing changed there." ;;
+    *) echo "ERROR: pairing did not finish (the reason is above). The bastion is installed; nothing else changed." >&2
+       return 1 ;;
+  esac
+  ps_how=$(start_bastion "$ps_bin" "$ps_root" "$ps_os") || {
+    echo "ERROR: $ps_done But the bastion did not start. Start it with:  $ps_bin run" >&2
+    return 1
+  }
+  sleep 2
+  pair_as "$ps_root" "$ps_os" "$ps_bin" status || true
+  echo ""
+  echo "$ps_done $ps_how"
 }
 
 if [ "$root" = 1 ] && [ "$local" != 1 ]; then
@@ -199,7 +400,9 @@ UNIT
   systemctl enable --now privatae-bastion >/dev/null 2>&1 || true
   echo "Service installed + enabled (it restarts until you pair, then connects automatically)."
   echo ""
-  if [ "$networked" = 1 ]; then
+  if [ -n "$pair_code" ]; then
+    :
+  elif [ "$networked" = 1 ]; then
     echo "Networked bastion. Pair it with YOUR host; the first host paired becomes its anchor:"
     echo "  sudo -H privatae-bastion pair <token>"
     echo "Then enrol your second factor, so you can approve here:"
@@ -224,6 +427,7 @@ elif [ "$darwin_service" = 1 ]; then
   HOME=/var/root "$bin" set-mode networked || die "could not set networked mode"
   "$bin" service install || die "could not register the system service"
   echo ""
+  if [ -z "$pair_code" ]; then
   echo "Networked bastion, running as a system service (launchd, as root)."
   echo "Pair it with YOUR host; the first host paired becomes its anchor:"
   # The full path, not the name on PATH: /usr/local/bin may belong to the
@@ -234,6 +438,7 @@ elif [ "$darwin_service" = 1 ]; then
   echo "  sudo -H '$bin' stepup-enroll"
   echo "Every terminal and write waits for your approval, and every later host for your host's."
   echo "(Already paired before this install? Anchor with: sudo -H '$bin' claim-anchor)"
+  fi
 elif [ "$networked" = 1 ]; then
   die "--networked needs a system service manager: systemd on Linux, launchd on macOS"
 else
@@ -243,7 +448,13 @@ else
     echo "This machine is already paired as a LOCAL bastion, and reinstalling keeps it local."
     echo "To make it a networked server instead, run the installer again with --networked."
   fi
+  if [ -z "$pair_code" ]; then
   echo "Now pair:   privatae-bastion pair <token>"
   echo "Run it:     privatae-bastion run    (Linux non-root: 'loginctl enable-linger \$USER' + a --user unit for boot persistence)"
+  fi
+fi
+if [ -n "$pair_code" ]; then
+  echo ""
+  pair_and_start "$bin" "$pair_code" "$root" "$os" || exit 1
 fi
 echo "privatae-bastion is free software under the GNU GPL v3 or later: https://privatae.ai/bastion/LICENSE.txt"

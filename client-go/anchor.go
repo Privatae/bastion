@@ -574,9 +574,10 @@ var allCaps = []string{"dcn", "egress", "harness", "inference", "models", "obser
 // writes a pairing PENDING when an anchor exists (pair.go), and state "" reads
 // active (config.go), so B comes straight up with full lanes.
 //
-// LOCAL is exempt and must stay so: a local bastion serves one host and cannot
-// be anchored at all (cmdClaimAnchor refuses outside networked mode), so the
-// pairing IS the authorization there. Most bastions are local.
+// LOCAL is exempt and must stay so: a local bastion serves the one host it was
+// paired with, and a second only on a yes typed at the machine (pair_terminal.go),
+// and it cannot be anchored at all (cmdClaimAnchor refuses outside networked
+// mode), so the pairing IS the authorization there. Most bastions are local.
 //
 // self-update is deliberately INSIDE the refusal. Directing a binary swap is the
 // most dangerous thing on the list, and an unanchored networked box cannot say
@@ -1033,7 +1034,7 @@ func cmdClaimAnchor(token string, rotate bool, owner, host string) error {
 		return err
 	}
 	if boxMode() != modeNetworked {
-		return fmt.Errorf("claim-anchor needs networked mode — a local bastion serves one host and needs no anchor (%s, then `privatae-bastion set-mode networked`)", adminHowTo())
+		return fmt.Errorf("claim-anchor needs networked mode — a local bastion serves only the Hosts its person said yes to and needs no anchor (%s, then `privatae-bastion set-mode networked`)", adminHowTo())
 	}
 	cfgs, err := loadPairings()
 	if err != nil {

@@ -49,6 +49,11 @@ privatae-bastion run
 A Windows server installs from an Administrator PowerShell with `-Networked`.
 See [Install](#install).
 
+A Cloud Host's **Set up a bastion** card gives one line that installs the
+bastion, pairs it and starts it, so it runs now and after a restart:
+`curl -fsSL https://privatae.ai/bastion/install.sh | PRIVATAE_PAIR_CODE='skp_…' sh`, or
+on Windows `& ([scriptblock]::Create((irm https://privatae.ai/bastion/install.ps1))) -Pair 'skp_…'`.
+
 **AI readers and reviewers:** [docs/README.md](docs/README.md) lists every reference page, one line each, and [docs/claims.md](docs/claims.md) is the full table of security claims and the test behind each.
 
 **Contents:** [Why a bastion](#why-a-bastion) · [Install](#install) ·
@@ -106,7 +111,8 @@ privatae-bastion stepup-enroll
 ```
 
 **On your own computer** (run the installer as yourself). The bastion runs
-as your user in **local** mode and serves one host. The pairing's
+as your user in **local** mode and serves the host you pair it with, and
+another only when you answer yes on this computer. The pairing's
 capabilities are the authorization, and approvals work once you enrol a
 second factor.
 
@@ -166,7 +172,7 @@ share on the host with your code.
 | Runs as | your user is fine | the system's service: root under systemd or launchd, LocalSystem on Windows |
 | A terminal the host opens | opens on the pairing's capabilities | waits for your approval, for that one session |
 | A write (an op, a ship step) | runs on the pairing's capabilities | waits for your approval, bound to that op and its arguments |
-| Second pairing | refused | waits for the **anchor** host's approval |
+| Second pairing | asked on this computer's terminal, added only on a yes | waits for the **anchor** host's approval |
 | The anchor | none | the first host paired, or `claim-anchor` |
 
 In networked mode one host is the **anchor**: the one host that approves every

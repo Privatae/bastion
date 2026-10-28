@@ -163,10 +163,12 @@ type redeemResp struct {
 // mode rule, and the anchoring rule. Returns the existing pairing on a
 // --replace and the state the new pairing file must carry.
 //
-//   - LOCAL mode (mode.go): one host, full stop. A second `pair` is refused with
-//     a plain message; only --replace of the one host is allowed. This is the
-//     entire protection for a single-user machine — a second host appearing
-//     means someone else got a token onto the box.
+//   - LOCAL mode (mode.go): one host unless the person says otherwise. A
+//     second `pair` is refused here with localSecondHostError; `pair` itself
+//     turns that into a question asked on this machine's terminal
+//     (pair_terminal.go), and every other caller keeps the refusal. On a
+//     single-user machine a second host appearing unasked means someone else
+//     got a token onto the box, so only a yes typed here adds one.
 //   - NETWORKED + anchored (anchor.go): every pairing after the anchor is written
 //     PENDING. It gets nothing until the anchor host's grant arrives.
 //   - --replace keeps the pairing's current state: rotating credentials is not
@@ -191,11 +193,14 @@ func pairPrecheck(cfgs []*Config, handle string, replace, forceActive bool) (exi
 		return existing, existing.State, nil
 	}
 	if boxMode() == modeLocal && len(cfgs) > 0 {
-		return nil, "", fmt.Errorf("this bastion is in local mode and already serves %s — a local bastion serves one host. "+
-			"To rotate that host's credentials: `privatae-bastion pair --replace <token>`. "+
-			"To serve several hosts, reinstall as a networked bastion (install.sh --networked, root) and anchor it",
-			cfgs[0].HostName)
+		return nil, "", &localSecondHostError{serving: cfgs[0].HostName}
 	}
+	return pairPrecheckState(forceActive)
+}
+
+// pairPrecheckState is the state a new pairing gets once pairPrecheck's walls
+// are passed: active for claim-anchor, pending behind an anchor, else "".
+func pairPrecheckState(forceActive bool) (*Config, string, error) {
 	if forceActive {
 		return nil, pairingActive, nil
 	}
@@ -205,8 +210,73 @@ func pairPrecheck(cfgs []*Config, handle string, replace, forceActive bool) (exi
 	return nil, "", nil
 }
 
+// localSecondHostError is pairPrecheck's refusal on a local machine that
+// already serves a host. cmdPair asks the person instead (confirmAddHost).
+type localSecondHostError struct{ serving string }
+
+func (e *localSecondHostError) Error() string { return localOneHostRefusal(e.serving) }
+
+// localOneHostRefusal says why a second host was not added to a local
+// bastion and what the person can do, in this system's own words. A networked
+// reinstall starts a bastion with its own state, so it says plainly that the
+// host already here would have to be paired again.
+func localOneHostRefusal(serving string) string {
+	networked := "reinstall it as root with install.sh --networked"
+	if runtime.GOOS == "windows" {
+		networked = "reinstall it from an Administrator PowerShell with install.ps1 -Networked"
+	}
+	return fmt.Sprintf("this bastion is in local mode and already serves %s, and it adds another Host only when you "+
+		"answer yes at this computer's terminal. To rotate %s's credentials instead: `privatae-bastion pair --replace <token>`. "+
+		"A machine that other people's Hosts pair to is a networked bastion: %s. That makes a new bastion with "+
+		"state of its own, so %s has to be paired with it again.", serving, serving, networked, serving)
+}
+
+// alreadyPairedError: the host a pair names is already paired here, and
+// nothing was changed. `pair` exits pairExitAlreadyPaired on it, so an
+// installer can tell "already connected" from a failure.
+type alreadyPairedError struct{ host, msg string }
+
+func (e *alreadyPairedError) Error() string { return e.msg }
+
+// pairExitAlreadyPaired is `pair`'s exit status for alreadyPairedError.
+const pairExitAlreadyPaired = 3
+
+// sameNameOtherHost refuses, as a plain failure and never as
+// alreadyPairedError, a pair whose Host has the name of prev but trusts
+// another CA (wantCA, its fingerprint). A Cloud Host's name can repeat; its CA
+// cannot, so that is another Host and never "already connected". nil when
+// prev is nil or holds that same CA.
+func sameNameOtherHost(prev *Config, wantCA string) error {
+	if prev == nil || caSHA256(prev.CACert) == wantCA {
+		return nil
+	}
+	return fmt.Errorf("this computer already serves a different Host named %s (its certificate is not this one's), "+
+		"and one bastion cannot serve two Hosts of the same name yet; nothing was paired", prev.HostName)
+}
+
+func alreadyPairedRefusal(host string) error {
+	return &alreadyPairedError{host: host, msg: fmt.Sprintf("already paired with %s — run `privatae-bastion pair --replace <token>` to rotate its credentials", host)}
+}
+
+// pairOpts are what `pair` brings beyond the token: where to redeem, the
+// Host CA as a file or as a pairing code's fingerprint, and the person to ask
+// before a local machine adds a second host (nil: refuse, as every caller but
+// `pair` does).
+type pairOpts struct {
+	redeemURL   string
+	hostCAFile  string
+	caSHA256    string
+	replace     bool
+	forceActive bool
+	askSecond   func(serving, newHost string) (bool, error)
+}
+
 func cmdPair(token, redeemURL, hostCAFile string, replace bool) error {
-	cfg, all, err := pairWithTokenVia(token, redeemURL, hostCAFile, replace, false)
+	token, opts, err := pairOptsFor(token, redeemURL, hostCAFile, replace)
+	if err != nil {
+		return err
+	}
+	cfg, all, err := pairWith(token, opts)
 	if err != nil {
 		return err
 	}
@@ -234,6 +304,26 @@ func cmdPair(token, redeemURL, hostCAFile string, replace bool) error {
 	}
 	pairReport(os.Stdout, cfg, all, anchored)
 	return nil
+}
+
+// pairOptsFor is what `pair`'s arguments come to: the token to redeem and
+// the options for it, the person at this machine to ask about a second host
+// among them. A pairing code (pair_code.go) carries the redeem address and the
+// Host CA's fingerprint itself, so it takes neither flag.
+func pairOptsFor(token, redeemURL, hostCAFile string, replace bool) (string, pairOpts, error) {
+	opts := pairOpts{redeemURL: redeemURL, hostCAFile: hostCAFile, replace: replace, askSecond: confirmAddHost}
+	if !isPairCode(token) {
+		return token, opts, nil
+	}
+	if redeemURL != "" || hostCAFile != "" {
+		return "", opts, errors.New("a pairing code (skp_…) carries its own address and certificate; give it alone, without --redeem-url or --host-ca")
+	}
+	pc, err := decodePairCode(token)
+	if err != nil {
+		return "", opts, err
+	}
+	opts.redeemURL, opts.caSHA256 = pc.RedeemURL, pc.CASHA256
+	return pc.Token, opts, nil
 }
 
 // pairReport is what `pair` prints once the pairing stands. Whatever the form
@@ -338,6 +428,14 @@ func pairWithTokenAt(token, redeemURL string, replace, forceActive bool) (*Confi
 // redeem URL needs (pair_tcp.go): the Host's enroll port, trusted through
 // that CA alone. A unix:// or platform redeem takes no --host-ca.
 func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive bool) (*Config, []*Config, error) {
+	return pairWith(token, pairOpts{redeemURL: redeemURL, hostCAFile: hostCAFile, replace: replace, forceActive: forceActive})
+}
+
+// pairWith is every pairing's one path. opts.caSHA256 set (a pairing code)
+// takes the Host CA from the enroll port once the walls below are passed,
+// kept only under that fingerprint (fetchPinnedHostCA).
+func pairWith(token string, opts pairOpts) (*Config, []*Config, error) {
+	redeemURL, hostCAFile, replace, forceActive := opts.redeemURL, opts.hostCAFile, opts.replace, opts.forceActive
 	// ONE BASTION PER MACHINE, and this is the check that matters most.
 	//
 	// It is FIRST on purpose. loadPairings below reaches pairingsDir -> MkdirAll,
@@ -367,11 +465,16 @@ func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive 
 		if err != nil {
 			return nil, nil, err
 		}
-		if hostCAFile == "" {
+		switch {
+		case opts.caSHA256 != "":
+			// A pairing code: the CA comes from the enroll port after the
+			// walls, under the code's fingerprint.
+		case hostCAFile == "":
 			return nil, nil, errors.New("--redeem-url https://… needs --host-ca <the Host's CA, PEM>: it is the only certificate the redeem trusts")
-		}
-		if hostCA, err = loadHostCA(hostCAFile); err != nil {
-			return nil, nil, err
+		default:
+			if hostCA, err = loadHostCA(hostCAFile); err != nil {
+				return nil, nil, err
+			}
 		}
 		tcpRedeem, transport = u, transportTCP
 	default:
@@ -397,11 +500,40 @@ func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive 
 		return nil, nil, err
 	}
 	existing, state, err := pairPrecheck(cfgs, handle, replace, forceActive)
+	var second *localSecondHostError
+	if errors.As(err, &second) && opts.askSecond != nil {
+		yes, aerr := opts.askSecond(second.serving, handle)
+		if aerr != nil {
+			return nil, nil, aerr
+		}
+		if !yes {
+			return nil, nil, fmt.Errorf("nothing was paired: %s stays the only Host this computer serves", second.serving)
+		}
+		existing, state, err = pairPrecheckState(forceActive)
+	}
+	// The CA this pair trusts, as a fingerprint: the pairing code's, or that
+	// of the --host-ca file. "" for a platform or unix-socket pairing, whose
+	// CA comes back in the answer.
+	wantCA := opts.caSHA256
+	if wantCA == "" && hostCA != "" {
+		wantCA = caSHA256(hostCA)
+	}
+	var already *alreadyPairedError
+	if errors.As(err, &already) && wantCA != "" {
+		if refusal := sameNameOtherHost(pairingFor(cfgs, handle), wantCA); refusal != nil {
+			return nil, nil, refusal
+		}
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := replaceKeepsTransport(existing, transport); err != nil {
 		return nil, nil, err
+	}
+	if tcpRedeem != nil && hostCA == "" {
+		if hostCA, err = fetchPinnedHostCA(tcpRedeem, opts.caSHA256); err != nil {
+			return nil, nil, err
+		}
 	}
 	if tcpRedeem != nil {
 		if err := tcpPinRefusal(existing, hostCA); err != nil {
@@ -438,7 +570,7 @@ func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive 
 		if prev := pairingFor(cfgs, rr.hostName()); prev != nil && validHostName(rr.hostName()) {
 			existing = prev
 			if !replace {
-				return nil, nil, fmt.Errorf("already paired with %s — run `privatae-bastion pair --replace <token>` to rotate its credentials", prev.HostName)
+				return nil, nil, alreadyPairedRefusal(prev.HostName)
 			}
 			if err := replaceKeepsTransport(existing, transportUnix); err != nil {
 				return nil, nil, err
@@ -463,7 +595,10 @@ func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive 
 		if prev := pairingFor(cfgs, rr.hostName()); prev != nil && validHostName(rr.hostName()) {
 			existing = prev
 			if !replace {
-				return nil, nil, fmt.Errorf("already paired with %s — run `privatae-bastion pair --replace <token>` to rotate its credentials", prev.HostName)
+				if refusal := sameNameOtherHost(prev, caSHA256(hostCA)); refusal != nil {
+					return nil, nil, refusal
+				}
+				return nil, nil, alreadyPairedRefusal(prev.HostName)
 			}
 			if err := replaceKeepsTransport(existing, transportTCP); err != nil {
 				return nil, nil, err
@@ -531,7 +666,7 @@ func pairWithTokenVia(token, redeemURL, hostCAFile string, replace, forceActive 
 	if prev := pairingFor(cfgs, rr.HostName); prev != nil {
 		existing = prev
 		if !replace {
-			return nil, nil, fmt.Errorf("already paired with %s — run `privatae-bastion pair --replace <token>` to rotate its credentials", prev.HostName)
+			return nil, nil, alreadyPairedRefusal(prev.HostName)
 		}
 	}
 	opSecret, err := genSecret(24)

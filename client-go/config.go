@@ -615,7 +615,7 @@ func removeStalePairingFile(hostName string) error {
 func checkPairConflict(cfgs []*Config, handle string, replace bool) (*Config, error) {
 	existing := pairingFor(cfgs, handle)
 	if existing != nil && !replace {
-		return nil, fmt.Errorf("already paired with %s — this daemon serves multiple hosts, so pairing never overwrites; to rotate that host's credentials run `privatae-bastion pair --replace <token>`", existing.HostName)
+		return nil, &alreadyPairedError{host: existing.HostName, msg: fmt.Sprintf("already paired with %s — this daemon serves multiple hosts, so pairing never overwrites; to rotate that host's credentials run `privatae-bastion pair --replace <token>`", existing.HostName)}
 	}
 	if existing == nil && replace {
 		return nil, fmt.Errorf("pair --replace: no existing pairing matches '%s' — pair it normally first", handle)

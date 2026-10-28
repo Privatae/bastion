@@ -37,6 +37,13 @@ Usage:
                                that CA alone (name host.cseries.internal), the lanes go to
                                the lane port the Host names, and the CA is pinned for life.
                                No coder runs over this pairing
+  privatae-bastion pair <pairing code skp_…>
+                               the same pairing from the one code a Cloud Host's card gives:
+                               it carries the enroll address and the CA's fingerprint, and
+                               the CA is taken from the enroll port only under that
+                               fingerprint. On a local machine that already serves a Host,
+                               it asks here whether to add this one as well. Exit 3: already
+                               paired with this Host, nothing changed
   privatae-bastion run            bring up the tunnel + lanes for EVERY paired host
                                (a loopback control port per host for the verbs below:
                                127.0.0.1:7878, then 7879, …)
@@ -188,7 +195,9 @@ func takeHostFlag(args []string) (string, []string) {
 }
 
 const pairUsage = "usage: privatae-bastion pair [--replace] [--redeem-url unix:///<socket> | --redeem-url https://<host>:<port>/<path> --host-ca <pem file>] <token> | -\n" +
-	"  - reads the token from standard input, so it stays out of the process list and shell history"
+	"       privatae-bastion pair <pairing code skp_…> | -\n" +
+	"  - reads the token or pairing code from standard input, so it stays out of the process list and shell history\n" +
+	"  exit status: 0 paired, 3 already paired with this Host (nothing changed), anything else a failure"
 
 // parsePairArgs reads `pair`'s flags in any order: --replace, --redeem-url
 // for a Host with no platform (pair_unix.go, pair_tcp.go) and --host-ca for
@@ -258,6 +267,15 @@ func main() {
 			os.Exit(2)
 		}
 		err = cmdPair(token, redeemURL, hostCA, replace)
+		// Already paired with this Host, nothing changed: its own exit status,
+		// so the installers (install.ps1 -Pair, install.sh with
+		// PRIVATAE_PAIR_CODE) report "already connected".
+		var already *alreadyPairedError
+		if errors.As(err, &already) {
+			auditFlush(auditFlushOnExit)
+			fmt.Fprintln(os.Stderr, already)
+			os.Exit(pairExitAlreadyPaired)
+		}
 	case "run":
 		err = cmdRun()
 	case "observe:baseline":

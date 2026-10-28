@@ -88,11 +88,13 @@ func setBoxMode(mode string) error {
 		}
 	}
 	if mode == modeLocal {
-		// Going back to local must not strand hosts: a local box serves ONE host,
-		// so with several pairings the box would be lying about its own rule.
+		// Going back to local must not strand hosts: a local box serves a second
+		// host only on a yes typed at this machine (pair_terminal.go), and these
+		// were paired under the networked rules, so with several pairings the box
+		// would serve hosts nobody here said yes to.
 		cfgs, err := loadPairings()
 		if err == nil && len(cfgs) > 1 {
-			return fmt.Errorf("cannot switch to local mode: %d hosts are paired and a local bastion serves one — remove the others first", len(cfgs))
+			return fmt.Errorf("cannot switch to local mode: %d hosts are paired, and a local bastion adds a second host only on a yes typed at this machine — remove the others first, then pair them again here", len(cfgs))
 		}
 		if currentAnchor() != nil {
 			return errors.New("cannot switch to local mode: this box is anchored (anchor.json) — anchoring is a networked-mode concept")

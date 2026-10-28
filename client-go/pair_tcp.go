@@ -149,11 +149,19 @@ func redeemOverTCP(u *url.URL, caPEM string, body []byte) (tcpRedeemResp, error)
 	if err != nil {
 		return rr, fmt.Errorf("--host-ca: %w", err)
 	}
+	// The dial is dialEnrollPort's: an enroll port that does not answer in
+	// pairAnswerTimeout gets the pairing window's plain message, not a wait
+	// for the system's connect timeout.
 	httpc := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{
 		Proxy: nil, TLSClientConfig: tc, ForceAttemptHTTP2: false,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) { return dialEnrollPort(ctx, u) },
 	}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := httpc.Post(u.String(), "application/json", bytes.NewReader(body))
 	if err != nil {
+		var we *pairWindowError
+		if errors.As(err, &we) {
+			return rr, we
+		}
 		return rr, fmt.Errorf("redeem: %w", err)
 	}
 	defer resp.Body.Close()

@@ -36,7 +36,12 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
+
+// installShStandInRun is the argument that makes this test binary stand in
+// for a running bastion (TestMain).
+const installShStandInRun = "install-sh-stand-in-run"
 
 func TestMain(m *testing.M) {
 	// The op sandbox re-execs its own binary (ops_exec_linux.go); under
@@ -61,6 +66,13 @@ func TestMain(m *testing.M) {
 	// connects (rootexec_watch_linux_test.go).
 	if len(os.Args) >= 3 && os.Args[1] == rootExecConnectSubcommand {
 		os.Exit(rootExecConnectMain(os.Args[2:]))
+	}
+	// install_sh_test.go runs a copy of this binary named privatae-bastion as
+	// a bastion left running outside its service: it only waits to be
+	// stopped, and never starts the suite.
+	if len(os.Args) >= 2 && os.Args[1] == installShStandInRun {
+		time.Sleep(2 * time.Minute)
+		os.Exit(0)
 	}
 	// Likewise when git runs this binary as the bastion's credential helper
 	// (claims_git_test.go): answer as the helper, with the config dir the

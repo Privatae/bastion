@@ -888,7 +888,7 @@ func (s *uiSetup) anchorChoose(w http.ResponseWriter, r *http.Request) {
 			Class:   "bad",
 			Command: setModeCommandHint(),
 			How:     adminHowTo() + ", then claim the anchor.",
-			Why: "This machine is in local mode, where it serves one host and needs no anchor. " +
+			Why: "This machine is in local mode, where it serves only the Hosts you said yes to here and needs no anchor. " +
 				"An anchor only means something on a networked bastion.",
 		})
 		return

@@ -23,6 +23,76 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.57.0
+
+- **Pairing with a Cloud Host is one pasted line.** A Host's "Set up a
+  bastion" card now gives a pairing code, `skp_…`, that carries the token,
+  the Host's enroll address and the SHA-256 of the Host's CA. `pair <code>`
+  (or the code on standard input after `pair -`) takes the CA from the enroll
+  port's own TLS chain, keeps it only under that fingerprint and only when the
+  port's certificate verifies under it for `host.cseries.internal`, then pairs
+  exactly as `--redeem-url` with `--host-ca` does. There is no certificate
+  file to save, so the step people skipped ("open host-ca.pem: The system
+  cannot find the file specified") is gone. `--host-ca` still works as before.
+- **The installers pair and start in one go.** `install.sh` with
+  `PRIVATAE_PAIR_CODE='<code>'` in its environment (the card's line is
+  `curl -fsSL https://privatae.ai/bastion/install.sh | PRIVATAE_PAIR_CODE='skp_…' sh`)
+  and `install.ps1 -Pair '<code>'` install or update the bastion as before,
+  hand the code to `pair -` on standard input, then start the bastion, or restart it when it
+  was running, and end with one plain sentence and `status`. On Windows that
+  is the logon task (every running copy is stopped first, so the new one gets
+  its control port), or the service on a networked machine; on a machine whose
+  bastion is already the Windows service, `-Pair` pairs that service from an
+  Administrator PowerShell instead of installing a second bastion. On Linux as
+  yourself it is a systemd user unit, with lingering asked for and the outcome
+  said; on macOS a LaunchAgent; as root, the system service. Without the code
+  both installers behave as they did.
+- **The code is in no process's arguments.** On macOS and Linux it comes
+  only from the environment: an argument would sit in the installer shell's
+  command line for the whole install, where any user of the machine can read
+  it with `ps`, and one at the same address could redeem it first. A
+  process's environment is readable only by its owner and root. `install.sh`
+  reads the variable before it starts any program and unsets it, so nothing
+  it starts inherits it. An empty or partial code is refused before the
+  download. `install.sh` now names no argument it refuses, so a code given in
+  the wrong place is never printed back. On Windows the code stays a
+  parameter of the script, inside the person's own PowerShell.
+- **On Linux, as yourself, the copy that serves is the one the installer
+  started.** Before the user unit starts, every copy of your bastion running
+  outside it (left in a terminal, or from another path) is stopped, as
+  install.ps1 does on Windows. Otherwise the unit's copy only waits behind the
+  old one's run lock, and the old copy never reads the new pairing. The
+  installer then checks for a few seconds that the unit is running and keeps
+  the same process. A unit that keeps restarting is reported as not running,
+  with its log command, and the install fails.
+- **A local bastion can serve a second Host, when you say so at the machine.**
+  A local bastion used to serve one Host and refuse any other, so a person
+  with two Hosts of their own (a Cloud machine beside a platform Host) could
+  not pair the second at all. `pair` now asks on this machine's terminal,
+  `/dev/tty` or the Windows console, never standard input, so a code piped
+  in by an installer still needs a person to answer: "This computer already
+  serves your Host … Add … as well? [y/N]". Only y or yes adds it; the first
+  pairing is untouched; with no terminal it is refused. Other callers
+  (`claim-anchor`, the pairing op) keep the refusal. On a local machine that
+  serves two Hosts, each changes only the servers it built and stops only the
+  coder runs it started. The name in the question is the token's, so anything
+  in it but a plain host name is shown quoted and escaped.
+- **`pair` exits 3 when the Host is already paired here.** Nothing changes, and
+  the installers report it as already connected. Over TCP, with a pairing
+  code or `--host-ca`, a Host of the same name under another CA (Cloud names
+  repeat) is a plain refusal, not exit 3, before the redeem and after it. A
+  pairing code that names a field twice is refused.
+- **An enroll port that does not answer says why within 10 seconds.** A Cloud
+  Host opens its pairing port only to the address the browser used when the
+  card was opened, for 15 minutes; from anywhere else the port does not
+  answer, and `pair` used to wait for the system's connect timeout. It now
+  stops after 10 seconds with that reason and what to do.
+- **The local-mode refusal names this system's way to a networked bastion**
+  (`install.ps1 -Networked` from an Administrator PowerShell on Windows,
+  `install.sh --networked` as root elsewhere) and says that the Host already
+  paired would have to be paired again with it. It used to name the Linux
+  script on Windows.
+
 ## 0.56.0
 
 - **New: a Host with no platform can use the model servers on this
