@@ -119,7 +119,13 @@ One pairing holds at most 16 streams, a stream silent both ways for 10 minutes
 is closed, and each one is written to the pairing's audit log. Model
 management for such a pairing (the model list, pulls and removals) reaches
 `OLLAMA_ADDR` under the same rule, and when an address set here is not this
-computer, the bastion's console says which one and what to set.
+computer, the bastion prints a line in its output saying which one and what to
+set. When the bastion runs as the machine's service, its output is its log:
+`journalctl -u privatae-bastion` on Linux, `/var/log/privatae-bastion.log` on
+macOS (readable by root only), and
+`%SystemRoot%\System32\config\systemprofile\AppData\Roaming\privatae-bastion\bastion.log`
+on Windows. When it runs in a terminal (`privatae-bastion run`), the line is
+printed there.
 
 The heartbeat lists what the lane serves in `lane_serves`, and advertises
 `embed`, `llm-openai` and `pii` only for those. It never advertises the

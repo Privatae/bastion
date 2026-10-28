@@ -53,8 +53,8 @@
   same rule: the beat's model-swap probe, `model:list`, `model:pull` with its
   probes, and `model:drop` reach `OLLAMA_ADDR` only when it is this machine,
   at the addresses checked; otherwise each is refused with the reason before
-  anything is dialled or an approval is read, and the machine's console says
-  which address is not used and what to set. A target set by name is dialled
+  anything is dialled or an approval is read, and the bastion prints a line in
+  its output saying which address is not used and what to set. A target set by name is dialled
   at each address it was checked for, in turn, as a plain dial of the name
   is, so `localhost` reaches a server listening on 127.0.0.1 only when the
   name answers `::1` first; no other address is dialled. A tunnel pairing
