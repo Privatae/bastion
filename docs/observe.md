@@ -61,10 +61,51 @@ Read-only, and reported so the host can show **why** rather than a verdict.
   the host. Alert counts also ride the heartbeat, refreshed on their own
   interval, and are absent — not zero — whenever no Alertmanager is
   configured.
+- **Machine questions** (Linux: `observe:folders`, `observe:journal`,
+  `observe:logins`, `observe:cert`). What a host would otherwise ask the
+  person to run a command for, answered here. Each value is checked against
+  its written rule before anything is read or run, and a refusal says which
+  rule it broke.
+  - `observe:folders <absolute path> [depth 1-3, default 2]`: the 25 largest
+    folders under the path, down to the depth, and the total, on the path's
+    own filesystem only, counted as `du -x` counts (disk blocks, a file with
+    several links once). Only folders are named, never files. What could not
+    be read, and filesystems mounted under the path, are listed against the
+    folder that holds them, with a reason and a count. A relative path, one
+    containing `..`, and `/proc`, `/sys` and `/dev` (or a link leading into
+    them) are refused. The walk shares the 20-second op budget; one that runs
+    out answers with what it measured, marked incomplete. It follows no link,
+    and a folder swapped for one while it reads is listed as changed. While
+    four earlier walks are still inside a read that has not returned, no new
+    walk starts.
+  - `observe:journal <unit> [minutes 1-60, default 15]`: one systemd unit's
+    journal over the window, up to 5000 lines and 200 KB, newest kept. A name
+    with no type is a service. The unit must be in systemd's unit-name
+    alphabet and one this machine has, loaded or installed; otherwise it is
+    refused, with the units whose names come close.
+  - `observe:logins [hours 1-168, default 24]`: sshd's failed logins counted
+    and ranked by source address and by user name (20 each), and the last 20
+    accepted logins with user, source, method and time. A user name the other
+    side sent is cut to 32 characters, and anything outside the characters
+    account names use reads `?`. No raw line, key fingerprint or password is
+    returned. Only lines sshd wrote as root are read (`_UID=0`), so another
+    account cannot add login lines or bury the real ones.
+  - `observe:cert <port> [server name]`: the certificate this machine's own
+    TCP listener on the port serves: subject, names, issuer, dates, days left,
+    and whether the chain verifies against this machine's roots for that name.
+    The port must be one `ss` shows listening here.
+
+  `observe:journal` and `observe:logins` first check that the bastion can read
+  the system journal (root, as the networked install runs it, or a member of
+  `systemd-journal`). An account that cannot is shown only its own lines by
+  `journalctl`, which would read as a quiet machine, so they answer with the
+  reason instead, and `observe:logins` reports its counts as -1.
 
 The observe ops that send traffic are `observe:net`, `observe:k8s` (a
-read-only query of a cluster API) and the three monitoring ops above (private
+read-only query of a cluster API), the three monitoring ops above (private
 addresses only, refused at the socket if a redirect or a DNS answer would move
-the destination after validation). A build with no enumerator for its
+the destination after validation) and `observe:cert`, which connects only to
+this machine: loopback first, then an address of this machine the listener is
+bound to. A build with no enumerator for its
 platform **withholds** the capability, so the host can tell a machine that is
 quiet apart from one that is blind.

@@ -995,6 +995,11 @@ func cmdPinDevice(key string, unpin bool) error {
 			return err
 		}
 		fmt.Println("device key unpinned; approvals signed by it are refused from now on")
+		// Every op grant it approved dies with it (ops_bounds.go), dropped
+		// now so pinning the key again does not bring one back.
+		if n := opsDropApprovedBy("device:" + strings.TrimSpace(key)); n > 0 {
+			fmt.Printf("%d op grant(s) it approved dropped\n", n)
+		}
 		return nil
 	}
 	if err := pinDeviceKey(key); err != nil {

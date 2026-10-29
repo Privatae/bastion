@@ -49,7 +49,22 @@ a dry run first, then an apply bound to the change list the dry run showed.
   - UDP is held to the declared addresses but not to their ports, and a port
     declared for one address is open on every declared address;
   - a destination on this machine, a link-local address, or a cloud's
-    metadata service is refused, as written and as resolved.
+    metadata service is refused, as written and as resolved;
+  - on a machine no fleet has anchored (your own machine), so is a private,
+    ULA, CGNAT or reserved address: one written as an address is refused when
+    the op arrives, and a name is refused at apply if any address it resolves
+    to is one. A verb's fetch (`tree.checkout`, and `k8s.set_image`'s
+    ancestry check) is held the same way, its host checked once and git held
+    to that address, which needs git 2.37 or newer; on an anchored machine
+    that fetch is held to its checked address too, and is never this
+    machine, its loopback, a link-local address or a metadata service. An
+    image whose registry is on your network or this machine is never put
+    live: it is refused when a program reports it and when `k8s.set_image`
+    would set it. To reach another computer
+    on your network, install a bastion on that computer and run the op there.
+    An anchored machine keeps private
+    destinations, because a fleet's ship steps reach its private control
+    planes.
 
   **A dry run has no network at all,** because nobody approved it.
 - **Memory: no ceiling, and the op goes first.** A run may use whatever

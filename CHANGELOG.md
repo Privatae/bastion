@@ -23,6 +23,118 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.58.0
+
+- **A Host answers four common questions about a machine itself, instead of
+  handing the person a command to run.** Each is a read-only observe op,
+  granted under `observe` like the rest of the family and listed in the ops
+  the machine advertises, so a grant can name it. Each value is checked
+  against a written rule before anything is read or run, and a refusal says
+  which rule it broke without repeating the value. Off Linux each answers
+  `unsupported`.
+  - `observe:folders <path> [depth]`: the 25 largest folders under an
+    absolute path, 1 to 3 levels down (2 when not given), and the total, on
+    that path's own filesystem only, counted the way `du -x` counts (disk
+    blocks, a file with several links once). Only folders are named, never a
+    file. What could not be read, and filesystems mounted under the path, are
+    listed against the folder that holds them, with a reason and a count.
+    `/proc`, `/sys`, `/dev`, a relative path, a path containing `..` and a
+    link that leads into those are refused. A walk that runs out of the
+    20-second budget answers with what it measured and says every size is at
+    least that. The walk follows no link: a folder swapped for one while it
+    reads, or reached through one put above it, is listed as changed and not
+    counted. A read that never returns (a network mount that stopped
+    answering) is answered without at the budget, and while four such reads
+    are still waiting no new walk starts.
+  - `observe:journal <unit> [minutes]`: one systemd unit's journal for the
+    last 1 to 60 minutes (15 when not given), up to 5000 lines and 200 KB,
+    newest kept. A name with no type is a service, as with `systemctl`. The
+    name must be in systemd's unit-name alphabet and one this machine has,
+    loaded now or installed; otherwise it is refused, with the units whose
+    names come close. Until now a Host could read logs only from a Loki,
+    which most machines do not run, so it asked the person to run
+    `journalctl` instead.
+  - `observe:logins [hours]`: sshd's failed and accepted logins over the last
+    1 to 168 hours (24 when not given). Failed attempts are counted and ranked
+    by source address and by user name, 20 of each; the last 20 accepted
+    logins come with user, source, method and time. A user name the other
+    side sent is cut to 32 characters, and anything outside the characters
+    account names use reads `?`. No raw line, key fingerprint or password is
+    returned. Only lines written by sshd running as root are read, so another
+    account on the machine cannot add login lines or bury the real ones under
+    its own.
+  - `observe:cert <port> [server name]`: the certificate this machine's own
+    listener on a TCP port serves: subject, names, issuer, dates, days left,
+    and whether the chain verifies against this machine's roots for that
+    name. The port must be one `ss` shows listening here. The handshake goes
+    to loopback first and otherwise only to an address of this machine the
+    listener is bound to, never to one another machine could hold.
+- **A journal the bastion cannot read is said, not shown as empty.**
+  `journalctl` run by an account outside the journal's groups shows only that
+  account's own lines, which would look like a quiet machine. `observe:journal`
+  and `observe:logins` first check that the bastion can read the system
+  journal (as root, which is how the networked install runs it, or as a member
+  of `systemd-journal`) and otherwise answer with the reason;
+  `observe:logins` then reports its counts as -1, never 0.
+- **A grant from now on can be held to a window and a rate, by the
+  machine.** An op grant's bounds may now carry `_window` (days, from, to and
+  a zone, read on the machine's own clock; a window may wrap midnight) and
+  `_rate` (at most so many applies in any 24 hours, and so many seconds
+  between two). An apply outside them does not run, spends no use and is no
+  strike toward the quarantine: the answer is `not_now`, exit 75, with the
+  bound that held it and when it next could run. A dry run is never held, and
+  an apply with arguments outside the op is still refused as before. The
+  zone database is in the binary, so a zone reads the same on every machine.
+  An older bastion refuses both keys as naming no param, so a grant carrying
+  them fails closed there; the enforcing report says `grant_run_bounds` on a
+  bastion that holds them.
+- **The machine keeps the runs, and who approved.** Each grant's record in
+  `ops.json` now holds the times of the applies that spent a use, the key
+  that approved it (the approval device's key, or the factor enrolled at this
+  console) and the machine's own seal over the record. The rate is counted
+  from that log, so it holds across a restart. A record edited outside the
+  bastion holds no grant until it is dropped and approved again, and so does
+  a grant installed by an older bastion (none was held when this shipped). A
+  grant whose approving key is no longer pinned is refused; `unpin-device`
+  drops every grant that key approved, so pinning it again brings none back.
+- **`op_grant_drop <grant | all>` takes a grant back from the Host.** It is
+  a tighten: no quarantine holds it and no approval is asked. A grant not
+  held here is already gone and is answered as dropped. At the machine,
+  `ops drop --all` takes back every op grant a Host holds, beside `ops drop
+  <grant>`.
+- **An action op may have no program.** With `interpreter: none` and no
+  `run` file, an action op's verbs are its whole work. Nothing the Host wrote
+  executes, so it needs no sandbox and runs on a machine with no overlay. Its
+  dry run is the verbs' own read of what each would move, and its apply the
+  verbs and the log checks. Such an op that ships a `run` file is refused,
+  as is one that names destinations, a builder, reads, or a credential no
+  verb uses. An op with a program is still refused where the sandbox is not.
+  A verb whose tool the machine lacks refuses the run as the machine's own
+  state, never a strike, and the enforcing report now says, for each verb,
+  whether this machine can run it (`verbs`).
+- **On your own machine, an action op reaches the internet, never your
+  network.** On a machine no fleet has anchored, an action op's destination
+  is never a private, ULA, CGNAT or reserved address (also inside NAT64 or
+  6to4): one written as an address is refused when the op arrives, and a
+  name is refused at apply if any address it resolves to is one. Another
+  computer of yours is reached through a bastion on that computer. An
+  anchored machine keeps private destinations, since a fleet's ship steps
+  reach its own private control planes. A verb's fetch is held the same way
+  (`tree.checkout` fetching its tree's repository, `k8s.set_image` fetching
+  its source to check ancestry): the repository's host is checked once and
+  git is held to that address, so an op with no program reaches no more than
+  one with a program. On an anchored machine too a verb's fetch is held to
+  its checked address and is never this machine, its loopback, a link-local
+  address or a cloud's metadata service. An image `k8s.set_image` would put
+  live, which the machine's container runtime pulls by name, is refused on
+  your own machine when its registry is on your network or this machine,
+  both when a program reports it and when the verb would set it.
+  `k8s.set_image` now says it needs git as well as kubectl, so a machine
+  without git is told before a run. What stops working: a ship step on your
+  own unanchored bastion that deploys to another computer on your LAN,
+  fetches from a forge on it or rolls an image from a registry on it; and a
+  verb's fetch needs git 2.37 or newer, which holds a fetch to one address.
+
 ## 0.57.0
 
 - **Pairing with a Cloud Host is one pasted line.** A Host's "Set up a

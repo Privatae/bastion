@@ -79,6 +79,15 @@ func opRunAction(_ string, _ *opManifest, _ *opTerms, _, _ string, _ []string, _
 	return nil, errors.New(why)
 }
 
+// opVerbsReport: no verb runs on this platform.
+func opVerbsReport() map[string]any {
+	out := map[string]any{}
+	for _, verb := range opVerbNames() {
+		out[verb] = map[string]any{"ok": false, "why": "no op runs on this platform yet"}
+	}
+	return out
+}
+
 func opActionOuterMain(_ string) int { return 125 }
 func opActionChildMain(_ string) int { return 125 }
 func opActionProbeMain(_ string) int { return 125 }

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1696,9 +1697,12 @@ func TestObserveArgsRecordedMatchesTheHandlers(t *testing.T) {
 	}
 	// Arities, from the handlers' own checks (observe_ops.go handleObserveNet
 	// len(args) != 1; observe_pull.go handleObserveMetrics len(args) != 1;
-	// handleObserveLogs len(args) > 2).
+	// handleObserveLogs len(args) > 2; observe_reads.go folders, journal and
+	// cert len(args) > 2, logins len(args) > 1).
 	if observeArgsRecorded["observe:net"] != 1 || observeArgsRecorded["observe:metrics"] != 1 ||
-		observeArgsRecorded["observe:logs"] != 2 {
+		observeArgsRecorded["observe:logs"] != 2 || observeArgsRecorded["observe:folders"] != 2 ||
+		observeArgsRecorded["observe:journal"] != 2 || observeArgsRecorded["observe:logins"] != 1 ||
+		observeArgsRecorded["observe:cert"] != 2 {
 		t.Fatalf("arities drifted from the handlers: %v", observeArgsRecorded)
 	}
 }
@@ -1785,10 +1789,38 @@ func TestRecordedArgCountsMatchWhatTheHandlersAccept(t *testing.T) {
 	// And every ACCEPTED position must hold a value the handler accepts —
 	// observe:logs's second argument is a minutes window, and "x" there is
 	// refused for its shape, which is not an arity refusal either.
+	//
+	// The four in observe_reads.go answer through their drivers on Linux, so
+	// what they read is put in front of them here and nothing on the box that
+	// runs the suite is: one unit this machine "has", one TLS listener ss
+	// "reports", an empty journal, and a folder of the test's own.
+	cert := observeTestCert(t, "box-a.example", []string{"box-a.example"}, nil, time.Now().Add(24*time.Hour))
+	port := strconv.Itoa(observeTLSListener(t, cert))
+	origExec, origHave, origAccess := observeExec, observeHave, observeJournalAccess
+	observeExec = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		switch name + " " + args[0] {
+		case "systemctl list-units":
+			return []byte("example.service loaded active running Example\n"), nil
+		case "ss -tlnpH":
+			return []byte("LISTEN 0 4096 127.0.0.1:" + port + " 0.0.0.0:*\n"), nil
+		}
+		return nil, nil
+	}
+	observeHave = func(string) bool { return true }
+	observeJournalAccess = func() string { return "" }
+	defer func() { observeExec, observeHave, observeJournalAccess = origExec, origHave, origAccess }()
+	folder := "/"
+	if observeHostSupported {
+		folder = t.TempDir()
+	}
 	accepted := map[string][]string{
 		"observe:net":     {"203.0.113.9:443"},
 		"observe:metrics": {"up"},
 		"observe:logs":    {"kernel", "5"},
+		"observe:folders": {folder, "1"},
+		"observe:journal": {"example", "5"},
+		"observe:logins":  {"24"},
+		"observe:cert":    {port, "box-a.example"},
 	}
 	for op, n := range observeArgsRecorded {
 		if len(accepted[op]) != n {
@@ -1828,7 +1860,7 @@ func TestEveryRegisteredOpSanitisesToTheHostsShelfRule(t *testing.T) {
 			t.Fatalf("%s sanitises to %q, which the host rejects as unreadable", op, got)
 		}
 	}
-	if n < 11 {
+	if n < 15 {
 		t.Fatalf("only %d observe ops walked — the registry moved and this test is not covering it", n)
 	}
 }

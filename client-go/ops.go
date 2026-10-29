@@ -9,7 +9,9 @@ package main
 //	          params (a typed schema), effects (the FILES it may touch),
 //	          time_limit, undo
 //	run       the program, run by one of a fixed set of interpreters with a
-//	          fixed argv and the params as JSON on stdin
+//	          fixed argv and the params as JSON on stdin; absent, and refused
+//	          if present, for an action op with interpreter: none, whose verbs
+//	          are its whole work (ops_action.go verbsOnly)
 //	test/     what the host's build ran it against (not read here)
 //
 // Its identity is the sha256 of the directory's canonical form (opDirDigest):
@@ -29,8 +31,11 @@ package main
 //	          one use. Purpose  op_run|server|op|sha256|sha256(params)|expires
 //	op_grant  "From now on": this op, this machine, param BOUNDS, expires ≤
 //	          30 d, a use count; privilege user only — root is never reusable.
-//	          Held in ops.json beside grants.json. Purpose
-//	          op_grant|server|op|sha256|sha256(bounds)|expires|uses
+//	          The bounds may also hold the run to a window and a rate, which
+//	          the machine reads on its own clock and from its own run log
+//	          (ops_bounds.go). Held in ops.json beside grants.json, with the
+//	          key that approved it and this machine's seal over the record.
+//	          Purpose op_grant|server|op|sha256|sha256(bounds)|expires|uses
 //
 // The executor (ops_exec_linux.go) runs the op inside an overlay sandbox and
 // diffs what it changed; a files op has FILE effects only, and an op whose
@@ -97,6 +102,10 @@ var (
 	opParamRe   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	opsMu       sync.Mutex
 )
+
+// opInterpreterNone is an action op with no program: no run file, nothing
+// executed but the bastion's own verbs (ops_action.go verbsOnly).
+const opInterpreterNone = "none"
 
 // opInterpreters is the fixed set. The bastion execs `<interpreter> <run>
 // --mode <mode>`; nothing the host wrote chooses the program that runs.
@@ -184,8 +193,14 @@ func parseOpManifest(raw []byte) (*opManifest, error) {
 	if m.Privilege != "user" && m.Privilege != "root" {
 		return nil, errors.New("op.yaml: privilege must be 'user' or 'root'")
 	}
-	if _, ok := opInterpreters[m.Interpreter]; !ok {
-		return nil, fmt.Errorf("op.yaml: interpreter must be one of %s", strings.Join(opInterpreterNames(), ", "))
+	if m.Interpreter == opInterpreterNone {
+		// No program at all: an action op whose verbs are its whole work
+		// (ops_action.go verbsOnly), judged with the action fields below.
+		if m.Kind != opKindAction {
+			return nil, errors.New("op.yaml: interpreter: none is an action op whose verbs are its whole work (kind: action)")
+		}
+	} else if _, ok := opInterpreters[m.Interpreter]; !ok {
+		return nil, fmt.Errorf("op.yaml: interpreter must be one of %s, or none for an action op that is verbs only", strings.Join(opInterpreterNames(), ", "))
 	}
 	if m.TimeLimit <= 0 || time.Duration(m.TimeLimit)*time.Second > opTimeLimitMax {
 		return nil, fmt.Errorf("op.yaml: time_limit must be 1..%d seconds", int(opTimeLimitMax.Seconds()))
@@ -622,11 +637,21 @@ type opBound struct {
 	Fixed  *bool    `json:"fixed,omitempty"`  // boolean
 }
 
+// parseBounds is the params half of an op_grant's bounds (parseGrantBounds,
+// ops_bounds.go, reads the whole: the params and the run's window and rate).
+func parseBounds(m *opManifest, raw string) (map[string]opBound, error) {
+	b, err := parseGrantBounds(m, raw)
+	if err != nil {
+		return nil, err
+	}
+	return b.Params, nil
+}
+
 // Strict: a field the param's type does not read is refused, not ignored —
 // the card shows the bounds text as sent, so a bound the box would not
 // enforce would read as a limit the person never got. Each bound must sit
 // inside the schema's own.
-func parseBounds(m *opManifest, raw string) (map[string]opBound, error) {
+func parseParamBounds(m *opManifest, raw string) (map[string]opBound, error) {
 	if len(raw) > opParamsMaxBytes {
 		return nil, errors.New("bounds too large")
 	}
@@ -785,7 +810,8 @@ func opDirDigest(files []opFile) (string, error) {
 }
 
 // opBundleOK checks the bundle's shape before anything is written: relative
-// clean paths, no links, op.yaml and run present, bounded size.
+// clean paths, no links, op.yaml present, bounded size. Whether it must carry
+// run is the manifest's to say (opBundleFitsManifest).
 func opBundleOK(files []opFile) error {
 	total := 0
 	have := map[string]bool{}
@@ -810,7 +836,24 @@ func opBundleOK(files []opFile) error {
 		}
 		have[p] = true
 	}
-	if !have["op.yaml"] || !have["run"] {
+	if !have["op.yaml"] {
+		return errors.New("an op bundle needs op.yaml")
+	}
+	return nil
+}
+
+// opBundleFitsManifest: a program op ships its run; an op with no program
+// (interpreter: none) ships none — a run file there would be a program the
+// manifest says is not there.
+func opBundleFitsManifest(files []opFile, m *opManifest) error {
+	hasRun := false
+	for _, f := range files {
+		hasRun = hasRun || f.Path == "run"
+	}
+	if m.verbsOnly() && hasRun {
+		return errors.New("an op with interpreter: none ships no run: its verbs are its whole work")
+	}
+	if !m.verbsOnly() && !hasRun {
 		return errors.New("an op bundle needs op.yaml and run")
 	}
 	return nil
@@ -893,7 +936,14 @@ func opLoad(dcnDir, sha string) (*opManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseOpManifest(raw)
+	m, err := parseOpManifest(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := opBundleFitsManifest(files, m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // ── the terms ───────────────────────────────────────────────────────────────
@@ -1035,6 +1085,15 @@ type opGrantRec struct {
 	InstalledAt    string `json:"installed_at"`
 	UsesLeft       int    `json:"uses_left"`
 	Dropped        string `json:"dropped,omitempty"` // when and why, kept for the record
+	// Runs: when each apply that spent a use began (RFC3339Nano, oldest
+	// first): the rate is counted from it, so it holds across a restart.
+	Runs []string `json:"runs,omitempty"`
+	// Approver: the key that approved the grant — "device:<public key>" or
+	// "console:<factor fingerprint>" (ops_bounds.go). The grant dies with it.
+	Approver string `json:"approver,omitempty"`
+	// MAC: this machine's seal over the record (opGrantRecMAC). A record that
+	// does not check out holds no grant.
+	MAC string `json:"mac,omitempty"`
 }
 
 type opsFile struct {
@@ -1062,36 +1121,42 @@ func opsSave(dcnDir string, f *opsFile) error {
 }
 
 // opsHeldGrant re-verifies a held grant record (a tampered ops.json holds
-// nothing) and returns its terms and uses left.
+// nothing): the terms under the pinned key, the record under this machine's
+// own seal with its run log in order, the approving key still pinned, a use
+// left. Returns the terms, the record and the run times. The caller holds
+// opsMu.
 func opsHeldGrant(dcnDir, nonce string) (*opTerms, *opGrantRec, error) {
+	t, rec, _, err := opsHeldGrantRuns(dcnDir, nonce)
+	return t, rec, err
+}
+
+func opsHeldGrantRuns(dcnDir, nonce string) (*opTerms, *opGrantRec, []time.Time, error) {
 	f := opsLoad(dcnDir)
 	rec, ok := f.Grants[nonce]
 	if !ok || rec.Dropped != "" {
-		return nil, nil, errors.New("no such op grant is held here")
+		return nil, nil, nil, errors.New("no such op grant is held here")
 	}
 	t, err := verifyOpTerms(dcnDir, rec.TermsCanonical, rec.Signature, opKindGrant)
 	if err != nil {
-		return nil, nil, fmt.Errorf("held op grant does not verify: %v", err)
+		return nil, nil, nil, fmt.Errorf("held op grant does not verify: %v", err)
+	}
+	runs, err := opGrantRecCheck(nonce, &rec, t, opNow())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if !opApproverLive(dcnDir, rec.Approver) {
+		return nil, nil, nil, fmt.Errorf("the key that approved this grant (%s) is no longer pinned on this machine; the grant is dead", opApproverWords(rec.Approver))
 	}
 	if rec.UsesLeft <= 0 {
-		return nil, nil, errors.New("op grant has no uses left")
+		return nil, nil, nil, errors.New("op grant has no uses left")
 	}
-	return t, &rec, nil
+	return t, &rec, runs, nil
 }
 
 // opsDropGrant — the console (or a host revoke) removes a held op grant.
 func opsDropGrant(dcnDir, nonce, why string) (bool, error) {
-	opsMu.Lock()
-	defer opsMu.Unlock()
-	f := opsLoad(dcnDir)
-	rec, ok := f.Grants[nonce]
-	if !ok || rec.Dropped != "" {
-		return false, nil
-	}
-	rec.Dropped = time.Now().UTC().Format(time.RFC3339) + " " + why
-	rec.UsesLeft = 0
-	f.Grants[nonce] = rec
-	return true, opsSave(dcnDir, f)
+	d, err := opsDropWhere(dcnDir, why, func(n string, _ *opGrantRec) bool { return n == nonce })
+	return len(d) > 0, err
 }
 
 // ── the run record ──────────────────────────────────────────────────────────
@@ -1166,6 +1231,17 @@ func opFail(ws *websocket.Conn, why string) {
 
 const noSandboxHere = "this machine cannot sandbox an op"
 
+// noVerbToolHere is the refusal of a verb whose tool this machine lacks: the
+// machine's own state, never a strike (quarantine.go refusalCounts).
+const noVerbToolHere = "this machine cannot run the verb"
+
+// Seams, so the tests can stand in for a machine with no overlay, or no
+// action sandbox.
+var (
+	opSandboxCheck = opSandboxAvailable
+	opActionCheck  = opActionAvailable
+)
+
 // op_sync <terms_b64> <sig_b64> <bundle_b64>: hold the op the terms name,
 // once the bundle hashes to it and its manifest parses. For op_grant terms
 // the grant is installed too (its approval consumed, like a store grant).
@@ -1224,6 +1300,10 @@ func handleOpSync(ws *websocket.Conn, dir string, args []string) {
 		opFail(ws, "op_sync refused: the manifest and the terms disagree on name, version or privilege")
 		return
 	}
+	if err := opBundleFitsManifest(files, m); err != nil {
+		opFail(ws, "op_sync refused: "+err.Error())
+		return
+	}
 	if entries, err := os.ReadDir(opsDir(dir)); err == nil && len(entries) > opsMaxHeldOps {
 		opFail(ws, fmt.Sprintf("op_sync refused: this box holds %d ops already; drop some", opsMaxHeldOps))
 		return
@@ -1237,7 +1317,7 @@ func handleOpSync(ws *websocket.Conn, dir string, args []string) {
 	}
 	out := map[string]any{"state": "held", "op": t.Op, "sha256": sha, "kind": t.Kind}
 	if t.Kind == opKindGrant {
-		if _, err := parseBounds(m, t.Bounds); err != nil {
+		if _, err := parseGrantBounds(m, t.Bounds); err != nil {
 			opFail(ws, "op_sync refused: "+err.Error())
 			return
 		}
@@ -1251,14 +1331,22 @@ func handleOpSync(ws *websocket.Conn, dir string, args []string) {
 		if prev, held := f.Grants[t.Nonce]; !held || prev.Dropped != "" {
 			// THE PERSON'S APPROVAL, spent here: one approval installs the
 			// grant once; a dropped grant cannot be re-installed under it.
-			id, err := consumeApproval(dir, t.Approval, purpose)
+			// The key that gave it is kept with the grant, which dies with
+			// that key (ops_bounds.go).
+			id, approver, err := consumeApprovalKeyed(dir, t.Approval, purpose)
 			if err != nil {
 				opsMu.Unlock()
 				opFail(ws, "op_grant refused: "+err.Error())
 				return
 			}
-			f.Grants[t.Nonce] = opGrantRec{TermsCanonical: args[0], Signature: args[1],
-				InstalledAt: time.Now().UTC().Format(time.RFC3339), UsesLeft: t.Uses}
+			rec := opGrantRec{TermsCanonical: args[0], Signature: args[1],
+				InstalledAt: opNow().UTC().Format(time.RFC3339), UsesLeft: t.Uses, Approver: approver}
+			if err := opGrantRecSeal(t.Nonce, &rec); err != nil {
+				opsMu.Unlock()
+				opFail(ws, "op_grant: could not hold the grant: "+err.Error())
+				return
+			}
+			f.Grants[t.Nonce] = rec
 			if err := opsSave(dir, f); err != nil {
 				opsMu.Unlock()
 				opFail(ws, "op_grant: could not hold the grant: "+err.Error())
@@ -1359,9 +1447,15 @@ func handleOpApply(ws *websocket.Conn, dir string, args []string) {
 	sendMgmtExit(ws, 0)
 }
 
+// opGrantExec runs the terms of one run under a grant (a seam, so the tests
+// can stand in for the sandbox and judge the gate alone).
+var opGrantExec = opRunTerms
+
 // op_grant_run <grant nonce> <mode> <params_json>: a run under a held grant —
 // dry_run or apply — with the params checked against the schema AND the
-// approved bounds; an apply spends one use.
+// approved bounds; an apply spends one use. An apply outside the grant's
+// window or rate is NOT NOW (ops_bounds.go): nothing runs, nothing is spent,
+// no strike. Identity and arguments are judged first and stay refusals.
 func handleOpGrantRun(ws *websocket.Conn, dir string, args []string) {
 	if dir == "" || len(args) < 3 {
 		opFail(ws, "op_grant_run: need <grant> <dry_run|apply> <params_json>")
@@ -1393,12 +1487,12 @@ func handleOpGrantRun(ws *websocket.Conn, dir string, args []string) {
 		opFail(ws, "op_grant_run refused: "+err.Error())
 		return
 	}
-	bounds, err := parseBounds(m, t.Bounds)
+	bounds, err := parseGrantBounds(m, t.Bounds)
 	if err != nil {
 		opFail(ws, "op_grant_run refused: "+err.Error())
 		return
 	}
-	if err := checkBounds(m, bounds, vals); err != nil {
+	if err := checkBounds(m, bounds.Params, vals); err != nil {
 		opFail(ws, "op_grant_run refused: "+err.Error())
 		return
 	}
@@ -1413,16 +1507,31 @@ func handleOpGrantRun(ws *websocket.Conn, dir string, args []string) {
 		return
 	}
 	if mode == opModeApply {
-		// Spend the use BEFORE the run (the same order the approval takes).
+		// Spend the use BEFORE the run (the same order the approval takes),
+		// and log the run with it, in one write — after the window and the
+		// rate, read from that same record, say it may run now.
 		opsMu.Lock()
-		f := opsLoad(dir)
-		r := f.Grants[t.Nonce]
-		if r.UsesLeft <= 0 || r.Dropped != "" {
+		_, _, runs, err := opsHeldGrantRuns(dir, t.Nonce)
+		if err != nil {
 			opsMu.Unlock()
-			opFail(ws, "op_grant_run refused: op grant has no uses left")
+			opFail(ws, "op_grant_run refused: "+err.Error())
 			return
 		}
+		now := opNow()
+		if why, bound, next := opNotNowWhy(bounds, runs, now); why != "" {
+			opsMu.Unlock()
+			sendNotNow(ws, dir, t, why, bound, next)
+			return
+		}
+		f := opsLoad(dir)
+		r := f.Grants[t.Nonce]
 		r.UsesLeft--
+		r.Runs = append(r.Runs, now.UTC().Format(time.RFC3339Nano))
+		if err := opGrantRecSeal(t.Nonce, &r); err != nil {
+			opsMu.Unlock()
+			opFail(ws, "op_grant_run refused: "+err.Error())
+			return
+		}
 		f.Grants[t.Nonce] = r
 		if err := opsSave(dir, f); err != nil {
 			opsMu.Unlock()
@@ -1432,7 +1541,7 @@ func handleOpGrantRun(ws *websocket.Conn, dir string, args []string) {
 		opsMu.Unlock()
 		_ = rec
 	}
-	rep, record, err := opRunTerms(dir, &run, mode, "grant:"+t.Nonce, "", creds)
+	rep, record, err := opGrantExec(dir, &run, mode, "grant:"+t.Nonce, "", creds)
 	record.Kind = opKindGrant
 	opRecordRun(dir, record)
 	opAuditRun(dir, "op_grant_run", record)
@@ -1464,6 +1573,7 @@ func handleOpList(ws *websocket.Conn, dir string, _ []string) {
 				if m.isAction() {
 					item["kind"] = opKindAction
 				}
+				item["verbs_only"] = m.verbsOnly()
 			} else {
 				item["error"] = err.Error()
 			}
@@ -1475,9 +1585,20 @@ func handleOpList(ws *websocket.Conn, dir string, _ []string) {
 	f := opsLoad(dir)
 	opsMu.Unlock()
 	for nonce, rec := range f.Grants {
-		g := map[string]any{"grant": nonce, "uses_left": rec.UsesLeft, "installed_at": rec.InstalledAt, "dropped": rec.Dropped}
+		g := map[string]any{"grant": nonce, "uses_left": rec.UsesLeft, "installed_at": rec.InstalledAt, "dropped": rec.Dropped,
+			"runs": len(rec.Runs), "approver": rec.Approver}
+		if len(rec.Runs) > 0 {
+			g["last_run"] = rec.Runs[len(rec.Runs)-1]
+		}
 		if t, err := verifyOpTerms(dir, rec.TermsCanonical, rec.Signature, opKindGrant); err == nil {
 			g["op"], g["sha256"], g["expires"], g["bounds"] = t.Op, t.SHA256, t.Expires, t.Bounds
+			if rec.Dropped == "" {
+				if _, err := opGrantRecCheck(nonce, &rec, t, opNow()); err != nil {
+					g["error"] = err.Error()
+				} else if !opApproverLive(dir, rec.Approver) {
+					g["error"] = "the key that approved it is no longer pinned on this machine"
+				}
+			}
 		} else {
 			g["error"] = err.Error()
 		}
@@ -1606,9 +1727,14 @@ func opRunTerms(dir string, t *opTerms, mode, approvalID, termsB64 string, creds
 		rec.Error = err.Error()
 		return nil, rec, err
 	}
-	if ok, why := opSandboxAvailable(); !ok {
-		rec.Error = noSandboxHere + ": " + why
-		return nil, rec, errors.New(rec.Error)
+	// The sandbox is for a program. An op with none (interpreter: none) runs
+	// only the bastion's verbs, which need their own tools instead
+	// (opRunAction): it runs where no overlay is.
+	if !m.verbsOnly() {
+		if ok, why := opSandboxCheck(); !ok {
+			rec.Error = noSandboxHere + ": " + why
+			return nil, rec, errors.New(rec.Error)
+		}
 	}
 	if m.isAction() {
 		// An action op (ops_action.go): its program in a transient unit, its

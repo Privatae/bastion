@@ -193,6 +193,14 @@ func buildEnforcingReport(dir string, allowed []string) map[string]any {
 		if !aok {
 			rep["action_ops_reason"] = awhy
 		}
+		// Each verb, and whether this machine has the tool it runs: an op
+		// with no program (interpreter: none) runs here when its verbs do,
+		// with or without the sandbox above.
+		rep["verbs"] = opVerbsReport()
+		// An op grant's bounds may hold its runs to a window and a rate
+		// (ops_bounds.go). Said by the box, so the host sends neither to one
+		// that would refuse them as naming no param.
+		rep["grant_run_bounds"] = true
 	}
 	// This machine's encryption key, signed by its own key: what the host
 	// seals an action op's credentials to (ops_seal.go).

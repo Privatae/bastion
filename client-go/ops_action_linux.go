@@ -350,7 +350,9 @@ type opResolvedDests struct {
 // what the unit is allowed to reach, and the names go in the run's own
 // /etc/hosts (the machine's resolver is not reachable from the sandbox). A
 // destination that resolves to this machine, its loopback or nothing is
-// refused: a local service is never an op's destination.
+// refused: a local service is never an op's destination. On a machine no
+// fleet has anchored, so is one that resolves to a private network
+// (opLocalNetworkDest).
 func opResolveDests(ctx context.Context, dests []string) (*opResolvedDests, error) {
 	own := map[string]bool{}
 	for _, ip := range opActionOwnAddrs() {
@@ -377,6 +379,9 @@ func opResolveDests(ctx context.Context, dests []string) (*opResolvedDests, erro
 		}
 		for _, ip := range ips {
 			if why := opForbiddenDest(ip); why != "" {
+				return nil, fmt.Errorf("destination %s resolves to %s: %s", d, ip, why)
+			}
+			if why := opLocalNetworkDest(ip); why != "" {
 				return nil, fmt.Errorf("destination %s resolves to %s: %s", d, ip, why)
 			}
 			if own[ip.String()] {

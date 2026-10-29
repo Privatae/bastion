@@ -245,8 +245,10 @@ func planRunLine(dir, planB64, nArg, recB64 string, credBlobs []string) (map[str
 	if _, err := opOpenCreds(credBlobs, m, p.Nonce, false); err != nil {
 		return nil, err
 	}
-	if ok, why := opActionAvailable(); !ok {
-		return nil, errors.New("this machine cannot run an action op: " + why)
+	if !m.verbsOnly() {
+		if ok, why := opActionCheck(); !ok {
+			return nil, errors.New("this machine cannot run an action op: " + why)
+		}
 	}
 	if err := planRecordVersion(p.Pipeline, p.Version); err != nil {
 		return nil, fmt.Errorf("could not record the plan's version: %v", err)

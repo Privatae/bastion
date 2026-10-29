@@ -6,9 +6,12 @@ package main
 // execs runs as root.
 // The discipline is the one a read-only sudoers policy lives by: every op is
 // a FIXED argv, read-only forms only, and no byte of a job's args ever reaches a shell or an
-// argv position. The single exception is observe:net, whose one argument is
+// argv position. The single exception in this file is observe:net, whose one argument is
 // a host[:port] that passes a strict charset check and is then handed to
-// Go's net package — never to a program.
+// Go's net package — never to a program. observe_reads.go has the one caller
+// string in the family that does reach an argv: observe:journal's unit name,
+// after systemd's unit-name alphabet and this machine's own unit list. Its
+// windows reach journalctl only as numbers this box parsed and wrote back out.
 //
 // Every op answers typed JSON on stdout and exit 0. A box that cannot answer
 // (a tool missing, a platform without the probes) says so in the JSON —
@@ -849,7 +852,7 @@ func writeObserve(ws *websocket.Conn, v any) {
 	// The machine's own record of what it answered (machinestore.go, the
 	// observe shelf): the same bytes that go down the lane, filed under the op
 	// and the host that asked. Read off this connection's account rather than
-	// threaded through eleven handlers. BEFORE the reply, so a slow disk
+	// threaded through every handler. BEFORE the reply, so a slow disk
 	// cannot leave a result sent-but-unrecorded; a failed write is counted,
 	// never allowed to fail the reply.
 	if a := mgmtAccountOf(ws); a != nil {

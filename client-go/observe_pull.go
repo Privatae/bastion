@@ -325,8 +325,8 @@ func parseAlerts(raw []byte) (alertsReport, error) {
 
 // handleObserveAlerts takes no argument: the op is the whole active set, the
 // way observe:host is the whole posture. Args are ignored exactly as they are
-// there, so the only arg-taking ops in the family stay observe:net,
-// observe:metrics and observe:logs.
+// there, so it stays out of the arg-taking ops (observeArgsRecorded,
+// machinestore.go, lists them).
 func handleObserveAlerts(ws *websocket.Conn, _ string, _ []string) {
 	ctx, cancel := opBudget()
 	defer cancel()

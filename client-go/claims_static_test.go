@@ -1179,8 +1179,8 @@ func TestObserveOpsWriteNothing(t *testing.T) {
 			roots = append(roots, fn)
 		}
 	}
-	if len(roots) != 14 {
-		t.Fatalf("expected the 11 observe and 3 computer handlers, found %d", len(roots))
+	if len(roots) != 18 {
+		t.Fatalf("expected the 15 observe and 3 computer handlers, found %d", len(roots))
 	}
 	stop := map[string]bool{"sendMgmt": true, "sendMgmtExit": true, "refuseMgmt": true,
 		"storeRecordObserve": true}
@@ -1256,6 +1256,10 @@ func TestObserveOpsWriteNothing(t *testing.T) {
 		"dmesg -T",
 		"iptables -S",
 		"journalctl -n1 -o short-unix --no-pager",
+		// observe:logins: sshd's lines over a window of whole hours.
+		"journalctl <sinceArg> -o short-iso --no-pager -q --lines=50000 _COMM=sshd _COMM=sshd-session _COMM=sshd-auth _UID=0 + _SYSTEMD_UNIT=ssh.service _SYSTEMD_UNIT=sshd.service _UID=0",
+		// observe:journal: one unit this machine's own lists name, over minutes.
+		"journalctl <unitArg> <sinceArg> -o short-iso --no-pager -q --lines=5000",
 		"kubectl --kubeconfig <observeKubeconfig> get nodes -o json",
 		"kubectl --kubeconfig <observeKubeconfig> get pods -A -o json",
 		"nft list chain inet pubwall input",
@@ -1270,6 +1274,8 @@ func TestObserveOpsWriteNothing(t *testing.T) {
 		"system_profiler SPApplicationsDataType -json",
 		"systemctl is-active fail2ban",
 		"systemctl list-timers --all --no-legend --plain",
+		"systemctl list-unit-files --no-legend --plain", // observe:journal's unit check
+		"systemctl list-units --all --no-legend --plain",
 		"systemctl list-units --failed --no-legend --plain",
 		"ufw status",
 		"ufw status verbose",

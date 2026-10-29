@@ -345,3 +345,51 @@ func FuzzADeviceApprovalIsReadOneWayOnly(f *testing.F) {
 		}
 	})
 }
+
+// FuzzAGrantsRunBoundsHoldWhateverTheHostSends: whatever bounds text a host
+// sends, a run bound the machine accepts is one it can hold — a window has a
+// length, a zone and a day, a rate names a limit inside the ceilings — and
+// judging a run against it at any moment answers, never panics, and never
+// lets a run inside an interval or past a day's count.
+func FuzzAGrantsRunBoundsHoldWhateverTheHostSends(f *testing.F) {
+	m := &opManifest{Params: map[string]opParam{"count": {Type: "integer", Min: ptr64(1), Max: ptr64(5)}}}
+	for _, s := range []string{
+		`{"_window":{"days":["mon"],"from":"22:00","to":"06:00","tz":"Europe/Berlin"}}`,
+		`{"_rate":{"per_day":2,"min_interval_s":600},"count":{"max":2}}`,
+		`{"_window":null,"_rate":null}`, `{"_x":1}`, `{"_window":{"from":"02:00","to":"02:00"}}`,
+	} {
+		f.Add(s, int64(1761739200), int64(300))
+	}
+	f.Fuzz(func(t *testing.T, raw string, at, gap int64) {
+		b, err := parseGrantBounds(m, raw)
+		if err != nil {
+			return
+		}
+		if w := b.Window; w != nil {
+			if w.from == w.to || w.loc == nil || w.day == [7]bool{} {
+				t.Fatalf("accepted a window that is no window: %s", raw)
+			}
+		}
+		if r := b.Rate; r != nil {
+			if (r.PerDay == nil && r.MinInterval == nil) || (r.PerDay != nil && (*r.PerDay < 1 || *r.PerDay > opGrantUsesMax)) ||
+				(r.MinInterval != nil && (*r.MinInterval < 1 || *r.MinInterval > opRateMinInterval)) {
+				t.Fatalf("accepted a rate outside the ceilings: %s", raw)
+			}
+		}
+		now := time.Unix(at%(1<<40), 0)
+		last := now.Add(-time.Duration(gap%(1<<30)) * time.Second)
+		if last.After(now) {
+			last = now
+		}
+		why, _, _ := opNotNowWhy(b, []time.Time{last}, now)
+		if b.Window == nil && b.Rate != nil && b.Rate.MinInterval != nil &&
+			now.Sub(last) < time.Duration(*b.Rate.MinInterval)*time.Second && why == "" {
+			t.Fatalf("a run inside the interval was let through: %s", raw)
+		}
+		if b.Window == nil && b.Rate != nil && b.Rate.PerDay != nil && *b.Rate.PerDay == 1 && now.Sub(last) < 24*time.Hour && why == "" {
+			t.Fatalf("a second run in a day was let through: %s", raw)
+		}
+	})
+}
+
+func ptr64(v int64) *int64 { return &v }

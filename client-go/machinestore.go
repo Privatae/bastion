@@ -1018,19 +1018,27 @@ var observeArgsRecorded = map[string]int{
 	"observe:net":     1, // host[:port], charset-checked before use
 	"observe:metrics": 1, // a name from a fixed query table
 	"observe:logs":    2, // a name, and an optional minutes window (a whole number)
+	"observe:folders": 2, // an absolute path, and an optional depth
+	"observe:journal": 2, // a unit name, and an optional minutes window
+	"observe:logins":  1, // an optional window in hours
+	"observe:cert":    2, // a local port, and an optional server name
 }
 
 // storeObserveLine is one line of observe/<op>/<date>.jsonl.
 //
-// WHAT COMES TO REST HERE. Eight of the eleven ops return fixed schemas the
-// beat already summarises (posture ints, unit names, sockets, a probe's TLS
-// subject). observe:alerts and observe:metrics carry label maps that can name
-// namespaces and tenants. observe:logs is the outlier: its result is raw
-// production log text, up to the line bound, persisted for 30 days — the one
-// payload whose content this repo does not control, and so the one place a
+// WHAT COMES TO REST HERE. Most of the ops return fixed schemas the beat
+// already summarises (posture ints, unit names, sockets, a probe's TLS
+// subject, a served certificate's names). observe:alerts and observe:metrics
+// carry label maps that can name namespaces and tenants. observe:folders
+// carries folder paths, which can carry a person's account or project name.
+// observe:logins carries account names and the addresses they came from, the
+// failed ones as the other side sent them (bounded by loginName).
+// observe:logs and observe:journal are the outliers: their result is raw
+// production log text, up to the line bound, persisted for 30 days — the
+// payloads whose content this repo does not control, and so the places a
 // token or a user identifier can come to rest. Files are 0600 under a 0700
 // tree; the reader is the machine's own OS account and the anchor's approved
-// store. Named here so the next person choosing what to log through this op
+// store. Named here so the next person choosing what to log through these ops
 // knows it stays.
 type storeObserveLine struct {
 	At      string   `json:"at"`
@@ -1097,8 +1105,8 @@ func storeObserveDroppedReset() {
 // (`observe:k8s`, `observe-k8s` and `observe_k8s` all reduce to
 // `observe-k8s`) and, since the lowercasing below, case folding
 // (`observe:K8s` and `observe:k8s`). Neither can bite today — the op reaches
-// this writer only from the eleven names registered in handlerOps, all
-// lowercase, which reduce to eleven distinct directories
+// this writer only from the observe names registered in handlerOps, all
+// lowercase, which reduce to as many distinct directories
 // (TestEveryRegisteredOpSanitisesToTheHostsShelfRule walks them) — but a
 // future pair like `observe:k8s-nodes` / `observe:k8s_nodes` would interleave
 // into one day-file. Whoever adds such a pair renames one of them.

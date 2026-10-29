@@ -113,7 +113,7 @@ func refusalCounts(op, why string) bool {
 		return false
 	}
 	if strings.Contains(why, noWayToApprove) || strings.HasSuffix(why, "not permitted on this host") ||
-		strings.Contains(why, noSandboxHere) {
+		strings.Contains(why, noSandboxHere) || strings.Contains(why, noVerbToolHere) {
 		return false
 	}
 	return true

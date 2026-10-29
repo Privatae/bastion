@@ -41,6 +41,12 @@ package main
 // else is written into the manifest, so what a verb can reach is fixed when
 // the op is approved.
 //
+// An action op may have no program at all (interpreter: none, no run file):
+// its verbs are its whole work. Nothing the Host wrote executes, so it needs
+// no sandbox and runs on a machine with no overlay; each verb needs only its
+// own tool (systemctl, journalctl, git, kubectl), and the beat reports which
+// this machine has (enforcing.verbs).
+//
 // Every verb line, with the state it moves from, is in the dry run's change
 // list, so an approval binds that list and an apply refuses when the machine
 // moved under it. An op with any verb is privilege root: its verbs run with
@@ -394,8 +400,27 @@ func opParseDest(s string) (opDest, error) {
 		}
 	} else if why := opForbiddenDest(ip); why != "" {
 		return opDest{}, errors.New(why)
+	} else if why := opLocalNetworkDest(ip); why != "" {
+		return opDest{}, errors.New(why)
 	}
 	return opDest{Host: h, Port: uint16(port)}, nil
+}
+
+// opLocalNetworkDest: "" when an address may be a destination on this box as
+// it stands, else why not. An anchored machine is a fleet's, and its ship
+// steps reach the fleet's private control planes, so it keeps private
+// destinations. On any other machine (a person's own, which no fleet has
+// anchored) an op reaches the public internet and nothing around the
+// machine: a private, ULA, CGNAT or reserved address (internalIP, the rule
+// the egress lane holds every box to) is refused, by address here and, for a
+// name, by every address it resolves to at apply (opResolveDests). Another
+// computer of theirs is reached through a bastion on that computer.
+func opLocalNetworkDest(ip net.IP) string {
+	if currentAnchor() != nil || !internalIP(ip) {
+		return ""
+	}
+	return "a destination is never an address on a private network (a home network, a VPN or a carrier NAT) " +
+		"on a machine no fleet has anchored; to reach another computer on it, install a bastion on that computer"
 }
 
 // opMetadataAddrs are the cloud metadata services that do not sit in
@@ -445,6 +470,12 @@ func opCredEnv(name string) string {
 	return b.String()
 }
 
+// verbsOnly: an action op with no program (interpreter: none). Its whole work
+// is its verbs, done by the bastion with their arguments fixed in the
+// manifest; nothing the Host wrote executes, so it needs no sandbox (a machine
+// with no overlay runs it), only the tools its verbs run.
+func (m *opManifest) verbsOnly() bool { return m.isAction() && m.Interpreter == opInterpreterNone }
+
 // opActionManifestOK is parseOpManifest's judgement of an action op.
 func opActionManifestOK(m *opManifest) error {
 	if len(m.Effects.Files)+len(m.Effects.Units)+len(m.Effects.Packages)+len(m.Effects.Network) > 0 {
@@ -488,6 +519,25 @@ func opActionManifestOK(m *opManifest) error {
 	}
 	if (len(verbs) > 0) != (m.Privilege == "root") {
 		return errors.New("op.yaml: an action op is privilege root exactly when it has verbs: they run with the bastion's own root")
+	}
+	if m.verbsOnly() {
+		if len(verbs) == 0 {
+			return errors.New("op.yaml: interpreter: none is an op whose verbs are its whole work, and it names none")
+		}
+		if len(m.Destinations) > 0 || m.Builder || len(m.Reads) > 0 {
+			return errors.New("op.yaml: destinations, builder and reads are a program's, and interpreter: none has no program")
+		}
+		named := map[string]bool{}
+		for _, v := range verbs {
+			if c := v.Args["credential"]; c != "" {
+				named[c] = true
+			}
+		}
+		for _, c := range m.Credentials {
+			if !named[c] {
+				return fmt.Errorf("op.yaml: credential %q is named by no verb, and interpreter: none has no program to hand it to", c)
+			}
+		}
 	}
 	return nil
 }

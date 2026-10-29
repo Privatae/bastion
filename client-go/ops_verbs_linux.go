@@ -19,10 +19,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -81,10 +84,16 @@ func opCmd(ctx context.Context, name string, args ...string) (string, error) {
 	return out.String(), err
 }
 
-// opRunAction runs one mode of an action op (ops.go opRunTerms).
+// opRunAction runs one mode of an action op (ops.go opRunTerms). An op with
+// no program (interpreter: none) runs no unit and needs no sandbox: its dry
+// run is the change list its verbs read, its apply the verbs and the log
+// checks, and what it needs of the machine is each verb's own tool
+// (opVerbProbe).
 func opRunAction(opDir string, m *opManifest, t *opTerms, mode, runID string, blobs []string, pc *opPlanCtx) (*opReport, error) {
-	if ok, why := opActionAvailable(); !ok {
-		return nil, errors.New("this machine cannot run an action op: " + why)
+	if !m.verbsOnly() {
+		if ok, why := opActionCheck(); !ok {
+			return nil, errors.New("this machine cannot run an action op: " + why)
+		}
 	}
 	if mode != opModeDryRun && mode != opModeApply {
 		return nil, errors.New("an action op is run as dry_run or apply; its verify runs inside the apply")
@@ -97,6 +106,11 @@ func opRunAction(opDir string, m *opManifest, t *opTerms, mode, runID string, bl
 	if err != nil {
 		return nil, err
 	}
+	if m.verbsOnly() {
+		if why := opVerbProbe(verbs); why != "" {
+			return nil, errors.New(noVerbToolHere + ": " + why)
+		}
+	}
 	creds, err := opOpenCreds(blobs, m, t.Nonce, mode == opModeDryRun)
 	if err != nil {
 		return nil, err
@@ -108,6 +122,9 @@ func opRunAction(opDir string, m *opManifest, t *opTerms, mode, runID string, bl
 	}
 	planSHA := opChangesDigest(plan)
 	if mode == opModeDryRun {
+		if m.verbsOnly() {
+			return &opReport{Mode: opModeDryRun, Changes: plan, ChangesSHA256: planSHA}, nil
+		}
 		rep, _, err := opRunActionProgram(opDir, m, opModeDryRun, t.Params, nil, runID)
 		if rep != nil {
 			rep.Changes, rep.ChangesSHA256 = plan, planSHA
@@ -122,9 +139,15 @@ func opRunAction(opDir string, m *opManifest, t *opTerms, mode, runID string, bl
 			truncate(planSHA, 12), truncate(t.Changes, 12))
 	}
 	start := time.Now()
-	rep, result, err := opRunActionProgram(opDir, m, opModeApply, t.Params, opProgramCreds(verbs, creds), runID)
-	if rep == nil {
-		return nil, err
+	var rep *opReport
+	var result []byte
+	if m.verbsOnly() {
+		rep = &opReport{Mode: opModeApply}
+	} else {
+		rep, result, err = opRunActionProgram(opDir, m, opModeApply, t.Params, opProgramCreds(verbs, creds), runID)
+		if rep == nil {
+			return nil, err
+		}
 	}
 	rep.Changes, rep.ChangesSHA256 = plan, planSHA
 	if err != nil {
@@ -134,6 +157,11 @@ func opRunAction(opDir string, m *opManifest, t *opTerms, mode, runID string, bl
 		images, err := opParseResult(result)
 		if err != nil {
 			return rep, err
+		}
+		for _, im := range images {
+			if err := opRegistryOK(context.Background(), im.Image); err != nil {
+				return rep, err
+			}
 		}
 		receipts, err := opIssueReceipts(runID, t.Op, t.SHA256, t.Params, images)
 		rep.Receipts = receipts
@@ -171,10 +199,12 @@ func opRunAction(opDir string, m *opManifest, t *opTerms, mode, runID string, bl
 	// image), then each log check, reading only what came after the apply
 	// began.
 	var failed []string
-	if ver, _, err := opRunActionProgram(opDir, m, opModeVerify, t.Params, nil, runID); err != nil {
-		failed = append(failed, "verify: "+err.Error())
-	} else if ver.Exit != 0 {
-		failed = append(failed, fmt.Sprintf("verify exited %d", ver.Exit))
+	if !m.verbsOnly() {
+		if ver, _, err := opRunActionProgram(opDir, m, opModeVerify, t.Params, nil, runID); err != nil {
+			failed = append(failed, "verify: "+err.Error())
+		} else if ver.Exit != 0 {
+			failed = append(failed, fmt.Sprintf("verify exited %d", ver.Exit))
+		}
 	}
 	for _, v := range verbs {
 		if v.Verb != opVerbLogs {
@@ -508,7 +538,7 @@ func opCredHeaderEnv(creds map[string]string, name string) ([]string, error) {
 	return []string{"GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http.extraHeader", "GIT_CONFIG_VALUE_0=Authorization: token " + tok}, nil
 }
 
-func opTreeDo(_ context.Context, v opVerbLine, creds map[string]string, want string) (string, error) {
+func opTreeDo(ctx context.Context, v opVerbLine, creds map[string]string, want string) (string, error) {
 	defer opLockTarget(v)()
 	path, to := v.Args["path"], v.Args["commit"]
 	head, branch, err := opTreeState(v)
@@ -525,7 +555,11 @@ func opTreeDo(_ context.Context, v opVerbLine, creds map[string]string, want str
 	if err != nil {
 		return "", err
 	}
-	if out, err := opTreeGit(path, env, "fetch", "--no-tags", "--quiet", v.Args["repo"], "+refs/heads/*:refs/remotes/origin/*"); err != nil {
+	pin, err := opFetchPin(ctx, v.Args["repo"])
+	if err != nil {
+		return "", err
+	}
+	if out, err := opTreeGit(path, env, append(pin, "fetch", "--no-tags", "--quiet", v.Args["repo"], "+refs/heads/*:refs/remotes/origin/*")...); err != nil {
 		return "", errors.New("fetch failed: " + truncate(out, 300))
 	}
 	if _, err := opTreeGit(path, nil, "cat-file", "-e", to+"^{commit}"); err != nil {
@@ -702,6 +736,9 @@ func opImageCheck(ctx context.Context, v opVerbLine, pc *opPlanCtx) (*opImageFac
 	if rc.Image != a["image"] {
 		return nil, fmt.Errorf("the receipt for %s is for %s, not %s", truncate(a["digest"], 19), rc.Image, a["image"])
 	}
+	if err := opRegistryOK(ctx, a["image"]); err != nil {
+		return nil, err
+	}
 	// The repository ancestry is checked in is the manifest's, never one a
 	// program reported: the check fetches it, with the verb's credential.
 	if rc.Source != a["repo"] {
@@ -806,11 +843,155 @@ func opImageDo(ctx context.Context, v opVerbLine, creds map[string]string, pc *o
 	return truncate(f.liveDigest, 19) + " → " + truncate(a["digest"], 19) + ", rolled out", nil
 }
 
+// opFetchPin is the git options a verb's fetch of repo carries. A verb
+// fetches with the bastion's own root, outside the program's sandbox
+// (tree.checkout its tree's repository, k8s.set_image its source to check
+// ancestry), so it is held to the rule a destination is: the repository's
+// host is resolved here, once, every address it answers must be one an op may
+// reach, and git is held to the first (http.curloptResolve, as the mirror
+// pins its fetch) so a second lookup cannot answer another. On every machine
+// that is never this machine, its loopback, a link-local address or a cloud's
+// metadata service (opForbiddenDest); on a machine no fleet has anchored,
+// never a private network either (opLocalNetworkDest). An anchored machine's
+// ship steps reach its fleet's private forges, so it keeps those.
+func opFetchPin(ctx context.Context, repo string) ([]string, error) {
+	u, err := url.Parse(repo)
+	if err != nil {
+		return nil, errors.New("the repository is not a URL this bastion can read")
+	}
+	if u.Scheme == "file" && slices.Contains(opTreeProtocols, "file") {
+		return nil, nil // a test's own repository: no network
+	}
+	if u.Scheme != "https" || u.Hostname() == "" {
+		return nil, fmt.Errorf("%s: a verb fetches a repository over https from a named host", repo)
+	}
+	host, port := u.Hostname(), u.Port()
+	if port == "" {
+		port = "443"
+	}
+	ips, err := opVerbHostAddrs(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("the repository's host %s does not resolve on this machine", host)
+	}
+	own := map[string]bool{}
+	for _, ip := range opActionOwnAddrs() {
+		own[ip.String()] = true
+	}
+	for _, ip := range ips {
+		why := opForbiddenDest(ip)
+		if why == "" {
+			why = opLocalNetworkDest(ip)
+		}
+		if why == "" && own[ip.String()] {
+			why = "it is this machine"
+		}
+		if why != "" {
+			return nil, fmt.Errorf("the repository's host %s resolves to %s: %s", host, ip, why)
+		}
+	}
+	if why := opGitPinnable(); why != "" {
+		return nil, errors.New(why)
+	}
+	addr := ips[0].String()
+	if strings.Contains(addr, ":") {
+		addr = "[" + addr + "]"
+	}
+	return []string{"-c", "http.curloptResolve=" + host + ":" + port + ":" + addr}, nil
+}
+
+// opRegistryOK: nil when the registry an image is pulled from may be
+// reached from this machine, else why not. The bastion never pulls an image
+// itself: k8s.set_image hands the reference to the cluster, and the
+// machine's container runtime pulls it, by the name, with its own lookup and
+// none of the bastion's walls. So on a machine no fleet has anchored the
+// registry is judged where the bastion takes the image, when a program's
+// result names it and again when k8s.set_image would put it live: written as
+// an address or resolving to one that is this machine, its loopback, a
+// link-local address, a cloud's metadata service or a private network, it is
+// refused. A first part with no dot, no port and not localhost is a Docker
+// Hub repository, as the runtime reads it. An anchored machine's fleet pulls
+// from its own private registries, so it keeps them.
+func opRegistryOK(ctx context.Context, image string) error {
+	if currentAnchor() != nil {
+		return nil
+	}
+	ref, _ := opSplitImage(image)
+	first, _, ok := strings.Cut(ref, "/")
+	if !ok || (!strings.ContainsAny(first, ".:") && first != "localhost") {
+		return nil
+	}
+	host := first
+	if h, _, err := net.SplitHostPort(first); err == nil {
+		host = h
+	}
+	ips, err := opVerbHostAddrs(ctx, host)
+	if err != nil {
+		return fmt.Errorf("the image's registry %s does not resolve on this machine", host)
+	}
+	own := map[string]bool{}
+	for _, ip := range opActionOwnAddrs() {
+		own[ip.String()] = true
+	}
+	for _, ip := range ips {
+		why := opForbiddenDest(ip)
+		if why == "" {
+			why = opLocalNetworkDest(ip)
+		}
+		if why == "" && own[ip.String()] {
+			why = "it is this machine"
+		}
+		if why != "" {
+			return fmt.Errorf("the image %s comes from the registry %s, which resolves to %s: %s", truncate(ref, 90), host, ip, why)
+		}
+	}
+	return nil
+}
+
+// opVerbHostAddrs is every address host stands for on this machine: itself
+// when it is one, loopback for localhost and a name under it (which never
+// leave the machine, whatever a resolver says), else what it resolves to.
+func opVerbHostAddrs(ctx context.Context, host string) ([]net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	if l := strings.ToLower(host); l == "localhost" || strings.HasSuffix(l, ".localhost") {
+		return []net.IP{net.IPv4(127, 0, 0, 1)}, nil
+	}
+	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	ips, err := opActionResolve(rctx, host)
+	if err == nil && len(ips) == 0 {
+		err = errors.New("no address")
+	}
+	return ips, err
+}
+
+// opGitPinnable: "" when this machine's git holds a fetch to the address
+// opFetchPin checked, else why not. http.curloptResolve arrived in git 2.37,
+// and an older git ignores it without an error, which would drop the pin; so
+// an older git does not fetch for a verb. A seam for the tests.
+var opGitPinnable = func() string {
+	out, err := runGitEnv(15*time.Second, nil, "version")
+	if err != nil {
+		return "git on this machine did not report its version"
+	}
+	if gitVersionRefusal(out) != "" {
+		return "a verb's fetch is held to the address the bastion checked, " +
+			"which needs git 2.37 or newer, and this machine has " + truncate(strings.TrimSpace(out), 40) +
+			": install git 2.37 or newer"
+	}
+	return ""
+}
+
 // opAncestryByFetch fetches the source repository into the bastion's own
 // cache and asks git whether newer descends from older.
 func opAncestryByFetch(source, older, newer string, env []string) error {
 	if older == newer {
 		return nil
+	}
+	pin, err := opFetchPin(context.Background(), source)
+	if err != nil {
+		return err
 	}
 	d, err := configDir()
 	if err != nil {
@@ -826,7 +1007,7 @@ func opAncestryByFetch(source, older, newer string, env []string) error {
 			return errors.New("ancestry cache: " + truncate(out, 200))
 		}
 	}
-	if out, err := opTreeGit(cache, env, "fetch", "--no-tags", "--quiet", source, "+refs/heads/*:refs/heads/*"); err != nil {
+	if out, err := opTreeGit(cache, env, append(pin, "fetch", "--no-tags", "--quiet", source, "+refs/heads/*:refs/heads/*")...); err != nil {
 		return errors.New("fetching the source to check ancestry failed: " + truncate(out, 300))
 	}
 	for _, c := range []string{older, newer} {
@@ -901,6 +1082,95 @@ func opProgramCreds(verbs []opVerbLine, creds map[string]string) map[string]stri
 	for k, val := range creds {
 		if !verbOnly[k] {
 			out[k] = val
+		}
+	}
+	return out
+}
+
+// ── what each verb needs of the machine ─────────────────────────────────────
+
+// opLookPath finds a tool a verb runs (a seam for the tests).
+var opLookPath = exec.LookPath
+
+// opVerbProbe: "" when this machine can run every line, else why not. The
+// verbs run with the bastion's own root and each runs one tool. A seam, so a
+// test can stand in for a machine that has them.
+var opVerbProbe = func(lines []opVerbLine) string {
+	if !processIsRoot() {
+		return "the bastion is not root, and a verb runs with its root"
+	}
+	for _, v := range lines {
+		for _, tool := range opVerbTools(v.Verb, v.Args) {
+			if _, err := opLookPath(tool); err != nil {
+				return fmt.Sprintf("%s %s runs %s, which is not installed here", v.Verb, v.target(), tool)
+			}
+		}
+	}
+	return ""
+}
+
+// opVerbTools is the tool one verb line runs (logs.check: the journal for a
+// unit, kubectl for a workload).
+func opVerbTools(verb string, args map[string]string) []string {
+	switch verb {
+	case "unit.reload", "unit.restart":
+		return []string{"systemctl"}
+	case "tree.checkout":
+		return []string{"git"}
+	case "k8s.set_image":
+		// kubectl sets the image; git fetches the source to check the new
+		// commit descends from the live one (opAncestryByFetch).
+		return []string{"kubectl", "git"}
+	case opVerbLogs:
+		if args["unit"] != "" {
+			return []string{"journalctl"}
+		}
+		return []string{"kubectl"}
+	}
+	return nil
+}
+
+// opVerbsReport is the beat's enforcing.verbs: for each verb this bastion
+// runs, whether this machine has what it needs, and why not when it does
+// not. logs.check is ready when either of its tools is (the line decides
+// which it reads).
+func opVerbsReport() map[string]any {
+	root := processIsRoot()
+	out := map[string]any{}
+	for _, verb := range opVerbNames() {
+		var tools [][]string
+		if verb == opVerbLogs {
+			tools = [][]string{{"journalctl"}, {"kubectl"}}
+		} else {
+			tools = [][]string{opVerbTools(verb, nil)}
+		}
+		why := ""
+		if !root {
+			why = "the bastion is not root, and a verb runs with its root"
+		} else {
+			why = "needs " + strings.Join(tools[0], ", ")
+			for _, set := range tools {
+				ok := true
+				for _, tool := range set {
+					if _, err := opLookPath(tool); err != nil {
+						ok = false
+					}
+				}
+				if ok {
+					why = ""
+					break
+				}
+			}
+			if why == "" && verb == "k8s.set_image" {
+				if _, err := os.Stat(opKubeconfig); err != nil {
+					why = "no kubeconfig at " + opKubeconfig
+				}
+			}
+		}
+		if why == "" {
+			out[verb] = map[string]any{"ok": true}
+		} else {
+			out[verb] = map[string]any{"ok": false, "why": why}
 		}
 	}
 	return out

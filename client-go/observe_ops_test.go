@@ -393,7 +393,8 @@ func TestNetTargetPublicOnly(t *testing.T) {
 
 var observeOps = []string{"observe:host", "observe:sockets", "observe:firewall", "observe:units",
 	"observe:disk", "observe:kernel", "observe:k8s", "observe:net",
-	"observe:alerts", "observe:metrics", "observe:logs"}
+	"observe:alerts", "observe:metrics", "observe:logs",
+	"observe:folders", "observe:journal", "observe:logins", "observe:cert"}
 
 // observeArgOps are the ops in the family that read a caller value. Every one
 // of them must REFUSE the poison set rather than answer it; the rest ignore
@@ -408,6 +409,10 @@ var observeArgRefusal = map[string]string{
 	"observe:net":     "one argument",
 	"observe:metrics": "exactly one argument",
 	"observe:logs":    "takes a name",
+	"observe:folders": "takes a folder path",
+	"observe:journal": "takes a unit name",
+	"observe:logins":  "at most one argument",
+	"observe:cert":    "takes a local tcp port",
 }
 
 var observeArgOps = func() map[string]bool {
@@ -560,7 +565,8 @@ func TestObserveArgsNeverReachArgv(t *testing.T) {
 				t.Fatalf("%s: the arity refusal must say %q, got %q", op, want, errOut)
 			}
 			// exactly one poisoned value: still refused — by the charset check
-			// for observe:net, by the fixed query table for the other two.
+			// for observe:net, by the fixed query table for metrics and logs,
+			// and by the written grammar of each of the four in observe_reads.go.
 			_, errOut, code = driveObserve(t, op, poison[:1])
 			if code == 0 {
 				t.Fatalf("%s with a shell value must refuse: code=%d err=%q", op, code, errOut)

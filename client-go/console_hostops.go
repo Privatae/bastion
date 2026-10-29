@@ -142,6 +142,14 @@ func cmdOpsDrop(host, prefix string) error {
 	}
 	dir := cfg.dcnDir()
 	prefix = strings.TrimSpace(prefix)
+	if prefix == "--all" {
+		dropped, err := opsDropWhere(dir, "dropped at this machine's console", func(string, *opGrantRec) bool { return true })
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%d op grant(s) dropped — the host cannot run under any of them again\n", len(dropped))
+		return nil
+	}
 	var hits []string
 	for nonce, rec := range opsLoad(dir).Grants {
 		if rec.Dropped == "" && strings.HasPrefix(nonce, prefix) {

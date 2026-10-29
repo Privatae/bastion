@@ -69,7 +69,7 @@ func opWrites(op string) bool {
 // approval. A lost device must not keep a revoked grant alive.
 func opTightens(op string) bool {
 	return op == "dcn_grant_drop" || op == "pairing_grant_drop" || op == "service_grant_drop" ||
-		op == "coder_grant_drop"
+		op == "coder_grant_drop" || op == "op_grant_drop"
 }
 
 // ownApproval reports whether a WRITE op already carries its own proof of the

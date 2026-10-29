@@ -607,6 +607,7 @@ func main() {
 	case "ops":
 		// ops [--host <host>]            what ops and op grants this machine holds
 		// ops drop <grant> [--host <host>]  take back a held op grant (the host is told)
+		// ops drop --all [--host <host>]    take back every op grant the host holds here
 		host, args := takeHostFlag(os.Args[2:])
 		if len(args) >= 2 && args[0] == "drop" {
 			err = cmdOpsDrop(host, args[1])

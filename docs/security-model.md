@@ -94,6 +94,41 @@
   changes anything outside its declared file effects. A one-time apply lands
   only the change list you saw; a run under a standing grant is held to the
   grant's bounds.
+- **A standing grant is held here to its window and rate, and dies with the
+  key that approved it.** The machine reads the window on its own clock and
+  counts the rate from the runs it logged in the grant's record in `ops.json`,
+  which it seals with a key derived from its own encryption key. A record
+  edited by hand or by a program without that key, or copied from another
+  machine, holds no grant. The seal does not stop the bastion's own account:
+  it can read the key, so it can write a new record or put back an older
+  sealed copy with fewer runs logged and more uses left. That account is root
+  on a networked install, and root on the machine is outside what this model
+  defends. A grant taken back while the machine is offline stops at the Host
+  at once, which routes no run through it; the machine keeps its own record
+  until the drop is sent again or the grant expires (30 days at most). The
+  heartbeat does not yet carry the grants the Host still holds, which would let
+  the machine drop the rest itself as it does for coder grants. `ops drop
+  --all` at the machine takes every one back there.
+- **On your own machine, an action op reaches the internet, never your
+  network.** On a machine no fleet has anchored, an action op's destination
+  is never a private, ULA, CGNAT or reserved address, also inside a NAT64 or
+  6to4 address: one written as an address is refused when the op arrives
+  (`op_sync`), and a name is refused at apply if any address it resolves to
+  is one. A verb's fetch (`tree.checkout`'s repository, `k8s.set_image`'s
+  ancestry check), which runs with the bastion's root outside the sandbox,
+  is held to the same rule: its host is resolved once, every address checked,
+  and git held to that address (git 2.37 or newer); on an anchored machine
+  that fetch is still never this machine, its loopback, a link-local address
+  or a cloud's metadata service. An image `k8s.set_image` puts live is
+  pulled by the machine's container runtime, by name, outside the bastion's
+  walls, so on your own machine its registry is judged where the bastion
+  takes the image (a program's result, and the verb) and refused on your
+  network or this machine; the runtime's own later lookup is not the
+  bastion's to hold. Another computer of yours
+  is reached through a bastion on that computer. An anchored machine keeps
+  private destinations, since a fleet's ship steps reach its own private
+  control planes. (Before this, a local machine held an op whose destination
+  was on your LAN, and its apply reached it.)
 - **A server in the service slot has no network.** The host's tunnel is its
   only way in, and it cannot reach this machine, your network or the
   internet.
@@ -189,7 +224,9 @@
   (`observe:alerts`, `observe:metrics`, `observe:logs`), read-only HTTP
   against an Alertmanager/Prometheus/Loki on the box's own network —
   private addresses only, re-checked at the socket so neither a redirect nor
-  a DNS answer can walk a query out of that neighbourhood.
+  a DNS answer can walk a query out of that neighbourhood; and
+  `observe:cert`, a TLS handshake with a listener on this machine, at
+  loopback or an address this machine holds, never one another machine could.
 - **A backup's key goes to a host only when you approve it here.** A host's
   request to restore files a request and gets nothing until you approve it
   on this machine; the key sealed to the host then opens that one backup and

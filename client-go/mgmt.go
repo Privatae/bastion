@@ -105,6 +105,15 @@ type opHandler struct {
 //     is exec'd, so the discipline here is a fixed QUERY TABLE instead of a
 //     fixed argv: the host sends a NAME, the box owns the PromQL and the LogQL,
 //     and an unknown name is refused with the known ones listed.
+//   - observe:folders / observe:journal / observe:logins / observe:cert
+//     (observe_reads.go): the questions a host otherwise handed the person as
+//     a command — the largest folders under a path, one unit's recent journal,
+//     sshd's failed and accepted logins, the certificate a local port serves.
+//     Their caller values are a path, a unit name, a number and a port with a
+//     server name, each checked against a written grammar before use. The
+//     one caller string that reaches a program is the unit name, and only
+//     once this machine's own unit list names it; a window reaches journalctl
+//     only as a number this box parsed and wrote back out.
 var handlerOps = map[string]opHandler{
 	"computer:inventory": {rootNone, "", handleComputerInventory},
 	"computer:windows":   {rootNone, "", handleComputerWindows},
@@ -120,6 +129,10 @@ var handlerOps = map[string]opHandler{
 	"observe:alerts":     {rootNone, "", handleObserveAlerts},
 	"observe:metrics":    {rootNone, "", handleObserveMetrics},
 	"observe:logs":       {rootNone, "", handleObserveLogs},
+	"observe:folders":    {rootNone, "", handleObserveFolders},
+	"observe:journal":    {rootNone, "", handleObserveJournal},
+	"observe:logins":     {rootNone, "", handleObserveLogins},
+	"observe:cert":       {rootNone, "", handleObserveCert},
 	"ctx_put":            {rootCtx, "context store not configured", handleCtxPut},
 	"ctx_get":            {rootCtx, "context store not configured", handleCtxGet},
 	"ctx_del":            {rootCtx, "context store not configured", handleCtxDel},
@@ -158,10 +171,13 @@ var handlerOps = map[string]opHandler{
 	// op_* (ops.go / ops_exec_linux.go): an op the host wrote, held under
 	// signed terms and run in a sandbox. rootDcn: the op store and ops.json
 	// sit beside the pairing's grants, and the terms verify under its key.
+	// op_grant_drop <grant|all> (ops_bounds.go) takes a held grant back: a
+	// tighten (writes.go opTightens), so no quarantine or approval holds it.
 	"op_sync":       {rootDcn, "dcn store not configured", handleOpSync},
 	"op_dry_run":    {rootDcn, "dcn store not configured", handleOpDryRun},
 	"op_apply":      {rootDcn, "dcn store not configured", handleOpApply},
 	"op_grant_run":  {rootDcn, "dcn store not configured", handleOpGrantRun},
+	"op_grant_drop": {rootDcn, "dcn store not configured", handleOpGrantDrop},
 	"op_list":       {rootDcn, "dcn store not configured", handleOpList},
 	"op_run_status": {rootDcn, "dcn store not configured", handleOpRunStatus},
 	// op_plan_* (ops_plan.go): a line of a ship plan the person's device
@@ -231,10 +247,12 @@ type mgmtAccount struct {
 	self string
 	op   string // "" when the frame did not parse: the box does not know
 	// args is what the host passed, so the observe shelf can record WHAT was
-	// asked beside the result. Three ops read a caller value — observe:net
+	// asked beside the result. Seven ops read a caller value — observe:net
 	// (host[:port]), observe:metrics (a name), observe:logs (a name and an
-	// optional selector); the rest ignore theirs. The shelf records args only
-	// for those three, bounded (machinestore.go observeArgsRecorded): the first
+	// optional window), observe:folders (a path and a depth), observe:journal
+	// (a unit and a window), observe:logins (hours) and observe:cert (a port
+	// and a server name); the rest ignore theirs. The shelf records args only
+	// for those seven, bounded (machinestore.go observeArgsRecorded): the first
 	// version recorded whatever the host sent for every op, unbounded, and
 	// this comment — which said only one op took a value — made that look safe.
 	args []string
@@ -258,7 +276,7 @@ func beginMgmtAccount(ws *websocket.Conn, self, op string, args []string) {
 
 // mgmtAccountOf is the record for this connection, or nil. Read by the observe
 // shelf to learn which op produced a result and which host asked, without the
-// eleven handlers having to be told either.
+// observe handlers having to be told either.
 func mgmtAccountOf(ws *websocket.Conn) *mgmtAccount {
 	if v, ok := mgmtAccounts.Load(ws); ok {
 		return v.(*mgmtAccount)
