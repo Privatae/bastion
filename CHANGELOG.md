@@ -22,6 +22,43 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.58.1
+
+- **An excluded path that names more than one folder now matches.** A
+  shared folder's grant lists paths no Host may read, and each was compared
+  with one folder name at a time, so a path written with a slash never
+  matched. The Host's own default list includes `.config/gcloud`, so a
+  shared home folder served the Google Cloud command line's sign-in files
+  through list, stat and read_range. A path such as `.config/gcloud` now
+  matches that run of folders anywhere under the shared folder, with names
+  compared the way this machine's file system compares them, as one-folder
+  paths already were. Every check that reads the excluded paths uses it:
+  each folder op, the listing walk and both checks on a move plan.
+- **The local search agent's own folder is never served.** The agent keeps
+  its extracted text, its sanitized text, its vectors, its catalog and its
+  sealed bundles in `.agent` inside the shared folder, and a Host allowed to
+  read the folder could list it and read the extracted text as it is. List,
+  stat, read_range and move plans now refuse `.agent` at any depth and in
+  any case, however the path is written or reached through a link, and say
+  why. The bastion's own plan reports still go to `.agent/plans`.
+- **What flag mode replaces is said exactly.** The note a Host passes on
+  for a folder searched in flag mode said card, bank and ID numbers were
+  replaced. It now names what is replaced (e-mail addresses, phone numbers,
+  card and US social security numbers, IBANs, US routing numbers after a
+  word such as "routing", Bitcoin addresses that start with 1 or 3, IP and
+  MAC addresses, private keys and known token formats) and what is never
+  looked for (names, street addresses, dates of birth, passport, licence
+  and other ID numbers, other bank account numbers and other crypto
+  addresses).
+- **The documentation says what listens and what each claim's test checks.**
+  The tunnel holds one UDP port, chosen by the system, which answers nothing
+  that is not from the paired Host's key; every other port is on loopback.
+  A coder run reaches nothing on this machine or your network that you did
+  not name with `--allow-lan`. Nine rows of `docs/claims.md` now say only
+  what their tests assert. The commands page lists every command, and the
+  install page the one-line pairing for a Cloud Host. `git-setup` no longer
+  says the forge can be reached only through the bastion.
+
 ## 0.58.0
 
 - **A Host answers four common questions about a machine itself, instead of
