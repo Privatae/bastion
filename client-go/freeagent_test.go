@@ -330,8 +330,16 @@ func TestASanitizeStampNamesTheModeThatRan(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(faSanitizeNotes["flag"], "names") {
-		t.Fatal("the flag note must say names are left in")
+	// The agent's rules pass (pii/detect.py) does not look for these, so the
+	// note the host relays must say they can still be there.
+	for _, left := range []string{"names", "street addresses", "dates of birth", "passport",
+		"other bank account numbers", "other crypto addresses"} {
+		if !strings.Contains(faSanitizeNotes["flag"], left) {
+			t.Errorf("the flag note must say %s can still be in the text: %q", left, faSanitizeNotes["flag"])
+		}
+	}
+	if strings.Contains(faSanitizeNotes["flag"], "ID numbers, IP") || strings.Contains(faSanitizeNotes["flag"], "bank and ID") {
+		t.Errorf("the flag note says ID or bank numbers were replaced, which the rules pass does not do: %q", faSanitizeNotes["flag"])
 	}
 }
 

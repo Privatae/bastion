@@ -14,9 +14,9 @@ Run the tests:
 go test ./...
 ```
 
-The suite covers all three platforms' parsing and judgement logic from a single
-`go test` on any OS, because every platform-specific decision is kept in files
-with no build tag and only the enumerators are tagged.
+Most parsing and judgement logic is in files with no build tag and runs under
+`go test` on any OS. Some platform parsers and the Linux sandbox are in tagged
+files, and their tests run only on that OS.
 
 The walls a host's input has to get through also have fuzz targets
 (`client-go/fuzz_*_test.go`): the path sandbox for store reads and move

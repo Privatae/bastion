@@ -624,8 +624,8 @@ func checkPairConflict(cfgs []*Config, handle string, replace bool) (*Config, er
 }
 
 // nextGitProxyAddr picks the first loopback port from 7978 up that no existing
-// pairing claims: the per-host git proxy (git.privatae.ai is reachable only through
-// the bastion → host → platform path). Allocated lazily for pairings that predate it.
+// pairing claims: the per-host git proxy, through which local git reaches
+// git.privatae.ai via that host (gitlane.go). Allocated lazily for pairings that predate it.
 func nextGitProxyAddr(cfgs []*Config) string {
 	used := map[string]bool{}
 	for _, c := range cfgs {

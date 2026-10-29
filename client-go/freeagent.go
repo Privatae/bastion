@@ -68,17 +68,22 @@ type freeagentConfig struct {
 
 // faManagedSanitizeMode is the sanitize mode the bastion writes into every
 // manifest it deploys (faManifestText). Flag mode is the agent's rules pass
-// only: it replaces e-mail addresses, phone numbers, card, bank and ID
-// numbers, IP and MAC addresses and keys, and does not find names, street
-// addresses or dates of birth.
+// only (the agent's pii/detect.py): it replaces what a pattern can find
+// (faSanitizeNotes["flag"] names each kind), and does not look for names,
+// street addresses, dates of birth, ID numbers such as passport numbers, or
+// bank account numbers other than IBANs.
 const faManagedSanitizeMode = "flag"
 
 // faSanitizeNotes says, for each mode a reply can carry, what personal data
 // may still be in the text, in the words the host relays. A mode with no entry
 // here is reported as not known to remove personal data.
 var faSanitizeNotes = map[string]string{
-	"flag": "rules only: e-mail addresses, phone numbers, card, bank and ID numbers, IP and MAC addresses " +
-		"and keys were replaced; names, street addresses and dates of birth were not",
+	"flag": "rules only. Replaced: e-mail addresses, phone numbers, card numbers, US social security numbers, " +
+		"international bank account numbers (IBANs), US bank routing numbers written after a word like " +
+		"\"routing\", Bitcoin addresses that start with 1 or 3, IP and MAC addresses, private keys, and " +
+		"access keys and tokens of the kinds it knows. Other numbers that look like one of these can be " +
+		"replaced too. Not looked for, so they can still be in the text: names, street addresses, dates of " +
+		"birth, passport, licence and other ID numbers, other bank account numbers and other crypto addresses",
 	"sterilize": "",
 	"none":      "the agent's manifest has no sanitize stage, so nothing in the text was replaced",
 }

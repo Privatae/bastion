@@ -121,13 +121,15 @@ The file:
   needs. It cannot write to that folder. `backup unshare` takes it back, and
   unpairing or revoking the new host takes back every folder shared with it.
 
-This bastion does not bring up the new host. Running one on hardware you own
-needs infrastructure that is not part of this program, and not built yet:
+This bastion does not bring up the new host. A Host on hardware you own is a
+C-Series Host ([A Host on this machine](host-on-this-machine.md)), and it can
+restore a backup the lost host made, from a file:
 
-- a DMZ cluster on your hardware: a Kubernetes cluster with the network
-  policy, admission and storage the host's pod expects;
-- the operator that creates and runs a host's pod on that cluster;
-- the host's container images, from a registry that cluster can pull from;
-- the certificate authority that issues the host its identity, and the
-  services a host reaches when it starts, or replacements for them;
-- a place the new host can fetch the backup from, as above.
+1. Copy the backup and its key file (`<stamp>.tar.zst.age` and
+   `<stamp>.key.age`) out of the lost host's backup folder here.
+2. In the C-Series Host's Backups app, under "Restore from a file", choose
+   the two together and give the lost host's recovery key. The page opens the
+   key file with it and seals the backup's key to the new Host; the recovery
+   key never leaves the page.
+3. Tick the box and enter the code from your authenticator. When the backup
+   is from another host number, the page asks you first.

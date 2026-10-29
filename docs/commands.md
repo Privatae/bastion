@@ -28,16 +28,22 @@
 | `ops [--host <host>]` | The ops your host wrote that this machine holds, and the standing op grants. |
 | `ops drop <grant> [--host <host>]` | Take back a standing op grant. The host is told. |
 | `coders set [--max N] [--mem MB] [--cpus F] [--engines a,b\|all] [--allow-lan host[:port],...] [--image-prefix <registry/path/>\|default]` | Size this machine for coding runs your hosts place here: how many at once, memory and CPUs per run, which engines, LAN hosts a run may reach, and where run images may come from (`<prefix>harness-<engine>@sha256:...`; default `git.privatae.ai/privatae-harness/`). Does not switch them on. |
-| `coders on` / `coders off` | Allow coding runs here (Linux, bastion running as root), filling unset sizes with defaults; or stop new ones. Off by default. Each run is a container with no network of its own; it reaches the public internet through this bastion and never this machine or its LAN. |
+| `coders on` / `coders off` | Allow coding runs here (Linux, bastion running as root), filling unset sizes with defaults; or stop new ones. Off by default. Each run is a container with no network of its own. Through this bastion it reaches the public internet, and never this machine or its LAN unless you named that host with `--allow-lan`. |
 | `coders drop [--host <host>]` | Take back the standing coder grant of every host, or one, and stop their runs. |
 | `coders status [--json]` | The coder settings, grants and runs on this machine. |
 | `quarantine clear <host>` | Reopen a host's write lanes that this machine closed after repeated refusals. |
 | `git-setup` | Print the `git config` lines that route `git.privatae.ai` through this bastion. |
 | `git-credential` | Git credential helper. Fetches your forge token from your host on every auth. |
 | `unpair <host>` | Tear down one pairing. Context store and DCN state are left in place. |
-| `set-mode <local\|networked>` | Switch modes. Root required. |
+| `set-mode <local\|networked>` | Switch modes. `networked` needs root; `local` is refused while several hosts are paired or the machine is anchored. |
+| `service install\|uninstall\|status` | On macOS and Windows, run the bastion as the system's own service. `install` and `uninstall` need machine authority. |
 | `claim-anchor [--owner <name>] [--host <host>] [<token>]` | Networked mode: make a host the anchor. No token when the host is already paired here. Also `--rotate <token>`, `--repin`. Root required. |
+| `release-anchor --host <host> (--host-ca <pem> \| --force)` | Let go of an anchor whose Host is gone: unpair it and set its state aside, so a new Host can be anchored. `--host-ca` is the new Host's CA. Root required. |
 | `claim-owner <name>` | State who owns this machine. Root required. Optional; grants nothing. |
+| `root-exec grant [--host <host>] --for <duration>` / `root-exec revoke` | Let the anchor host run commands as root here, with the code from the authenticator enrolled here, until a time you choose (30 days at most); or take it back. `root-exec` alone shows the grant held. Granting needs root. |
+| `switch <host> <family> on\|off` / `switch --list` | Switch a capability family off for one host on this machine, or back on; `--list` shows every host's families. Switching needs root. |
+| `approvals-owner --sid <SID> [--replace]` | Windows, beside the system service: name the one account whose tray icon may list and answer approvals. Administrator only. |
+| `tray` | Windows, beside the system service: your icon and approvals window, started at every sign-in. |
 | `observe` | Print the agent, automation and scheduler snapshot the next check-in would carry. |
 | `observe:baseline [--force]` | Record what is normal on this machine. Administrator only. |
 | `observe:baseline:show` | Print the baseline this machine holds. |

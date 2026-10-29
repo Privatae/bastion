@@ -2,12 +2,13 @@ package main
 
 // Git lane: Gitea through the Host.
 //
-// git.privatae.ai answers only platform/DMZ addresses now, so the user's LOCAL git
-// cannot reach it. This bastion offers a loopback HTTP proxy for git; every local
-// connection is spliced over the tunnel into ONE WebSocket on the host (/bastion-git,
-// same bearer + mTLS binding as the other lanes) and the host relays it out the
-// platform path to git.privatae.ai ONLY. The wire framing is the egress lane's
-// ('D'+bytes / 'E' end) with the roles swapped, so wsConn is reused unchanged.
+// This bastion offers a loopback HTTP proxy for the user's LOCAL git to reach
+// git.privatae.ai through their host; every local connection is spliced over the
+// tunnel into ONE WebSocket on the host (/bastion-git, same bearer + mTLS binding
+// as the other lanes) and the host relays it on to the forge. Which addresses the
+// forge itself answers is the forge's rule; nothing here sets or checks it. The
+// wire framing is the egress lane's ('D'+bytes / 'E' end) with the roles swapped,
+// so wsConn is reused unchanged.
 //
 // Setup for the user (printed by `privatae-bastion git-setup`):
 //   git config --global http.https://git.privatae.ai.proxy http://127.0.0.1:<port>
@@ -199,7 +200,8 @@ func gitCredentialReply(body []byte, authtype bool) []byte {
 	return []byte("username=" + user + "\npassword=" + pass + "\nquit=1\n")
 }
 
-// cmdGitSetup prints the two git config lines for every pairing.
+// cmdGitSetup prints the three git config lines for every pairing: the proxy,
+// the reset of the forge's helper chain, and the helper.
 func cmdGitSetup() error {
 	all, err := loadPairings()
 	if err != nil {
@@ -208,7 +210,7 @@ func cmdGitSetup() error {
 	if len(all) == 0 {
 		return fmt.Errorf("no pairings — run `privatae-bastion pair <token>` first")
 	}
-	fmt.Println("git through your bastion (git.privatae.ai is reachable only this way):")
+	fmt.Println("git to git.privatae.ai through this bastion and your host:")
 	if len(all) > 1 {
 		fmt.Println("(several hosts are paired: pick ONE for git, and name it with --host in the helper line)")
 	}

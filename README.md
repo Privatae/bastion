@@ -22,9 +22,9 @@ gates. Your files stay where they are. Nothing on this machine drives the host:
 there is no MCP endpoint here.
 
 The published release is whatever `privatae.ai/bastion/version.json` names.
-`deploy/VERSION` on `main` is the next release, which may not be published
-yet. From 0.42.0 on, every release manifest is signed and every published
-binary can be rebuilt from this source and compared
+This repository receives each release after it is published, so
+`deploy/VERSION` here can trail it. From 0.42.0 on, every release manifest is
+signed and every published binary can be rebuilt from this source and compared
 ([Verify a release](#verify-a-release)). See [CHANGELOG.md](CHANGELOG.md).
 
 ```sh
@@ -71,10 +71,12 @@ A Privatae host is an AI that works for you. To be useful it needs to see your
 files, use your machine's models, and sometimes act on the machine. The bastion
 is the piece that makes that possible **without handing the host your machine**.
 
-The bastion dials your host; your host never dials your machine. No port is
-opened on any externally reachable interface (the control ports and the local
-console bind loopback only; the optional memory-mirror forwarder also binds
-the replica container's private gateway address). The only thing your host can reach is the
+The bastion dials your host; your host never dials your machine. The only
+ports it holds open on an outside interface are its tunnels' WireGuard UDP
+ports, one per host it reaches through a tunnel, each at a port the system
+picks, and WireGuard drops every packet there that does not come from that
+host's key. Every other port it opens binds loopback (the optional memory-mirror
+forwarder also binds the replica container's private gateway address). The only thing your host can reach is the
 inside of the tunnel this binary brought up, and what it may do there arrives
 as a signed grant that this binary verifies locally. Once you enrol a second
 factor on this machine, anything that would move your files, download a model,
@@ -248,7 +250,8 @@ its own page, listed with one line each in [docs/README.md](docs/README.md):
 Each point in full: [docs/security-model.md](docs/security-model.md); the link after each goes to its detail.
 
 - **The bastion dials out.** Every lane is a reverse connection to the host;
-  no port is opened on an externally reachable interface. ([lanes](docs/lanes.md))
+  the only ports open on an outside interface are the tunnels' WireGuard
+  ports, which drop everything not from the host's key. ([lanes](docs/lanes.md))
 - **Inside the tunnel, only gated listeners**: up to three inference forwards,
   one port per service-slot server and one per coder run, each checked when a
   connection is accepted. ([tunnel](docs/lanes.md#tunnel))
@@ -276,10 +279,11 @@ Each point in full: [docs/security-model.md](docs/security-model.md); the link a
   and never change anything outside their declared file effects. ([ops](docs/ops.md))
 - **A server in the service slot has no network.** The host's tunnel is its
   only way in. ([service slot](docs/service-slot.md))
-- **Egress for someone else reaches the public internet, never this
-  machine**: a coder run's proxy and an anchored machine's egress lane refuse
-  internal addresses and this machine's own (a coder run reaches a LAN host
-  you named). A local machine's egress lane refuses this machine and your
+- **Egress for someone else reaches the public internet, and nothing on this
+  machine or your network that you did not name**: a coder run's proxy and an
+  anchored machine's egress lane refuse internal addresses and this machine's
+  own (a coder run reaches a host you named with `coders set --allow-lan`,
+  even when it is this machine or on your LAN). A local machine's egress lane refuses this machine and your
   LAN too; your own machines are reached through their approved lanes. An address that reaches this machine only through a 1:1 NAT is
   not covered. ([full text](docs/security-model.md))
 - **A terminal is checked here and logged.** On a local machine it opens when
@@ -298,6 +302,10 @@ Each point in full: [docs/security-model.md](docs/security-model.md); the link a
   that one backup. ([backups](docs/backups.md), [restoring a lost host](docs/backups.md#restoring-a-lost-host))
 - **No delete op on shared stores.** The one write lane is a move plan you
   approved, and it archives. ([DCN stores](docs/context.md#distributed-context-network-dcn-stores))
+- **A shared folder serves only what its grant leaves in.** Every read and
+  move is held to the grant's excludes, `.config/gcloud` and other patterns of
+  several folders included, and the search agent's own folder (`.agent`) is
+  never read or moved. ([DCN stores](docs/context.md#distributed-context-network-dcn-stores))
 - **Verified releases.** The self-updater checks the manifest's signature and
   the binary's SHA-256 before swapping; the release key never reaches the
   build machine. The installer checks the SHA-256 ([SECURITY.md](SECURITY.md)
@@ -324,9 +332,9 @@ Development happens in a private repository, and its history is not
 published. When a release is published, each change merged since the last one
 arrives on GitHub as a commit with the same files, titled as the change was
 and dated when it was merged; the copy at git.privatae.ai receives the release
-as one commit. In both, the release is tagged `v<version>` on a commit whose
-tree is identical to the commit the signed release manifest names as
-`built_from`. Every binary can be rebuilt from the tag and compared with the
+as one commit. In both, the release is tagged `v<version>` (0.55.0 to 0.55.2
+were not) on a commit whose tree is identical to the commit the signed release
+manifest names as `built_from`. Every binary can be rebuilt from the tag and compared with the
 published one: see [Verify a release](#verify-a-release).
 
 Issues and pull requests are welcome on GitHub, at
@@ -359,7 +367,11 @@ CGO_ENABLED=0 go build -o privatae-bastion .
 ./privatae-bastion version
 ```
 
-Every push runs the same checks in CI (`.gitea/workflows/ci.yml`).
+Every push to `main` and every pull request into it runs the checks
+[CONTRIBUTING.md](CONTRIBUTING.md) asks for in CI: `.github/workflows/ci.yml`
+on GitHub, `.gitea/workflows/ci.yml` on git.privatae.ai. On GitHub it also
+runs every test [docs/claims.md](docs/claims.md) cites, as root on a machine
+of its own, and fails if any of them skips.
 
 To build a specific release rather than the latest source, check out its tag
 first (`git checkout v<version>`).
@@ -382,8 +394,9 @@ It checks the release manifest's signature against the keys pinned in
 `client-go/release_sign.go`, checks out the release's source, rebuilds it, and
 compares every binary's sha256 with the published one.
 
-Each published release in this repository carries the tag `v<version>` (for
-example `v0.54.1`). The manifest's `built_from` names the
+From 0.53.2 on, each release in this repository carries the tag `v<version>`
+(for example `v0.54.1`), apart from 0.55.0, 0.55.1 and 0.55.2, which have no
+tag. The manifest's `built_from` names the
 commit in the repository the release was built in, which is not a commit here,
 so the script checks out the tag `v<version>` for the version the manifest
 names, and prints which source it used. The tag is annotated and its message
@@ -396,8 +409,9 @@ bytes.
 
 If the published version has no tag in your clone, the script says so and
 stops without building. If it cannot fetch tags, it says that instead.
-Releases from 0.53.2 on can be checked this way from a clone of this
-repository; the tags of earlier releases are not in it.
+Only a release tagged here can be checked this way from a clone of this
+repository. A release arrives here after it is published, so the newest one
+has no tag here until then.
 
 Each release on GitHub carries the six binaries, the signed manifest
 `version.json`, its signature `version.json.<first 16 hex of its sha256>.sig`
@@ -415,7 +429,7 @@ go run . verify bastion <dir>/version.json <dir>/version.json.<…>.sig $(go run
 ```
 
 `deploy/release-assets.sh v<version> <dir>` does all of it from a clone,
-rebuild included, for any release from 0.53.2 on.
+rebuild included, for any release tagged here.
 
 ## Contributing
 

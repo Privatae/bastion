@@ -142,6 +142,10 @@ func dcnCheckPlan(root string, excludes []string, moves []dcnMove) []dcnPlanProb
 			continue
 		}
 		seenTo[pathKey(dst)], seenFrom[pathKey(src)] = i, i
+		if dcnAgentAsSent(root, m.From) || dcnAgentAsSent(root, m.To) {
+			bad(i, m, "the local search agent's own folder (.agent) is never moved from or into")
+			continue
+		}
 		if dcnExcludedAsSent(excludes, root, m.From) {
 			bad(i, m, "source is excluded by the grant")
 			continue

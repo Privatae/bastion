@@ -102,13 +102,15 @@ one installed.
 **Checking our work.** Release builds are reproducible.
 `deploy/verify-release.sh` fetches the published manifest, checks its
 signature, checks out the release's source, rebuilds it, and compares every
-binary's digest. From 0.53.2 on, each published release in this repository
-carries the annotated tag `v<version>`, whose message records the release's
-`built_from`. That field names the commit in the repository the release was
-built in, which is not a commit here, so the script uses the tag and prints
+binary's digest. From 0.53.2 on, apart from 0.55.0 to 0.55.2, each release in
+this repository carries the annotated tag `v<version>`, whose message records
+the release's `built_from`. A release arrives here after it is published.
+That field names the commit in the repository the release was built in,
+which is not a commit here, so the script uses the tag and prints
 which source it used. If the digests match, this source builds the binaries we
-serve. Releases published before build reproducibility was added (0.40.0 and
-earlier) cannot be checked this way.
+serve. Only a release tagged here can be checked this way, and releases
+published before build reproducibility was added (0.40.0 and earlier) cannot
+be checked at all.
 
 **The agent.** The bastion downloads the bastion agent, runs it, and gives it
 the folder you granted. The agent is a separate program in its own repository

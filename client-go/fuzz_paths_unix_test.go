@@ -137,13 +137,14 @@ func landsInside(root, p string) bool {
 	return false
 }
 
-// excludedOnDisk is the fixture's excludes (".ssh", "*.key") judged
+// excludedOnDisk is the fixture's excludes (".ssh", "*.key"), and the local
+// search agent's folder (".agent", which no grant reaches), judged
 // independently of dcnExcluded: on the path relative to the root after every
 // link is followed, and on the text of the path the sandbox opens.
 func excludedOnDisk(root, p string) bool {
 	check := func(rel string) bool {
 		for _, seg := range strings.Split(rel, "/") {
-			if seg == ".ssh" || strings.HasSuffix(seg, ".key") {
+			if seg == ".ssh" || strings.HasSuffix(seg, ".key") || strings.EqualFold(seg, ".agent") {
 				return true
 			}
 		}

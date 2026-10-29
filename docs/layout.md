@@ -38,9 +38,14 @@ deploy/
   release-sign/   the signing tool: runs where the release key is, never here
   release-verify.sh  check a manifest's signature against the pinned keys
   verify-release.sh  rebuild a published release and compare its digests
+  release-assets.sh  rebuild a release from its tag and check it against the signed manifest
+  staticcheck.sh  staticcheck on linux, darwin and windows
   fuzz.sh         run every fuzz target for a bounded time
   check-claims.sh  check that every test the security table cites exists
 docs/             reference pages, listed in docs/README.md
+scripts/          the check that no person's data is in the tree
+.gitea/workflows/  CI on git.privatae.ai
+.github/workflows/ CI and the release on GitHub
 LICENSE           GNU GPL v3
 ```
 

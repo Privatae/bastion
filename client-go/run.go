@@ -533,9 +533,9 @@ func runPairing(ctx context.Context, cfg *Config) error {
 	}()
 
 	// 2d. Git lane: loopback HTTP proxy for git.privatae.ai only.
-	//     Each local connection = one WebSocket to the host, relayed out the PLATFORM
-	//     path there (the forge answers platform/DMZ addresses only). No credential
-	//     rides this lane; git presents its own via the git-credential helper below.
+	//     Each local connection = one WebSocket to the host, which relays it on to
+	//     the forge (gitlane.go). No credential rides this lane; git presents its
+	//     own via the git-credential helper below.
 	if cfg.GitProxyAddr != "" {
 		if gitLn, err := net.Listen("tcp", cfg.GitProxyAddr); err != nil {
 			// Optional lane: a port collision must not take the tunnel, lanes and

@@ -62,10 +62,11 @@ carries a tag of the named repository.
 A Host with no platform that runs in a VM on this machine shares no kernel and
 no directory with it. A C-Series Host
 ([Privatae/cseries](https://github.com/Privatae/cseries)) is one: it runs in
-its own Linux virtual machine. Its installer, `npx cseries`, forwards two ports
-of the VM to this machine's loopback, installs this bastion as the machine's
-system service, and on every pairing runs these in one elevated step (on
-Windows, from an Administrator PowerShell instead of `sudo -H`):
+its own Linux virtual machine. Its installer, `npx cseries`, forwards three
+ports of the VM (8800, 8810, 8811) to this machine's loopback, installs this
+bastion as the machine's system service, and on every pairing runs these in
+one elevated step (on Windows, from an Administrator PowerShell instead of
+`sudo -H`):
 
 ```sh
 # 1. The service's state, networked.

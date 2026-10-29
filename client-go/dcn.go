@@ -276,26 +276,81 @@ func dcnResolvePath(root, rpath string) (string, bool) {
 	return joined, true
 }
 
-// dcnExcluded reports whether rpath trips any exclude pattern. Patterns match the
-// basename and every path segment (glob per segment: ".ssh", "*.key", ".env*"),
-// compared the way this platform's file system compares names (dcnNameKey).
+// dcnExcluded reports whether rpath trips any exclude pattern, or is inside a
+// local search agent's folder (dcnInAgentDirOn), which no grant reaches. A
+// pattern of one folder name matches any segment of the path (".ssh", "*.key",
+// ".env*"); a pattern with a "/" (".config/gcloud") matches that run of
+// consecutive segments wherever it sits in the path, each one a glob. Names
+// are compared the way this platform's file system compares them (dcnNameKey).
 // rpath is a real relative path; a path a host sent goes through dcnExcludedAsSent.
 func dcnExcluded(excludes []string, rpath string) bool {
 	return dcnExcludedOn(runtime.GOOS, excludes, rpath)
 }
 
 func dcnExcludedOn(goos string, excludes []string, rpath string) bool {
+	if dcnInAgentDirOn(goos, rpath) {
+		return true
+	}
 	segs := strings.Split(filepath.ToSlash(rpath), "/")
+	for i, seg := range segs {
+		segs[i] = dcnNameKey(goos, seg)
+	}
 	for _, pat := range excludes {
 		pat = strings.TrimSpace(pat)
 		if pat == "" {
 			continue
 		}
-		pat = dcnNameKey(goos, pat)
-		for _, seg := range segs {
-			if ok, _ := filepath.Match(pat, dcnNameKey(goos, seg)); ok {
-				return true
+		var run []string
+		for _, p := range strings.Split(pat, "/") {
+			if p != "" {
+				run = append(run, dcnNameKey(goos, p))
 			}
+		}
+		if dcnRunMatches(run, segs) {
+			return true
+		}
+	}
+	return false
+}
+
+// dcnRunMatches says whether the globs in run match len(run) consecutive
+// segments of segs, starting anywhere. An empty run matches nothing.
+func dcnRunMatches(run, segs []string) bool {
+	if len(run) == 0 {
+		return false
+	}
+	for i := 0; i+len(run) <= len(segs); i++ {
+		all := true
+		for j, p := range run {
+			if ok, _ := filepath.Match(p, segs[i+j]); !ok {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// dcnAgentDir is the folder the local search agent keeps everything it makes
+// in, beside the files it reads: the plaintext of every file in scope, the
+// sanitized text, vectors, the catalog and sealed bundles. The bastion puts
+// it at <root>/.agent wherever it may write into the folder (freeagent_managed.go;
+// the agent's own default too), and a folder inside a store can hold another
+// store's. The agent's walker never reads one, at any depth and in any case;
+// the file ops never serve one either.
+const dcnAgentDir = ".agent"
+
+// dcnInAgentDirOn reports whether any segment of rpath names an agent's
+// folder, as the file system on goos names it, and in any case on every OS
+// (as the agent's own walker judges it: a ".Agent" on a volume that ignores
+// case is the agent's folder).
+func dcnInAgentDirOn(goos, rpath string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(rpath), "/") {
+		if strings.EqualFold(dcnNameKey(goos, seg), dcnAgentDir) {
+			return true
 		}
 	}
 	return false
@@ -328,11 +383,25 @@ func dcnNameKey(goos, name string) string {
 //
 // A path cleanRel refuses is judged as sent (the sandbox refuses it anyway).
 func dcnExcludedAsSent(excludes []string, root, rpath string) bool {
+	return dcnJudgedAsSent(root, rpath, func(rel string) bool { return dcnExcluded(excludes, rel) })
+}
+
+// dcnAgentAsSent is whether a path a host sent opens an agent's folder (by its
+// spelling or through a link), judged as dcnExcludedAsSent judges excludes.
+// dcnExcluded refuses the same paths; this one exists so the refusal can say
+// why.
+func dcnAgentAsSent(root, rpath string) bool {
+	return dcnJudgedAsSent(root, rpath, func(rel string) bool { return dcnInAgentDirOn(runtime.GOOS, rel) })
+}
+
+// dcnJudgedAsSent applies judge to what a host's path opens: the cleaned path
+// relative to the root, then where it leads relative to the resolved root.
+func dcnJudgedAsSent(root, rpath string, judge func(rel string) bool) bool {
 	joined, ok := cleanRel(root, rpath)
 	if !ok {
-		return dcnExcluded(excludes, rpath)
+		return judge(rpath)
 	}
-	if rel, err := filepath.Rel(filepath.Clean(root), joined); err != nil || dcnExcluded(excludes, rel) {
+	if rel, err := filepath.Rel(filepath.Clean(root), joined); err != nil || judge(rel) {
 		return true
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
@@ -343,7 +412,7 @@ func dcnExcludedAsSent(excludes []string, root, rpath string) bool {
 	if err != nil {
 		return true
 	}
-	return dcnExcluded(excludes, rel)
+	return judge(rel)
 }
 
 // dcnWhereItLeads is p with its deepest existing part's links resolved and the
@@ -426,6 +495,10 @@ func dcnLoadGrantMask(ws *websocket.Conn, dir, op string, storeID int64, rpath, 
 	// 'search' mask the user granted separately.
 	if !dcnHasMask(terms, mask) {
 		dcnRefuse(ws, dir, op, storeID, rpath, "op '"+mask+"' not in the store's granted mask")
+		return nil
+	}
+	if rpath != "" && dcnAgentAsSent(terms.Root, rpath) {
+		dcnRefuse(ws, dir, op, storeID, rpath, "path is in the local search agent's own folder (.agent), which no grant reaches")
 		return nil
 	}
 	if rpath != "" && dcnExcludedAsSent(terms.Excludes, terms.Root, rpath) {

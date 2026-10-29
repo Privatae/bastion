@@ -38,10 +38,10 @@ The backup tests also check this code against the age command itself when
 one is on PATH or named by `AGE_BIN`; CI installs a pinned age release and
 sets `PRIVATAE_REQUIRE_AGE`, so there they fail rather than skip.
 
-The test suite covers all three platforms' parsing and judgement logic from
-one `go test` on any OS. Platform-specific decisions live in files with no
-build tag; only the enumerators are tagged. Keep it that way: a new judgement
-goes in an untagged file with a table test. Check it with
+Most parsing and judgement logic is in files with no build tag and runs under
+one `go test` on any OS. Some platform parsers (on Linux and macOS) and the
+Linux sandbox are in tagged files, and their tests run only on that OS. A new
+judgement goes in an untagged file with a table test. Check it with
 `GOOS=windows go vet ./...` and `GOOS=darwin go vet ./...` as well: `go build`
 does not compile test files, so only vet sees a test that uses a Linux-only
 name.

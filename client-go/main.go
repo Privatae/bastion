@@ -142,8 +142,8 @@ Usage:
                                let your hosts run sealed coding runs on this machine (Linux, as
                                root): how many at once, how big each is, which engines. Off by
                                default; each run has no network but a proxy to the internet
-  privatae-bastion git-setup      print the two git config lines that route git.privatae.ai
-                               through this bastion (the forge is reachable only this way)
+  privatae-bastion git-setup      print the git config lines that route git.privatae.ai
+                               through this bastion and your host
   privatae-bastion git-credential git's credential helper — fetches your forge token from your
                                host on every git auth (git-setup resets the helper chain so no
                                other helper caches it)

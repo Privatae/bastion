@@ -20,8 +20,21 @@ signed in, and only the machine's administrator can stop it:
 On macOS and Windows, `privatae-bastion service install|uninstall|status` does
 the same by hand. An administrator's commands (`sudo -H …` on macOS, an
 Administrator terminal on Windows) act on the service's state. From an account
-that does not administer the machine, `pair`, `run` and `status` are refused,
-so that account does not end up with a second, empty bastion of its own.
+that does not administer the machine, `pair`, `run`, `status` and `switch` are
+refused, so that account does not end up with a second, empty bastion of its
+own.
+
+A local install runs as you. On Windows the installer registers a logon task
+that starts it each time you sign in.
+
+A Cloud Host's "Set up a bastion" card gives one line that installs, pairs and
+starts the bastion: `curl -fsSL https://privatae.ai/bastion/install.sh | PRIVATAE_PAIR_CODE='skp_…' sh`
+on macOS and Linux, `& ([scriptblock]::Create((irm https://privatae.ai/bastion/install.ps1))) -Pair 'skp_…'`
+on Windows. Installed as you, it then runs as your systemd user unit
+`privatae-bastion`, your LaunchAgent `ai.privatae.bastion.user`, or the logon
+task. Where it cannot use one, the installer starts the bastion without it and
+says how long it will run: on Linux until the machine restarts, on Windows
+until you sign out.
 
 Release binaries are served from `https://dl.privatae.ai`. The release manifest
 (`version.json`, read by the installers at `https://dl.privatae.ai/version.json`

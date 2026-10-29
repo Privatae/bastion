@@ -3,27 +3,28 @@
 ## Tunnel
 A userspace WireGuard tunnel (gVisor netstack) scoped so this machine can reach
 **only its own host**. No TUN device is created and `run` does not need root.
-The tunnel is dialled from this machine. Inside it, the bastion accepts on
-exactly three addresses, all under the `inference` capability family: a
-forward to a local ollama (port 11434), a forward to an OpenAI-compatible
-server when one is configured (port 18080), and a forward to a local PII
-sterilizer when one is configured. Nothing else listens.
+The tunnel is dialled from this machine. Its WireGuard UDP port, on every
+address at a port the system picks when the tunnel comes up, drops every
+packet that does not come from the host's key. Inside the tunnel, the
+bastion accepts only on gated forwards: ollama (11434), an OpenAI-compatible server (18080) and a PII
+sterilizer (18081) under the `inference` capability family, the last two only
+when configured; one port per service-slot server (18100-18199); and one per
+coder run (18200-18299). Nothing else listens.
 
 ## Git lane
 A loopback HTTP proxy plus a `git-credential` helper, so your local `git` reaches
-`git.privatae.ai` through your host. The forge answers platform addresses only,
-so this lane is the way in. `privatae-bastion git-setup` prints the three
-config lines: the proxy, a reset of the credential-helper chain for that URL
+`git.privatae.ai` through your host. `privatae-bastion git-setup` prints the
+three config lines: the proxy, a reset of the credential-helper chain for that URL
 (so no other helper caches your token on this machine), and the helper itself.
 
 ## Worker lanes
 Outbound-only reverse relays to the host: egress, management, harness, and
 session. The management lane runs a **fixed-argv allowlist**. Ops that touch
-your files are dedicated Go handlers with no shell. Of those file handlers,
-the one that runs a program is text extraction: it invokes a local tool named
-in a fixed table
+your files are dedicated Go handlers with no shell. Two of them start a
+program: text extraction invokes a local tool named in a fixed table
 (`pdftotext`, `ffprobe`, and the like) from a fixed argv template, and the
-caller supplies only the tool's name and the document.
+caller supplies only the tool's name and the document; `dcn_grant_sync`
+starts the local search agent's Python.
 
 ## Session lane
 An interactive terminal that runs on this machine and streams to the host over

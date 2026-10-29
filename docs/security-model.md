@@ -1,10 +1,15 @@
 # Security model
 
 - **The bastion dials out.** Every lane is a reverse connection from this
-  machine to the host. No port is opened on an externally reachable interface;
-  the control ports and console bind loopback only, and the optional
-  memory-mirror forwarder binds loopback plus the replica container's private
-  gateway address, with every accept source-checked.
+  machine to the host. The only ports open on an outside interface are the
+  tunnels' WireGuard UDP ports: one for each host paired over a tunnel, on
+  every IPv4 and IPv6 address, at a port the system picks when that tunnel
+  comes up. WireGuard drops every packet on one that does not come from the
+  paired host's key; the only reply it ever sends anyone else is a cookie
+  under a flood of handshakes, and only to a sender that already knows that
+  tunnel's public key. Every other port the bastion opens binds loopback, except the
+  optional memory-mirror forwarder, which also binds the replica container's
+  private gateway address, with every accept source-checked.
 - **Inside the tunnel, only gated listeners.** The host can connect to up to
   three inference forwards (local ollama, an OpenAI-compatible server, a PII
   sterilizer), each a proxy to a service you run, on loopback by default and
@@ -132,8 +137,8 @@
 - **A server in the service slot has no network.** The host's tunnel is its
   only way in, and it cannot reach this machine, your network or the
   internet.
-- **Egress for someone else reaches the public internet, never this
-  machine.** A coder run's proxy, always, and the egress lane on an anchored
+- **Egress for someone else reaches the public internet, and nothing on
+  this machine or your network that you did not name.** A coder run's proxy, always, and the egress lane on an anchored
   machine refuse loopback, link-local (the cloud metadata address included),
   private, CGNAT and reserved addresses, the deprecated IPv4-compatible
   (`::/96`), IPv4-translated (`::ffff:0:0/96`) and site-local (`fec0::/10`)
@@ -153,8 +158,10 @@
   own veth, its LAN included. The IPv4 address inside an
   IPv4-mapped, NAT64 or 6to4 address is checked too, every address a name
   resolves to is checked, and the address checked is the one dialled. When the machine cannot tell,
-  it refuses. A coder run reaches a LAN host only when you named it in
-  `coders set --allow-lan`; the anchored egress lane has no such exception.
+  it refuses. A coder run reaches a host you named in `coders set
+  --allow-lan`, and skips every one of these refusals for it, so a name or
+  address of this machine you list there is reached too; the anchored egress
+  lane has no such exception.
   The anchored lane's refusal of this machine's own non-private addresses is
   new in 0.50.0; before it, that lane refused only the internal ranges. On a
   local (unanchored) machine the egress lane refuses this machine too:
@@ -236,6 +243,14 @@
   backup files in its own folder or a folder you shared with it.
 - **No delete op on shared stores.** The one write lane is a move plan you
   approved, and it archives rather than deletes.
+- **A shared folder serves only what its grant leaves in.** A host's list,
+  stat, read and move of a shared folder are each held to the grant's
+  excludes, by the name the path opens and wherever a link in it leads. A
+  pattern of one name matches it at any depth; a pattern with a `/`, such as
+  `.config/gcloud`, matches that run of folders at any depth. The local
+  search agent's folder, `.agent`, holds the plaintext of every file the
+  agent read, and no path into one is served or moved, whatever the grant
+  excludes; the bastion still writes its own report of a move plan there.
 - **Verified releases.** The self-updater checks the release manifest's
   signature against the release keys compiled into it, then checks the
   binary's SHA-256 against that manifest before anything is swapped. The
@@ -254,8 +269,9 @@
 
 ## How each claim is tested
 
-[claims.md](claims.md) names, for each point above, the test that fails if
-it stops being true, and says where there is none.
+[claims.md](claims.md) covers each point above and some further claims not
+listed here. For each it names the test that fails if the claim stops being
+true, and says where there is none.
 
 To report a security issue, please do not open a public issue. See
 [SECURITY.md](../SECURITY.md).

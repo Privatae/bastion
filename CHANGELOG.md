@@ -2,11 +2,10 @@
 
 All notable changes to the bastion.
 
-The version in `deploy/VERSION` on `main` is the next release, not necessarily
-the one machines run. A merged change waits there until it is published. The
-published version is whatever <https://privatae.ai/bastion/version.json> names
-at the moment, and it is the only version a bastion will update to. Between a
-merge and a publish, `main` is ahead of the manifest.
+The published version is whatever <https://privatae.ai/bastion/version.json>
+names at the moment, and it is the only version a bastion will update to. This
+public repository receives each release after it is published, so its
+`deploy/VERSION` can trail that manifest.
 
 Two things can keep a version listed here from reaching most machines:
 
