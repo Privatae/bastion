@@ -22,6 +22,49 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.60.0
+
+- **An agent can follow its own stop request to the end.** `request <id>
+  [--wait 5m] [--json]`, and `--wait` and `--json` on `stop`, say where an
+  ask stands: `waiting`, `approved` (being carried out), `stopped`,
+  `not_stopped` with the reason, `denied`, `refused` or `unknown`. Exit
+  status is 0 for stopped, 1 for not, and 3 when still waiting after
+  `--wait`. Each account sees only its own requests.
+- **An account whose asks keep being refused is held.** Five refused asks
+  from one account within ten minutes (the owner denied them, or they were
+  refused: not an agent, refused in the last day, too many waiting) hold its
+  asks for ten minutes, doubling on repeats and forgiven after a clean day,
+  as a Host pairing is held. The owner lifts it with
+  `quarantine clear --asker <account>`.
+- **A deny blocks the same stop for 24 hours from the deny**, not from the
+  ask.
+- **Every row about a request names who asked to stop what.** The asking
+  account, the asking process and the agent it descends from, and the
+  target, each with how it was started, on the ask, the approval or denial
+  and the stop itself. Activity shows asks and denials.
+- **An agent in the owner's account reads the whole machine.** Installed for
+  the whole machine, the bastion keeps its records in root's state. From the
+  account recorded as the machine's owner, `status`, `agents`, `schedules`,
+  `tool-servers`, `posture`, `baseline show`, `baseline diff`, `activity`,
+  `report` and `approvals` now ask the running bastion over its local socket
+  and show the whole machine, with no sudo and no browser. Any other account
+  is refused; `agents`, `schedules`, `tool-servers` and `posture` then show
+  what that account can read itself, and say so.
+- **New commands.** `schedules` (scheduled jobs that start an agent),
+  `tool-servers` (MCP tool servers and what is wrong with each), `posture`
+  (Linux: the firewall, SSH, fail2ban, security updates, disk and load), and
+  `baseline show|diff|record`; the `observe:baseline*` names still work.
+- **`--json` on `status` and `approvals`**, and `report --out -` prints the
+  report instead of writing a file. `status` says NOT ANSWERING when the
+  bastion is installed for the whole machine and its service is not running.
+- **What changes for existing installs.**
+  - No read prints the delegation tag a Host gives an agent; the
+    administrator's `agents --json` and the report file used to carry it.
+  - `schedules --json` and `tool-servers --json`, and the same parts of
+    `report --json`, use snake_case keys like every other read.
+  - On Linux and macOS, `status`, `activity` and `report` from the owner's
+    account are no longer refused beside the system service; they read it.
+
 ## 0.59.0
 
 - **The bastion works on its own, with no Host.** It keeps watching the
