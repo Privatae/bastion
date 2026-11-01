@@ -137,39 +137,47 @@ func noteRefusal(pairing, op, why string, write bool, now time.Time) {
 			e = &quarantineEntry{}
 			f.Pairing[pairing] = e
 		}
-		// A refusal DURING a hold is the hold working, not a new strike: the
-		// quarantine refusal itself comes through here, and counting it would
-		// re-arm the hold the moment it lapsed.
-		if quarantinedAt(e, now) {
-			_ = quarantineSave(f)
-			return
-		}
-		// Recent write refusals only — the window slides.
-		kept := e.Refusals[:0]
-		for _, ts := range e.Refusals {
-			if t, err := time.Parse(time.RFC3339, ts); err == nil && now.Sub(t) < quarantineWindow {
-				kept = append(kept, ts)
-			}
-		}
-		e.Refusals = append(kept, now.UTC().Format(time.RFC3339))
-		if len(e.Refusals) >= quarantineStrikes && !quarantinedAt(e, now) {
-			if t, err := time.Parse(time.RFC3339, e.LastHold); err == nil && now.Sub(t) > quarantineForgive {
-				e.Strikes = 0
-			}
-			hold := quarantineBase
-			for i := 0; i < e.Strikes && hold < quarantineMaxHold; i++ {
-				hold *= 2
-			}
-			if hold > quarantineMaxHold {
-				hold = quarantineMaxHold
-			}
-			e.Strikes++
-			e.Until = now.Add(hold).UTC().Format(time.RFC3339)
-			e.LastHold = e.Until
-			e.Refusals = nil
-		}
+		e.strike(now)
 	}
 	_ = quarantineSave(f)
+}
+
+// strike counts one refusal against e and starts a hold at the
+// quarantineStrikes-th inside the window. Reports whether a hold started.
+// Shared with the local askers' holds (askquarantine.go).
+func (e *quarantineEntry) strike(now time.Time) bool {
+	// A refusal DURING a hold is the hold working, not a new strike: the
+	// quarantine refusal itself comes through here, and counting it would
+	// re-arm the hold the moment it lapsed.
+	if quarantinedAt(e, now) {
+		return false
+	}
+	// Recent refusals only — the window slides.
+	kept := e.Refusals[:0]
+	for _, ts := range e.Refusals {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil && now.Sub(t) < quarantineWindow {
+			kept = append(kept, ts)
+		}
+	}
+	e.Refusals = append(kept, now.UTC().Format(time.RFC3339))
+	if len(e.Refusals) < quarantineStrikes {
+		return false
+	}
+	if t, err := time.Parse(time.RFC3339, e.LastHold); err == nil && now.Sub(t) > quarantineForgive {
+		e.Strikes = 0
+	}
+	hold := quarantineBase
+	for i := 0; i < e.Strikes && hold < quarantineMaxHold; i++ {
+		hold *= 2
+	}
+	if hold > quarantineMaxHold {
+		hold = quarantineMaxHold
+	}
+	e.Strikes++
+	e.Until = now.Add(hold).UTC().Format(time.RFC3339)
+	e.LastHold = e.Until
+	e.Refusals = nil
+	return true
 }
 
 func quarantinedAt(e *quarantineEntry, now time.Time) bool {

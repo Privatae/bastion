@@ -7,6 +7,7 @@
 <title>Privatae bastion — set this machine up</title>
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="stylesheet" href="/assets/setup.css">
+<link rel="stylesheet" href="/assets/home.css">
 <!-- htmx's own indicator stylesheet is injected with insertAdjacentHTML and is
      blocked by this page's CSP (default-src 'self', no style-src escape, no
      nonce). Turn the injection off rather than widen the policy — see
@@ -16,9 +17,9 @@
 </head>
 <body>
 <header>
-  <h1>Set this machine up</h1>
-  <p class="sub">Pairing, a second factor, folders, the anchor and the owner name.
-    <a href="/">Back to what this machine is doing</a>.</p>
+  <h1>Settings</h1>
+  <p class="sub">Your code, connecting a Host, folders, the Host in charge and the owner name.</p>
+  {{template "nav" "settings"}}
 </header>
 
 <main id="setup">
@@ -45,35 +46,107 @@
      it — an anchor on a local box means nothing, and a folder needs a host. */}}
 <div class="host">
   <dl class="host-facts">
-    <dt>Mode</dt><dd>{{.Mode}}</dd>
-    <dt>Anchor</dt>
+    <dt>This computer</dt>
+    <dd>{{if .Networked}}A shared machine: several Hosts may be connected, and the Host in charge approves each new one.
+        {{else}}Your own computer: one Host at most, chosen here.{{end}}</dd>
+    <dt>Host in charge</dt>
     {{if .AnchorHost}}<dd>{{.AnchorHost}}{{if .AnchorOwner}} (owner “{{.AnchorOwner}}”){{end}}</dd>
-    {{else}}<dd>none{{if .AnchorRequired}} <span class="tag bad">required</span>{{end}}</dd>{{end}}
-    <dt>Owner</dt><dd>{{if .Owner}}{{.Owner}}{{else}}not claimed{{end}}</dd>
+    {{else if .AnchorRequired}}<dd>none <span class="tag bad">required</span> Until one is chosen, this machine serves no Host.</dd>
+    {{else}}<dd>not needed on your own computer</dd>{{end}}
+    <dt>Owner name</dt><dd>{{if .Owner}}{{.Owner}}{{else}}not set{{end}}</dd>
+    <dt>Installed</dt><dd>{{if .Whole}}for the whole machine{{else}}in your own account <span class="tag warn">agents running as you can stop it</span>{{end}}</dd>
   </dl>
-  {{if .Hosts}}
-  <dl class="host-facts setup-hosts">
-    {{range .Hosts}}
-    <dt>{{.Name}}</dt>
-    <dd>
-      {{.State}}
-      {{if .IsAnchor}}<span class="tag ok">anchor</span>{{end}}
-      {{if .Active}}
-        {{if .Serving}}<span class="tag ok">serving</span>
-        {{else}}<span class="tag bad">not answering</span>{{end}}
-      {{end}}
-      {{if .Stepup}}<span class="tag ok">second factor</span>
-      {{else}}<span class="tag warn">no second factor</span>{{end}}
-    </dd>
-    {{end}}
-  </dl>
-  {{end}}
 </div>
 
 {{/* ── 1. pair ───────────────────────────────────────────────────────────── */}}
-<h3>Pair a host</h3>
+{{/* ── 0. the owner's own code (stepup_machine.go) ─────────────────────── */}}
+<h3>Your code</h3>
+<div class="host">
+  <p class="sub">A six-digit code from an authenticator app on your phone. Stopping an agent, marking one as
+    yours, and answering what is asked of this machine take it. An AI agent can click a button on this page
+    if it can drive your browser; it cannot read your phone.</p>
+  {{if and .Enrol .Enrol.Machine}}
+    <div class="qr-wrap">
+      <img class="qr" src="/setup/stepup/qr?e={{.Enrol.Handle}}" width="320" height="320"
+           alt="QR code for your code on this machine">
+      <div class="qr-side">
+        <p>Point your authenticator app at the square. It will appear as <strong>Privatae bastion</strong>.</p>
+        <form hx-post="/setup/stepup/confirm" hx-target="#setup" hx-swap="innerHTML" autocomplete="off">
+          <input type="hidden" name="enrol" value="{{.Enrol.Handle}}">
+          <input class="code" name="code" inputmode="numeric" pattern="[0-9]*"
+                 autocomplete="one-time-code" placeholder="6-digit code"
+                 aria-label="A code from the app you just scanned with">
+          <button class="go" type="submit">Confirm</button>
+        </form>
+        <p class="sub">Nothing is written to this machine until that code matches.</p>
+        <form hx-post="/setup/stepup/key" hx-target="#stepup-key" hx-swap="innerHTML">
+          <input type="hidden" name="enrol" value="{{.Enrol.Handle}}">
+          <button type="submit">Cannot scan? Show the key</button>
+        </form>
+        <div id="stepup-key"></div>
+      </div>
+    </div>
+  {{else if .OwnerCode}}
+    <p><span class="flag ok">set up</span> Your code is set up on this machine.</p>
+    {{if .Limited}}
+    <p class="sub">To replace it, at a terminal: <code>sudo -H privatae-bastion stepup-enroll --machine --rotate</code></p>
+    {{else}}
+    <form class="setup-form" hx-post="/setup/stepup/start" hx-target="#setup" hx-swap="innerHTML">
+      <input type="hidden" name="target" value="machine">
+      <label class="tick"><input type="checkbox" name="replace" value="1"> Replace it (the app set up now stops working)</label>
+      <button type="submit">Set up a new code</button>
+    </form>
+    {{end}}
+  {{else if .Limited}}
+    <p class="sub">Set it up once, at a terminal, as the machine's administrator, so no program running as you
+      can set it up first: <code>sudo -H privatae-bastion stepup-enroll --machine</code></p>
+  {{else}}
+    <form class="setup-form" hx-post="/setup/stepup/start" hx-target="#setup" hx-swap="innerHTML">
+      <input type="hidden" name="target" value="machine">
+      <button class="go" type="submit">Set up your code</button>
+    </form>
+  {{end}}
+</div>
+
+<h3>Connected Hosts</h3>
+<div class="host">
+  {{range .Hosts}}
+  <div class="tool">
+    <div><strong>{{.Name}}</strong> <span class="dim">{{.State}}</span>
+      {{if .IsAnchor}}<span class="tag ok">in charge</span>{{end}}
+      {{if .Active}}{{if .Serving}}<span class="tag ok">connected</span>{{else}}<span class="tag bad">not answering</span>{{end}}{{end}}
+      {{if .QuarantinedUntil}}<span class="tag bad">quarantined until {{.QuarantinedUntil}}</span>{{end}}
+    </div>
+    <p class="sub"><a href="/given">What it may do here</a></p>
+    {{if $.Whole}}
+    {{if .QuarantinedUntil}}
+    <form class="inline-form" hx-post="/setup/host/release" hx-target="#setup" hx-swap="innerHTML" autocomplete="off">
+      <input type="hidden" name="host" value="{{.Name}}">
+      <input class="code" name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="your code" required>
+      <button class="go" type="submit">Release from quarantine</button>
+    </form>
+    {{end}}
+    {{if not .IsAnchor}}
+    <form class="inline-form" hx-post="/setup/host/disconnect" hx-target="#setup" hx-swap="innerHTML">
+      <input type="hidden" name="host" value="{{.Name}}">
+      <label class="tick"><input type="checkbox" name="confirm" value="1"> disconnect {{.Name}}</label>
+      <button class="no" type="submit">Disconnect</button>
+    </form>
+    {{end}}
+    {{end}}
+  </div>
+  {{else}}
+  <p class="sub">No Host is connected. That is fine: the bastion watches this machine on its own. To connect one, use
+    a token from your Host below.</p>
+  {{end}}
+  {{if and .Hosts (not .Whole)}}<p class="sub">Disconnecting a Host or releasing one from quarantine needs the
+    machine's administrator; this bastion runs in your own account.</p>{{end}}
+</div>
+
+<h3>Connect a Host</h3>
 <div class="host">
   <p class="sub">The token comes from your host's “Set up a bastion”. It is used once.</p>
+  {{if .Limited}}<p class="sub">From your own account the console does not do this: it widens what reaches this machine and takes no code. The machine's administrator does it: <code>sudo -H privatae-bastion ui</code></p>{{else}}
   <form class="setup-form" hx-post="/setup/pair" hx-target="#setup" hx-swap="innerHTML"
         autocomplete="off">
     <label for="pair-token">Token</label>
@@ -90,15 +163,17 @@
     is written <strong>pending</strong> and starts nothing until the anchor host
     approves it. Nothing here needs the bastion restarted.
   </div>
+  {{end}}
 </div>
 
 {{/* ── 2. second factor ──────────────────────────────────────────────────── */}}
-<h3>A second factor on this machine</h3>
+{{if .Hosts}}
+<h3>A code for each Host</h3>
 <div class="host">
   <p class="sub">Once a factor is enrolled, your host can only reach a folder or move
     files here after you approve the request on this machine. Your host never sees the code.</p>
 
-  {{if .Enrol}}
+  {{if and .Enrol (not .Enrol.Machine)}}
     <div class="qr-wrap">
       {{/* The handle addresses the enrolment on the server. The secret is never
            in this page: it is in the pixels. */}}
@@ -123,6 +198,8 @@
         <div id="stepup-key"></div>
       </div>
     </div>
+  {{else if and .Servable .Limited}}
+    <p class="sub">From your own account the console does not do this: it widens what reaches this machine and takes no code. The machine's administrator does it: <code>sudo -H privatae-bastion ui</code></p>
   {{else if .Servable}}
     {{/* .Servable, not .Hosts: a pending pairing gets no state on this machine
          at all, not even a directory (run.go:311), and a factor for it would
@@ -145,15 +222,17 @@
     <p class="sub">No host here has its lanes open, and a second factor gates ops a
       pairing without lanes cannot run. Nothing is created for a pending host on this
       machine until the anchor host approves it.</p>
-  {{else}}
-    <p class="sub">Pair a host first — a factor is enrolled per host.</p>
   {{end}}
 </div>
+{{end}}
 
+{{if .Hosts}}
 {{/* ── 3. folders ────────────────────────────────────────────────────────── */}}
 <h3>Add a folder to your network</h3>
 <div class="host">
-  {{if .Servable}}
+  {{if and .Servable .Limited}}
+  <p class="sub">From your own account the console does not do this: it widens what reaches this machine and takes no code. The machine's administrator does it: <code>sudo -H privatae-bastion ui</code></p>
+  {{else if .Servable}}
   <p class="sub">Your files stay on this machine. Your host keeps only the index, and
     the draft does nothing until you approve it there.</p>
   <form class="setup-form" hx-post="/setup/folder/propose" hx-target="#setup" hx-swap="innerHTML"
@@ -187,13 +266,17 @@
     propose a folder to yet.</p>
   {{end}}
 </div>
+{{end}}
 
+{{if or .Networked .AnchorHost .Hosts}}
 {{/* ── 4. the anchor ─────────────────────────────────────────────────────── */}}
-<h3>Which host holds the anchor</h3>
+<h3>Which Host is in charge (shared machines)</h3>
 <div class="host">
   <p class="sub">The anchor host is the one that approves every other host paired here.
     It is a choice among the hosts this machine already serves.</p>
-  {{if .Hosts}}
+  {{if and .Hosts .Limited}}
+  <p class="sub">From your own account the console does not do this: it widens what reaches this machine and takes no code. The machine's administrator does it: <code>sudo -H privatae-bastion ui</code></p>
+  {{else if .Hosts}}
   <form class="setup-form" hx-post="/setup/anchor/choose" hx-target="#anchor-cmd" hx-swap="innerHTML">
     {{range .Hosts}}
     <label class="tick">
@@ -221,19 +304,26 @@
     and the act stays at a terminal.
   </div>
 </div>
+{{end}}
 
 {{/* ── 5. the owner name ─────────────────────────────────────────────────── */}}
 <h3>Who owns this machine</h3>
 <div class="host">
   <p class="sub">A plain name, shown on this machine's card on every host it serves.
     It is optional and it grants nothing.</p>
-  <form class="setup-form" hx-post="/setup/owner/name" hx-target="#owner-cmd" hx-swap="innerHTML"
+  <form class="setup-form" hx-post="/setup/owner/name" hx-target="{{if and .Whole .OwnerCode}}#setup{{else}}#owner-cmd{{end}}" hx-swap="innerHTML"
         autocomplete="off">
     <label for="owner-name">Owner</label>
     <input id="owner-name" class="wide" name="owner" type="text" autocomplete="off"
            placeholder="{{if .Owner}}{{.Owner}}{{else}}a person or a team{{end}}">
+    {{if and .Whole .OwnerCode}}
+    <input class="code" name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" placeholder="your code" required>
+    <button class="go" type="submit">Set the owner name</button>
+    {{else if not .Whole}}
     <button type="submit">Show me the line to run</button>
+    {{end}}
   </form>
+  {{if and .Whole (not .OwnerCode)}}<p class="sub">Set up your code above, then set the name here.</p>{{end}}
   <div id="owner-cmd">{{if .Cmd}}{{template "owner-cmd" .}}{{end}}</div>
   <div class="note">
     Root-gated for the same reason as the anchor: there is no authority above this

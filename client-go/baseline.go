@@ -768,42 +768,43 @@ func cmdObserveBaseline(force bool) error {
 	return nil
 }
 
-// cmdObserveBaselineShow prints what this machine currently calls normal.
-func cmdObserveBaselineShow() error {
-	f, ok, err := baselineLoad()
-	if errors.Is(err, os.ErrNotExist) {
-		return errors.New("this machine has no baseline yet — `privatae-bastion observe:baseline` " +
+// cmdObserveBaselineShow prints what this machine currently calls normal
+// (`baseline show`, machine_cli.go).
+func cmdObserveBaselineShow() error { return cmdBaseline([]string{"show"}) }
+
+// printBaseline is `baseline show` in words.
+func printBaseline(w io.Writer, b baselineRead) error {
+	if !b.Has {
+		return errors.New("this machine has no baseline yet — `privatae-bastion baseline record` " +
 			"takes one (as an administrator)")
 	}
-	if err != nil {
-		return err
-	}
-	fmt.Printf("baseline taken %s by bastion %s, mode %s\n", f.TakenAt, f.BastionVersion, f.Mode)
-	if note := baselineIntegrityNote(f, ok); note != "" {
-		fmt.Printf("WARNING: %s\n", note)
+	f := b.Baseline
+	fmt.Fprintf(w, "baseline taken %s by bastion %s, mode %s\n", f.TakenAt, f.BastionVersion, f.Mode)
+	if b.Integrity != "" {
+		fmt.Fprintf(w, "WARNING: %s\n", b.Integrity)
 	}
 	// Provenance, judged the way the host judges it. Three lines a reader can
 	// get: verified (and by whom), signed-but-failing (and which test failed),
 	// or unsigned (and the reason the file itself records).
 	switch {
 	case f.Attestation != nil:
-		if n := baselineAttestationNote(f); n != "" {
-			fmt.Printf("WARNING: attestation: %s\n", n)
+		if b.Attestation != "" {
+			fmt.Fprintf(w, "WARNING: attestation: %s\n", b.Attestation)
 		} else {
-			fmt.Printf("signed by %s's pairing key; verified against its CA and this machine's fingerprint\n",
+			fmt.Fprintf(w, "signed by %s's pairing key; verified against its CA and this machine's fingerprint\n",
 				f.Attestation.SignedBy)
 		}
 	case f.UnsignedReason != "":
-		fmt.Printf("unsigned: %s\n", f.UnsignedReason)
+		fmt.Fprintf(w, "unsigned: %s\n", f.UnsignedReason)
 	default:
-		fmt.Printf("unsigned: taken by a bastion that did not sign accountings\n")
+		fmt.Fprintf(w, "unsigned: taken by a bastion that did not sign accountings\n")
 	}
-	fmt.Printf("%d entries", len(f.Entries))
+	fmt.Fprintf(w, "%d entries", len(f.Entries))
 	if f.Unreadable > 0 {
-		fmt.Printf(", %d without a readable executable (a baseline taken without "+
+		fmt.Fprintf(w, ", %d without a readable executable (a baseline taken without "+
 			"administrator rights sees less)", f.Unreadable)
 	}
-	fmt.Println()
+	fmt.Fprintln(w)
 	for _, e := range f.Entries {
 		who := e.Signature
 		if who == "" {
@@ -821,7 +822,7 @@ func cmdObserveBaselineShow() error {
 			// against. Found by a test written for something else entirely.
 			d = shortDigest(d)
 		}
-		fmt.Printf("  %s  %-20s %-10s %s\n", e.FP, who, e.User, d)
+		fmt.Fprintf(w, "  %s  %-20s %-10s %s\n", e.FP, who, e.User, d)
 	}
 	return nil
 }

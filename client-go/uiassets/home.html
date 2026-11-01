@@ -1,0 +1,333 @@
+{{/* The console's sections (plan Addendum 4). One list, used by every page
+     that has a header, so a section is added in one place. The argument is
+     the section the page belongs to. */}}
+{{define "nav"}}<nav class="topnav">
+  <a href="/"{{if eq . "agents"}} class="on"{{end}}>Agents</a>
+  <a href="/approvals"{{if eq . "approvals"}} class="on"{{end}}>Waiting for you</a>
+  <a href="/activity"{{if eq . "activity"}} class="on"{{end}}>Activity</a>
+  <a href="/machine"{{if eq . "machine"}} class="on"{{end}}>This machine</a>
+  <a href="/setup"{{if eq . "settings"}} class="on"{{end}}>Settings</a>
+</nav>{{end}}
+
+{{define "home-page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — agents on this machine</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/home.css">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
+<script src="/assets/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Agents on this machine</h1>
+  <p class="sub">Every AI agent running here, and what each one is doing.</p>
+  {{template "nav" "agents"}}
+</header>
+{{/* Ten seconds: building this walks every process, reads each session's
+     record and the tail of its transcript. Nothing here changes faster. */}}
+<main id="home" hx-get="/fragments/home" hx-trigger="every 10s" hx-swap="innerHTML">
+{{template "home" .}}
+</main>
+<footer>
+  The detail behind each flag:
+  <a href="/policy">the stopping rule</a> &middot;
+  <a href="/agents">programs marked as yours</a> &middot;
+  <a href="/given">what this machine has given away</a>.<br>
+  privatae-bastion {{.Version}} &middot; served from this machine only and not reachable from anywhere else.
+</footer>
+</body>
+</html>
+{{end}}
+
+{{define "home"}}
+{{if .Blind}}
+<div class="state bad">
+  <h2>This machine cannot watch itself.</h2>
+  <p>This build has no way to list processes on this platform, so an empty list means nothing looked, not
+    that nothing is running.</p>
+</div>
+{{end}}
+{{if .WalkError}}
+<div class="state bad">
+  <h2>The list of agents could not be read.</h2>
+  <p>{{.WalkError}}</p>
+</div>
+{{end}}
+{{if .PerAccount}}
+<div class="state warn">
+  <h2>This bastion runs in your own account.</h2>
+  <p>An AI agent running as you can stop it, and can read the secret behind your code. Install it for the
+    whole machine to keep agents out.</p>
+</div>
+{{end}}
+{{if or (not .CodeSet) (not .BaselineSet)}}
+<div class="start">
+  <h2>Getting started</h2>
+  <ol>
+    <li class="done">See what is running on this machine. That is this page, with no setup.</li>
+    <li{{if .CodeSet}} class="done"{{end}}>{{if .CodeSet}}Your code is set up.{{else}}<a href="/setup">Set up your code</a>, so you can stop an
+      agent and answer what agents ask. It takes an authenticator app on your phone.{{end}}</li>
+    <li{{if .BaselineSet}} class="done"{{end}}>{{if .BaselineSet}}A baseline is recorded.{{else}}<a href="/machine">Record a baseline</a> on
+      This machine, so anything new that starts here stands out.{{end}}</li>
+    <li class="optional">{{if .HostsPaired}}A Host is connected.{{else}}Optional: <a href="/setup">connect a Host</a>, if you
+      run one. Everything above works without it.{{end}}</li>
+  </ol>
+</div>
+{{end}}
+{{if .Waiting}}
+<div class="approval">
+  <div class="approval-head">{{.Waiting}} request{{if gt .Waiting 1}}s are{{else}} is{{end}} waiting for your approval</div>
+  <p class="approval-line"><a href="/approvals">Open Waiting for you</a> to read and answer {{if gt .Waiting 1}}them{{else}}it{{end}}.</p>
+</div>
+{{end}}
+
+{{if not .WalkError}}
+<p class="tally">
+  {{if or .Sessions .Others}}{{if .Sessions}}{{.Sessions}} session{{if gt .Sessions 1}}s{{end}}{{end}}{{if and .Sessions .Others}} &middot; {{end}}{{if .Others}}{{.Others}} other program{{if gt .Others 1}}s{{end}}{{end}}{{else}}No AI agents are running here right now.{{end}}
+  {{if .WaitingForYou}}<span class="flag waiting">{{.WaitingForYou}} waiting for you</span>{{end}}
+  {{if .NotYours}}<span class="flag">{{.NotYours}} not marked as yours</span>{{end}}
+  {{if .WouldStop}}<span class="flag bad">{{.WouldStop}} the stopping rule would stop</span>{{end}}
+</p>
+{{end}}
+
+{{range .Families}}
+<h2 class="family">{{.Heading}}</h2>
+{{range .Rows}}
+{{if .Service}}
+<div class="agent-row service">
+  <div class="agent-head">{{.Head}}</div>
+  <div class="agent-line">{{.State}}</div>
+</div>
+{{else}}
+<a class="agent-row{{if .WaitingForYou}} waiting{{end}}" href="/agent?pid={{.PID}}">
+  <div class="agent-head">{{.Head}}</div>
+  {{if .State}}<div class="agent-line{{if .WaitingForYou}} urgent{{end}}">{{.State}}</div>{{end}}
+  {{if .Where}}<div class="agent-line dim">{{.Where}}</div>{{end}}
+  {{if .RunningNow}}<div class="agent-line"><span class="dim">running now:</span> <code>{{.RunningNow}}</code></div>{{end}}
+  {{if .ToolServers}}<div class="agent-line dim">tool servers: {{.ToolServers}}</div>{{end}}
+  {{if or .PermissionsOff .NotYours .WouldStop}}
+  <div class="flags">
+    {{if .PermissionsOff}}<span class="flag bad">permission prompts off</span>{{end}}
+    {{if .NotYours}}<span class="flag">not marked as yours</span>{{end}}
+    {{if .WouldStop}}<span class="flag bad">the stopping rule would stop it</span>{{end}}
+  </div>
+  {{end}}
+</a>
+{{end}}
+{{end}}
+{{end}}
+
+<p class="checked-at">Checked {{.CheckedAt}}. Names, titles and statuses are what each agent says about itself.</p>
+{{end}}
+
+{{define "agent-page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — {{if .Found}}{{.Family}}: {{.Row.Head}}{{else}}agent not running{{end}}</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/home.css">
+</head>
+<body>
+<header>
+  {{template "nav" "agents"}}
+  {{if .Found}}
+  <h1>{{.Row.Head}}</h1>
+  <p class="sub">{{.Family}} &middot; pid {{.PID}}</p>
+  {{else}}
+  <h1>Not running</h1>
+  <p class="sub">No agent this bastion can see has pid {{.PID}} now. It may have finished. <a href="/">Back to the agents</a>.</p>
+  {{end}}
+</header>
+<main>
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+{{if .Found}}
+{{if and (not .Row.App) (not .Row.Service)}}
+<div class="acts">
+  {{if .OwnerCode}}
+  <form method="post" action="/agent/stop" autocomplete="off">
+    <input type="hidden" name="pid" value="{{.PID}}">
+    <input type="hidden" name="signature" value="{{.Signature}}">
+    <input class="code" name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code"
+           placeholder="your code" aria-label="Your code" required>
+    <button class="no" type="submit">Stop this session</button>
+  </form>
+  <p class="dim">Stops it and every process it started. Your code is needed because anything that can drive your
+    browser can click this button.</p>
+  {{else}}
+  <p class="dim">To stop agents from here, <a href="/setup">set up your code</a> first.</p>
+  {{end}}
+</div>
+{{end}}
+<h3>What it is doing</h3>
+<div class="panel">
+  {{if .Row.State}}<p class="agent-line{{if .Row.WaitingForYou}} urgent{{end}}">{{.Row.State}}</p>{{end}}
+  {{if .Row.Where}}<p class="agent-line">{{.Row.Where}}</p>{{end}}
+  {{if .Row.RunningNow}}<p class="agent-line"><span class="dim">running now:</span> <code>{{.Row.RunningNow}}</code></p>{{end}}
+  {{if .Self}}{{if .Self.LastPrompt}}<p class="agent-line"><span class="dim">last asked:</span> “{{.Self.LastPrompt}}”</p>{{end}}{{end}}
+  {{if .Row.PermissionsOff}}<p class="agent-line urgent">Permission prompts are off for this session: it acts without asking first.</p>{{end}}
+  {{if .Self}}
+  <p class="note">The name, title, status and last prompt are what {{.Family}} says about this session, read from its
+    own files on this machine{{if not .Self.Verified}}. This platform cannot confirm the record belongs to this exact
+    process{{end}}.</p>
+  {{else}}
+  <p class="note">This agent keeps no session record this bastion can read, so it has no name or title here.</p>
+  {{end}}
+</div>
+
+<h3>Its MCP tool servers</h3>
+<div class="panel">
+  {{if .Tools}}
+  {{range .Tools}}
+  <div class="tool">
+    <div><strong>{{.Name}}</strong> <span class="dim">in {{.Where}}</span></div>
+    {{range .Problems}}<div class="problem">{{.}}</div>{{else}}<div class="dim">no problems found</div>{{end}}
+  </div>
+  {{end}}
+  {{else}}
+  <p class="dim">No settings file this bastion can read gives this agent a tool server.</p>
+  {{end}}
+  {{if .Row.ToolServers}}<p class="dim">Running now: {{.Row.ToolServers}}</p>{{end}}
+</div>
+
+<h3>Whether it is yours</h3>
+<div class="panel">
+  <p>{{if .Sanctioned}}<span class="flag ok">yours</span>{{else}}<span class="flag">not marked as yours</span>{{end}} {{.SanctionWhy}}</p>
+  {{if and (not .Sanctioned) .MarkID (not .Row.App) .OwnerCode}}
+  <form method="post" action="/agent/mark" autocomplete="off">
+    <input type="hidden" name="pid" value="{{.PID}}">
+    <input type="hidden" name="id" value="{{.MarkID}}">
+    <input class="code" name="code" inputmode="numeric" pattern="[0-9]*"
+           autocomplete="one-time-code" placeholder="your code" aria-label="Your code" required>
+    <button class="go" type="submit">This one is mine</button>
+  </form>
+  {{end}}
+  {{if and (not .Sanctioned) (not .OwnerCode)}}<p class="dim">Marking a program as yours takes <a href="/setup">your code</a>; set it up first.</p>{{end}}
+  <p class="dim">Every mark, and taking one back: <a href="/agents">programs marked as yours</a>.</p>
+</div>
+
+<h3>The stopping rule</h3>
+<div class="panel">
+  <p><span class="flag {{.VerdictCls}}">{{.Verdict}}</span> The rule only rehearses: it stops nothing on its own.</p>
+  {{range .Reasons}}<p class="reason"><strong>{{.Term}}</strong> {{.Detail}}</p>{{end}}
+</div>
+
+<h3>How the bastion knows</h3>
+<div class="panel facts">
+  <dl>
+    <dt>Kind</dt><dd>{{.Kind}}</dd>
+    {{if .Exe}}<dt>File</dt><dd><code>{{.Exe}}</code></dd>{{end}}
+    <dt>Command</dt><dd><code>{{.Cmdline}}</code></dd>
+    {{if .Origin}}<dt>Started by</dt><dd>{{.Origin}}</dd>{{end}}
+    {{if .Endpoints}}<dt>Talks to</dt><dd>{{range $i, $e := .Endpoints}}{{if $i}}, {{end}}{{$e}}{{end}}</dd>{{end}}
+    {{if .Self}}{{if .Self.SessionID}}<dt>Session</dt><dd><code>{{.Self.SessionID}}</code></dd>{{end}}{{end}}
+  </dl>
+  {{range .Evidence}}<p class="reason"><span class="dim">{{.Tier}}</span> {{.Signal}}{{if .Value}} &middot; {{.Value}}{{end}}</p>{{end}}
+</div>
+{{end}}
+</main>
+<footer>privatae-bastion {{.Version}} &middot; served from this machine only and not reachable from anywhere else.</footer>
+</body>
+</html>
+{{end}}
+
+{{define "activity-page"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privatae bastion — activity on this machine</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/home.css">
+</head>
+<body>
+<header>
+  <h1>Activity</h1>
+  <p class="sub">What happened on this machine in the last seven days, newest first.</p>
+  {{template "nav" "activity"}}
+</header>
+<main>
+<p class="filters">
+  <a href="/activity"{{if eq .Kind ""}} class="on"{{end}}>Everything</a>
+  <a href="/activity?kind=stop"{{if eq .Kind "stop"}} class="on"{{end}}>Stops ({{index .Counts "stop"}})</a>
+  <a href="/activity?kind=approval"{{if eq .Kind "approval"}} class="on"{{end}}>Your approvals ({{index .Counts "approval"}})</a>
+  <a href="/activity?kind=host"{{if eq .Kind "host"}} class="on"{{end}}>What Hosts did ({{index .Counts "host"}})</a>
+  <a href="/activity?kind=change"{{if eq .Kind "change"}} class="on"{{end}}>Changes ({{index .Counts "change"}})</a>
+</p>
+{{range .Items}}
+<div class="activity{{if .Refused}} refused{{end}}">
+  <span class="when">{{.At.Local.Format "Jan 2 15:04"}}</span>
+  <span class="what">{{if .Who}}<strong>{{.Who}}</strong> {{end}}{{.What}}{{if .Refused}} <span class="flag bad">refused</span>{{end}}</span>
+</div>
+{{else}}
+<p class="dim">Nothing has happened here in the last seven days{{if .Kind}} of this kind{{end}}.</p>
+{{end}}
+<p class="note">Read from the records this bastion keeps on this machine. What a Host did here is also written to the
+  machine's own system log, where the Host cannot change it.</p>
+</main>
+<footer>privatae-bastion {{.Version}} &middot; served from this machine only and not reachable from anywhere else.</footer>
+</body>
+</html>
+{{end}}
+
+{{define "machine-schedules"}}
+{{if .Items}}
+{{range .Items}}
+<div class="tool">
+  <div><strong>{{.Agent}}</strong> <span class="dim">{{if .Schedule}}runs {{.Schedule}} · {{end}}{{.Where}}{{if .User}} · as {{.User}}{{end}}</span></div>
+  <div><code>{{.Command}}</code></div>
+</div>
+{{end}}
+{{else if .Supported}}
+<p class="dim">No scheduled job on this machine starts an AI agent.</p>
+{{else}}
+<p class="dim">This platform's schedulers cannot be read by this build, so an empty list here means nothing looked.</p>
+{{end}}
+{{end}}
+
+{{define "machine-tools"}}
+{{range .}}
+<div class="tool">
+  <div><strong>{{.Client}}</strong> <span class="dim">{{len .Servers}} tool server{{if gt (len .Servers) 1}}s{{end}}{{if .Bad}}, {{.Bad}} with a problem{{end}}</span></div>
+  {{range .Servers}}{{if .Problems}}
+  <div class="tool-sub"><span>{{.Name}}</span>{{range .Problems}}<div class="problem">{{.}}</div>{{end}}</div>
+  {{end}}{{end}}
+</div>
+{{else}}
+<p class="dim">No MCP tool server is configured in any settings file this bastion can read.</p>
+{{end}}
+{{end}}
+
+{{define "machine-baseline"}}
+{{if .Flash}}<div class="flash {{.FlashClass}}">{{.Flash}}</div>{{end}}
+{{if .Has}}
+<p>Baseline recorded {{.TakenAt}}, {{.Entries}} entries.{{if .Note}} <span class="flag bad">{{.Note}}</span>{{end}}</p>
+<form hx-post="/machine/compare" hx-target="#machine-baseline" hx-swap="innerHTML">
+  <button class="go" type="submit">Compare what runs now</button>
+</form>
+{{if .Compared}}
+<p class="dim">Compared at {{.ComparedAt}}.{{if .WalkFailed}} The process walk failed ({{.WalkFailed}}): nothing was compared.{{end}}</p>
+{{range .Findings}}<div class="problem">{{.}}</div>{{else}}{{if not .WalkFailed}}<p>Nothing running here is outside the baseline.</p>{{end}}{{end}}
+<p class="dim">Something started in the last few seconds is judged on the next comparison, so a short command is not reported as new.</p>
+{{end}}
+{{else}}
+<p class="dim">No baseline yet. A baseline records what normally runs here, so anything new stands out.</p>
+{{end}}
+{{if .OwnerCode}}
+<form hx-post="/machine/baseline" hx-target="#machine-baseline" hx-swap="innerHTML" autocomplete="off">
+  <input class="code" name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code"
+         placeholder="your code" aria-label="Your code" required>
+  <button type="submit">{{if .Has}}Record a new baseline{{else}}Record the baseline{{end}}</button>
+</form>
+<p class="dim">Recording makes everything running now count as normal, so it takes your code.</p>
+{{else}}
+<p class="dim">To record a baseline, <a href="/setup">set up your code</a> first.</p>
+{{end}}
+{{end}}

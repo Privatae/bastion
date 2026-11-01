@@ -253,6 +253,9 @@ func TestATicketLandsOnlyOnANamedPage(t *testing.T) {
 // file lying about — the device lane only answers where the key is.
 func TestOnlyTheApprovalDeviceShowsAsks(t *testing.T) {
 	uiTestConfigDir(t)
+	// A Host is paired: the note is about asks from Hosts, and a machine with
+	// none has no reason to hear about an approval device.
+	uiTestPairing(t, "member.host.privatae.ai")
 	p, err := deviceRequestsPath()
 	if err != nil {
 		t.Fatal(err)

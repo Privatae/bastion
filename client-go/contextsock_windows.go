@@ -40,4 +40,8 @@ func contextPeerUser(c net.Conn) (string, error) {
 	return "", errContextSockUnsupported
 }
 
+func contextPeerIdentity(c net.Conn) (uint32, string, error) {
+	return 0, "", errContextSockUnsupported
+}
+
 var _ = os.Remove

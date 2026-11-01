@@ -81,18 +81,21 @@ func cmdRun() error {
 	recoverFrozenTrees()
 	defer lock.release()
 
-	// Write the machine marker BEFORE the not-paired return below. A fresh box is
-	// `enable --now` at install and crash-loops here until it is paired — and that
-	// is exactly the window in which a `sudo`-without-`-H` pair happens. A marker
-	// written after this return does not exist when it is needed.
+	// Write the machine marker before any pairing is read. A fresh box is
+	// `enable --now` at install, and the window before its first pairing is
+	// exactly when a `sudo`-without-`-H` pair happens.
 	_ = maybeWriteMarker()
 
+	// NO HOST IS A STEADY STATE, NOT AN ERROR. The bastion watches the AI
+	// agents on this machine with or without a Host: the console, the agents
+	// page, the baseline and the report all read this machine and nothing else.
+	// It used to exit here ("not paired"), so a fresh install crash-looped under
+	// its service manager until it was paired, and a machine nobody wanted to
+	// connect to a Host had no bastion at all. superviseLoop starts a pairing
+	// written later without a restart.
 	cfgs, err := loadPairings()
 	if err != nil {
 		return err
-	}
-	if len(cfgs) == 0 {
-		return fmt.Errorf("not paired — run `privatae-bastion pair <token>` first")
 	}
 
 	// Clear any leftover from a prior self-update swap (the superseded binary can't
@@ -137,15 +140,19 @@ func cmdRun() error {
 			started++
 		}
 	}
-	if started == 0 {
-		for _, cfg := range cfgs {
-			if cfg.invalid != "" {
-				return fmt.Errorf("no pairing can be served — %s", cfg.invalid)
-			}
-		}
-		return fmt.Errorf("no active pairing — every pairing is pending or revoked; the anchor host must approve one")
+	switch {
+	case len(cfgs) == 0:
+		fmt.Println("no Host connected: watching this machine on its own. " +
+			"Open the console with `privatae-bastion ui`.")
+	case started == 0:
+		// Pending, revoked or invalid pairings each said why in startPairing.
+		// The machine is still watched; a pairing that becomes active is
+		// started by superviseLoop.
+		fmt.Println("no pairing is active yet: watching this machine on its own until one is.")
 	}
 	go superviseLoop(ctx)
+	// The machine owner's approved stops (stop_local.go), Host or no Host.
+	go localStopLoop(ctx)
 	// The local UI (ui.go): ONE per machine, not one per pairing, because it
 	// shows the whole box. Started last so it renders a daemon that is already
 	// up, and non-fatal by construction — a machine that cannot bind the UI port
@@ -1059,11 +1066,130 @@ func bastionListening(addr string) bool {
 	return true
 }
 
-func cmdStatus() error {
+const statusUsage = "usage: privatae-bastion status [--json]"
+
+// statusRead is what `status` says: whether the bastion is serving, and
+// where each pairing's lanes run.
+type statusRead struct {
+	Version string `json:"version"`
+	// Running: "yes", "partly" (some pairings answer) or "no".
+	Running string `json:"running"`
+	// NotAnswering: the machine's bastion is a system service and nothing
+	// answered this account on its socket; why.
+	NotAnswering string          `json:"not_answering,omitempty"`
+	Pairings     []statusPairing `json:"pairings"`
+	Mode         string          `json:"mode,omitempty"`
+	Anchor       *statusAnchor   `json:"anchor,omitempty"`
+}
+
+type statusPairing struct {
+	Host    string `json:"host"`
+	State   string `json:"state"`
+	Problem string `json:"problem,omitempty"`
+	// Transport: "local" (a Host on this machine, over its socket), "tcp"
+	// (a Host with no platform, over TCP) or "tunnel" (WireGuard).
+	Transport string `json:"transport,omitempty"`
+	Lanes     string `json:"lanes,omitempty"`
+	Runs      string `json:"runs,omitempty"`
+	BastionIP string `json:"bastion_tunnel_ip,omitempty"`
+	HostIP    string `json:"host_tunnel_ip,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Local     string `json:"local"`
+	Answering bool   `json:"answering"`
+}
+
+type statusAnchor struct {
+	Host  string `json:"host"`
+	Owner string `json:"owner"`
+	Since string `json:"since"`
+}
+
+func readStatus(readOpts) (statusRead, error) {
 	cfgs, err := loadPairings()
-	if err != nil || len(cfgs) == 0 {
-		fmt.Println("not paired — run `privatae-bastion pair <token>`")
-		return nil
+	if err != nil {
+		return statusRead{}, fmt.Errorf("this machine's pairings cannot be read: %w", err)
+	}
+	s := statusRead{Version: clientVersion, Running: "no", Pairings: []statusPairing{}}
+	if len(cfgs) == 0 {
+		// With no Host the only thing listening is the console, so that is
+		// what says whether the daemon is up.
+		if uiDaemonListening() {
+			s.Running = "yes"
+		}
+		return s, nil
+	}
+	running := 0
+	for _, cfg := range cfgs {
+		p := statusPairing{Host: cfg.HostName, State: cfg.stateName(), Local: cfg.ListenAddr,
+			Answering: bastionListening(cfg.ListenAddr)}
+		if p.Answering {
+			running++
+		}
+		switch {
+		case cfg.invalid != "":
+			p.Problem = cfg.invalid
+		case cfg.unixTransport():
+			p.Transport, p.Lanes, p.Runs = "local", cfg.LaneSocket, cfg.RunsDir
+		case cfg.tcpTransport():
+			p.Transport, p.Lanes = "tcp", cfg.LaneAddr
+		default:
+			p.Transport, p.BastionIP, p.HostIP, p.Endpoint = "tunnel", cfg.BastionTunnelIP, cfg.HostTunnelIP, cfg.Endpoint
+		}
+		s.Pairings = append(s.Pairings, p)
+	}
+	switch {
+	case running == len(cfgs):
+		s.Running = "yes"
+	case running > 0:
+		s.Running = "partly"
+	}
+	s.Mode = boxMode()
+	if a := currentAnchor(); a != nil {
+		s.Anchor = &statusAnchor{Host: a.AnchorHost, Owner: a.Owner, Since: a.ClaimedAt}
+	}
+	return s, nil
+}
+
+func cmdStatus(args []string) error {
+	asJSON, err := jsonOnly(statusUsage, args)
+	if err != nil {
+		return err
+	}
+	s, err := readMachine("status", readOpts{}, readStatus)
+	var le *laneError
+	if errors.As(err, &le) && le.down {
+		// Installed for the whole machine, and nothing answers: that is
+		// the status, not a failure to find it.
+		s, err = statusRead{Version: clientVersion, Running: "no", NotAnswering: le.why, Pairings: []statusPairing{}}, nil
+	}
+	if err != nil {
+		return laneRefusalError("status", err)
+	}
+	if asJSON {
+		return printJSON(os.Stdout, s)
+	}
+	printStatus(os.Stdout, s)
+	return nil
+}
+
+func printStatus(w io.Writer, s statusRead) {
+	if s.NotAnswering != "" {
+		check := "privatae-bastion service status"
+		if runtime.GOOS == "linux" {
+			check = "systemctl status privatae-bastion"
+		}
+		fmt.Fprintf(w, "NOT ANSWERING — this machine's bastion runs for the whole machine, as a system service, "+
+			"and %s.\nSee whether the service runs: %s\n", s.NotAnswering, check)
+		return
+	}
+	if len(s.Pairings) == 0 {
+		if s.Running == "yes" {
+			fmt.Fprintln(w, "RUNNING on its own: no Host is connected. It watches the AI agents on this "+
+				"machine; open the console with `privatae-bastion ui`.")
+		} else {
+			fmt.Fprintf(w, "NOT RUNNING, and no Host is connected. Start it with `%s`.\n", runCommandHint())
+		}
+		return
 	}
 	// IS IT RUNNING, AND WHERE — the first thing status should answer and the
 	// one thing it did not.
@@ -1074,54 +1200,51 @@ func cmdStatus() error {
 	// a self-update the bastion has NO console at all — it is serving, and there
 	// is nothing on screen that says so. status printed pairings and mode and
 	// never once said whether a daemon was alive.
-	running := 0
-	for _, cfg := range cfgs {
-		if bastionListening(cfg.ListenAddr) {
-			running++
+	served := 0
+	for _, p := range s.Pairings {
+		if p.Answering {
+			served++
 		}
 	}
-	switch {
-	case running == len(cfgs):
-		fmt.Printf("RUNNING — serving %d host(s) on this machine.\n", len(cfgs))
-	case running > 0:
-		fmt.Printf("PARTLY RUNNING — %d of %d hosts are being served; the rest are not answering.\n",
-			running, len(cfgs))
+	switch s.Running {
+	case "yes":
+		fmt.Fprintf(w, "RUNNING — serving %d host(s) on this machine.\n", len(s.Pairings))
+	case "partly":
+		fmt.Fprintf(w, "PARTLY RUNNING — %d of %d hosts are being served; the rest are not answering.\n",
+			served, len(s.Pairings))
 	default:
-		fmt.Printf("NOT RUNNING — nothing is serving these pairings. Start it with `%s`.\n", runCommandHint())
+		fmt.Fprintf(w, "NOT RUNNING — nothing is serving these pairings. Start it with `%s`.\n", runCommandHint())
 	}
-	if running > 0 && runtime.GOOS == "windows" {
-		fmt.Println("  (No window? After a self-update it restarts itself detached, so it")
-		fmt.Println("   has no console. Task Manager → privatae-bastion.exe is where it lives.)")
+	if served > 0 && runtime.GOOS == "windows" {
+		fmt.Fprintln(w, "  (No window? After a self-update it restarts itself detached, so it")
+		fmt.Fprintln(w, "   has no console. Task Manager → privatae-bastion.exe is where it lives.)")
 	}
-	fmt.Println()
-	for _, cfg := range cfgs {
-		if cfg.invalid != "" {
-			fmt.Printf("paired with: %s  [%s]\n  problem:  %s\n", cfg.HostName, cfg.stateName(), cfg.invalid)
+	fmt.Fprintln(w)
+	for _, p := range s.Pairings {
+		if p.Problem != "" {
+			fmt.Fprintf(w, "paired with: %s  [%s]\n  problem:  %s\n", p.Host, p.State, p.Problem)
 			continue
 		}
 		live := "not answering"
-		if bastionListening(cfg.ListenAddr) {
+		if p.Answering {
 			live = "answering"
 		}
-		if cfg.unixTransport() {
-			fmt.Printf("paired with: %s  [%s]\n  lanes:    %s (a Host on this machine)\n  runs:     %s\n  local:    http://%s  (%s)\n",
-				cfg.HostName, cfg.stateName(), cfg.LaneSocket, cfg.RunsDir, cfg.ListenAddr, live)
-			continue
+		switch p.Transport {
+		case "local":
+			fmt.Fprintf(w, "paired with: %s  [%s]\n  lanes:    %s (a Host on this machine)\n  runs:     %s\n  local:    http://%s  (%s)\n",
+				p.Host, p.State, p.Lanes, p.Runs, p.Local, live)
+		case "tcp":
+			fmt.Fprintf(w, "paired with: %s  [%s]\n  lanes:    %s (a Host over TCP, name %s)\n  runs:     none over TCP\n  local:    http://%s  (%s)\n",
+				p.Host, p.State, p.Lanes, tcpServerName, p.Local, live)
+		default:
+			fmt.Fprintf(w, "paired with: %s  [%s]\n  tunnel:   %s  ->  %s  via  %s\n  local:    http://%s  (%s)\n",
+				p.Host, p.State, p.BastionIP, p.HostIP, p.Endpoint, p.Local, live)
 		}
-		if cfg.tcpTransport() {
-			fmt.Printf("paired with: %s  [%s]\n  lanes:    %s (a Host over TCP, name %s)\n  runs:     none over TCP\n  local:    http://%s  (%s)\n",
-				cfg.HostName, cfg.stateName(), cfg.LaneAddr, tcpServerName, cfg.ListenAddr, live)
-			continue
-		}
-		fmt.Printf("paired with: %s  [%s]\n  tunnel:   %s  ->  %s  via  %s\n  local:    http://%s  (%s)\n",
-			cfg.HostName, cfg.stateName(), cfg.BastionTunnelIP, cfg.HostTunnelIP, cfg.Endpoint,
-			cfg.ListenAddr, live)
 	}
-	fmt.Printf("mode: %s\n", boxMode())
-	if a := currentAnchor(); a != nil {
-		fmt.Printf("anchor: %s (owner %q, since %s)\n", a.AnchorHost, a.Owner, a.ClaimedAt)
+	fmt.Fprintf(w, "mode: %s\n", s.Mode)
+	if a := s.Anchor; a != nil {
+		fmt.Fprintf(w, "anchor: %s (owner %q, since %s)\n", a.Host, a.Owner, a.Since)
 	}
-	return nil
 }
 
 // ollamaModels reports whether a local ollama with the embeddings API answers

@@ -46,4 +46,4 @@ window showed you, never one that arrived after. The same window lists the
 requests waiting for a code on this machine itself. The window does not
 redraw by itself while you read it: when something new arrives it says so and
 waits for you to show it. Off Windows the window is a page of the local
-console (`privatae-bastion ui`, then Approvals in the header).
+console (`privatae-bastion ui`, then Waiting for you).

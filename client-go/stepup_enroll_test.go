@@ -53,7 +53,7 @@ func enrolAt(t *testing.T, console bool, serviceRefusal string, answer func(prin
 		}
 		printed <- b.String()
 	}()
-	err := cmdStepupEnroll("", false, true)
+	err := cmdStepupEnroll("", false, false, true)
 	_ = outW.Close()
 	_ = inW.Close()
 	select {

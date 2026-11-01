@@ -99,22 +99,46 @@ func serviceStateEnv(goos string, installed, authority bool, systemRoot string) 
 
 // serviceGuardedCommands would each act on a bastion in the caller's own
 // profile. Beside a system service that is a second bastion (pair, run) or a
-// view of an empty one (status, and `switch --list`, which would print the
-// caller's own pairings and switches as though they were the machine's).
-var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status": true, "switch": true}
+// view of an empty one (status, `switch --list`, activity and report, which
+// would print the caller's own records as though they were the machine's).
+var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status": true, "switch": true,
+	"activity": true, "report": true}
+
+// serviceLaneReads are the guarded commands that, on Linux and macOS, read
+// the machine's bastion itself over its socket (reads.go) rather than a
+// bastion of the caller's own: not refused here, and refused there for any
+// account but the owner's.
+var serviceLaneReads = map[string]bool{"status": true, "activity": true, "report": true}
 
 // serviceGuard refuses a guarded command from an account that does not
 // administer a machine whose bastion is a system service.
+//
+// On Linux the service is the systemd unit, and the caller says whether it is
+// there (linuxSystemUnitPresent). Before the bastion was installed for the
+// whole machine by default, Linux was left out: `status` from the person's
+// account then said NOT RUNNING and told them to `run` a second, empty
+// bastion of their own.
 func serviceGuard(goos, cmd string, installed, authority bool) error {
 	if !installed || authority || !serviceGuardedCommands[cmd] {
 		return nil
 	}
-	if goos != "darwin" && goos != "windows" {
+	if serviceLaneReads[cmd] && goos != "windows" {
 		return nil
 	}
 	return fmt.Errorf("this machine's bastion runs as a system service, and it belongs to whoever administers the machine.\n"+
 		"  `%s` from your own account would act on a separate, empty bastion of your own, not on the machine's.\n"+
 		"  To work with the machine's bastion, %s", cmd, adminHowToFor(goos))
+}
+
+// linuxSystemUnitPath is where the installers write the bastion's systemd unit
+// (deploy/install.sh; `npx cseries` writes the same unit).
+const linuxSystemUnitPath = "/etc/systemd/system/privatae-bastion.service"
+
+// linuxSystemUnitPresent: the bastion is installed for the whole machine on
+// this Linux box. A variable so the suite decides it.
+var linuxSystemUnitPresent = func() bool {
+	_, err := os.Stat(linuxSystemUnitPath)
+	return err == nil
 }
 
 // launchdPlist is the launchd job for the daemon. KeepAlive restarts it
@@ -350,7 +374,11 @@ func adoptSystemServiceState() {
 
 // guardServiceFork is serviceGuard for this process.
 func guardServiceFork(cmd string) error {
-	return serviceGuard(runtime.GOOS, cmd, systemService.installed, systemService.authority)
+	installed := systemService.installed
+	if runtime.GOOS == "linux" {
+		installed = linuxSystemUnitPresent()
+	}
+	return serviceGuard(runtime.GOOS, cmd, installed, systemService.authority)
 }
 
 // cmdService is `privatae-bastion service install|uninstall|status`.

@@ -163,9 +163,15 @@
     {{else if .Sanctioned}}
     <p class="obs-foot">Your host vouched for this one. There is nothing to unmark
       here — the tag it carries was issued by your host and is withdrawn there.</p>
+    {{else if and .ID (not $.OwnerCode)}}
+    <p class="obs-foot">Marking a program as yours takes your code: <a href="/setup">set it up</a> first.</p>
     {{else if .ID}}
-    <form hx-post="/agents/mark" hx-target="#agents" hx-swap="innerHTML">
+    <form hx-post="/agents/mark" hx-target="#agents" hx-swap="innerHTML" autocomplete="off">
       <input type="hidden" name="id" value="{{.ID}}">
+      {{/* hx-preserve: this list is swapped every 10s, and a half-typed code
+           must survive it. */}}
+      <input class="code" id="mark-code-{{.ID}}" hx-preserve="true" name="code" inputmode="numeric" pattern="[0-9]*"
+             autocomplete="one-time-code" placeholder="6-digit code" aria-label="Your code">
       <button class="go" type="submit">This one is mine</button>
     </form>
     {{else}}

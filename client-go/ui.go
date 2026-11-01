@@ -52,10 +52,10 @@ import (
 // UI belongs to the box, not to any host it serves.
 func uilogf(format string, a ...any) { fmt.Printf("[ui] "+format, a...) }
 
-//go:embed uiassets/htmx.min.js uiassets/app.css uiassets/given.css uiassets/setup.css uiassets/diskmap.css uiassets/agents.css uiassets/policy.css uiassets/context.css
+//go:embed uiassets/htmx.min.js uiassets/app.css uiassets/given.css uiassets/setup.css uiassets/diskmap.css uiassets/agents.css uiassets/policy.css uiassets/context.css uiassets/home.css
 var uiStaticFS embed.FS
 
-//go:embed uiassets/page.html uiassets/status.html uiassets/given.html uiassets/setup.html uiassets/diskmap.html uiassets/agents.html uiassets/policy.html uiassets/context.html uiassets/approvals.html
+//go:embed uiassets/page.html uiassets/status.html uiassets/given.html uiassets/setup.html uiassets/diskmap.html uiassets/agents.html uiassets/policy.html uiassets/context.html uiassets/approvals.html uiassets/home.html
 var uiTemplateFS embed.FS
 
 // uiPortHigh is the port the UI prefers, and it is one BELOW the pairing range
@@ -131,6 +131,10 @@ const uiEventRecentFor = 7 * 24 * time.Hour
 const uiEventTime = "2 Jan 2006, 15:04"
 
 type uiStatus struct {
+	// Limited: drawn for the owner's lane (consolelane.go), which may not
+	// answer the approval device's requests.
+	Limited bool
+
 	Version        string
 	State          string
 	StateClass     string
@@ -148,6 +152,9 @@ type uiStatus struct {
 	// device (uidevice.go). IsDevice says whether it is one at all.
 	DeviceApprovals []uiDeviceApproval
 	IsDevice        bool
+	// MachineAsks: requests asked of this machine itself, answered with the
+	// owner's code (stepup_machine.go): today, stops an agent asked for.
+	MachineAsks []uiMachineAsk
 	// ApprovalsView: this render is for the approvals popup, so the step-up
 	// cards post back into it rather than into the front page.
 	ApprovalsView bool
@@ -198,6 +205,7 @@ func collectUIStatus() uiStatus {
 	// pairings, so a machine whose pairing list cannot be read still shows the
 	// asks waiting on it.
 	s.IsDevice = isApprovalDevice()
+	s.MachineAsks = machineAsks()
 	s.DeviceApprovals = pendingDeviceApprovals()
 
 	// The three things this machine already knew and told nobody standing at it.
@@ -250,8 +258,10 @@ func collectUIStatus() uiStatus {
 
 	switch {
 	case len(cfgs) == 0:
-		s.State, s.StateClass = "NOT PAIRED", "warn"
-		s.StateNote = "No host is paired with this machine yet."
+		// No Host is a steady state, not a fault (run.go): the bastion watches
+		// this machine on its own.
+		s.State, s.StateClass = "ON ITS OWN", "ok"
+		s.StateNote = "No Host is connected. The bastion watches the AI agents on this machine on its own."
 	case running == len(cfgs):
 		s.State, s.StateClass = "RUNNING", "ok"
 		s.StateNote = fmt.Sprintf("Serving %d host(s) from this machine.", len(cfgs))
@@ -347,6 +357,12 @@ type uiServer struct {
 	tickets  *uiTokenStore
 	sessions *uiTokenStore
 	tpl      *template.Template
+	// addr is where the daemon's console listens, for links minted on the
+	// owner's lane; limitedTickets and limitedSessions are that lane's own
+	// (consolelane.go), kept apart so a lane session is never an admin one.
+	addr            string
+	limitedTickets  *uiTokenStore
+	limitedSessions *uiTokenStore
 
 	// contextUI marks the USER-RUN surface (contextui.go). It selects a
 	// different ROUTE SET — not a different permission check, and that
@@ -380,16 +396,18 @@ func newUIServer(port, secret string) (*uiServer, error) {
 	tpl, err := template.ParseFS(uiTemplateFS,
 		"uiassets/page.html", "uiassets/status.html", "uiassets/given.html",
 		"uiassets/setup.html", "uiassets/diskmap.html", "uiassets/agents.html", "uiassets/policy.html",
-		"uiassets/context.html", "uiassets/approvals.html")
+		"uiassets/context.html", "uiassets/approvals.html", "uiassets/home.html")
 	if err != nil {
 		return nil, err
 	}
 	return &uiServer{
-		port:     port,
-		secret:   secret,
-		tickets:  newUITokenStore(uiTicketTTL),
-		sessions: newUITokenStore(uiSessionTTL),
-		tpl:      tpl,
+		port:            port,
+		secret:          secret,
+		tickets:         newUITokenStore(uiTicketTTL),
+		sessions:        newUITokenStore(uiSessionTTL),
+		tpl:             tpl,
+		limitedTickets:  newUITokenStore(uiTicketTTL),
+		limitedSessions: newUITokenStore(uiSessionTTL),
 	}, nil
 }
 
@@ -466,6 +484,9 @@ func (u *uiServer) handler() http.Handler {
 	// would have stopped over the past week. Two routes, both reads — there is
 	// no mutating route in that unit at all, which is the point of it.
 	u.policyRoutes(mux)
+	// The agents and what each is doing (uihome.go): the home page, one page
+	// per agent, and the machine's state page that used to be home.
+	u.homeRoutes(mux)
 	mux.HandleFunc("/", u.root)
 	return mux
 }
@@ -477,10 +498,13 @@ func (u *uiServer) guarded(h http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, why, http.StatusForbidden)
 			return
 		}
-		if !u.sessions.valid(uiSessionFrom(r)) {
+		if !u.signedIn(r) {
 			http.Error(w, "not signed in — open this page from `privatae-bastion "+u.verb()+"`",
 				http.StatusUnauthorized)
 			return
+		}
+		if u.limitedSession(r) {
+			w = uiLimitedWriter{w}
 		}
 		h(w, r)
 	}
@@ -500,12 +524,18 @@ func (u *uiServer) root(w http.ResponseWriter, r *http.Request) {
 	// the ticket is not left in the address bar, the history or a screenshot.
 	// It is one-use and dies in a minute anyway; this is the second lock.
 	if k := r.URL.Query().Get("k"); k != "" {
+		// A ticket from the owner's lane opens a limited session, and only
+		// that (consolelane.go).
+		store := u.sessions
 		if !u.tickets.redeem(k) {
-			http.Error(w, "that link has already been used or has expired — "+
-				"run `privatae-bastion "+u.verb()+"` again", http.StatusForbidden)
-			return
+			if u.limitedTickets == nil || !u.limitedTickets.redeem(k) {
+				http.Error(w, "that link has already been used or has expired — "+
+					"run `privatae-bastion "+u.verb()+"` again", http.StatusForbidden)
+				return
+			}
+			store = u.limitedSessions
 		}
-		tok, err := u.sessions.mint()
+		tok, err := store.mint()
 		if err != nil {
 			http.Error(w, "could not start a session", http.StatusInternalServerError)
 			return
@@ -517,7 +547,7 @@ func (u *uiServer) root(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, uiLanding(r.URL.Query().Get("to")), http.StatusSeeOther)
 		return
 	}
-	if !u.sessions.valid(uiSessionFrom(r)) {
+	if !u.signedIn(r) {
 		http.Error(w, "not signed in — open this page from `privatae-bastion "+u.verb()+"`",
 			http.StatusUnauthorized)
 		return
@@ -533,7 +563,7 @@ func (u *uiServer) root(w http.ResponseWriter, r *http.Request) {
 		u.approvalsPage(w, r)
 		return
 	}
-	u.render(w, "page.html")
+	u.homePage(w, r)
 }
 
 func (u *uiServer) statusFragment(w http.ResponseWriter, r *http.Request) {
@@ -564,6 +594,7 @@ func (u *uiServer) renderStatus(w http.ResponseWriter, name, flash, class string
 	s := u.status()
 	s.Flash, s.FlashClass = flash, class
 	s.ApprovalsView = approvalsView
+	s.Limited = limitedWriter(w)
 	if err := u.tpl.ExecuteTemplate(w, name, s); err != nil {
 		uilogf("render %s: %v\n", name, err)
 	}
@@ -636,7 +667,19 @@ func (u *uiServer) approve(w http.ResponseWriter, r *http.Request) {
 		u.renderAnswer(w, r, "Enter the code from the authenticator enrolled on this machine.", "warn")
 		return
 	}
-	if _, err := stepupApproveRequest(cfg.dcnDir(), id, code); err != nil {
+	approveOne := func() (string, error) { return stepupApproveRequest(cfg.dcnDir(), id, code) }
+	if u.limitedSession(r) {
+		// Through the owner's lane the seed is out of the caller's reach, so
+		// the reasoning above no longer holds: codes are throttled here as the
+		// owner's are (consolelane.go).
+		dir := cfg.dcnDir()
+		approveOne = func() (string, error) {
+			return codeSpend(dir, time.Now(), hostCodeLockedHint, func() (string, error) {
+				return stepupApproveRequest(dir, id, code)
+			})
+		}
+	}
+	if _, err := approveOne(); err != nil {
 		u.renderAnswer(w, r, "Not approved: "+err.Error(), "bad")
 		return
 	}
@@ -716,6 +759,9 @@ func (u *uiServer) signOut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u.sessions.drop(uiSessionFrom(r))
+	if u.limitedSessions != nil {
+		u.limitedSessions.drop(uiSessionFrom(r))
+	}
 	uiClearSessionCookie(w)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -730,7 +776,7 @@ func (u *uiServer) serveAsset(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/assets/")
 	switch name {
 	case "htmx.min.js", "app.css", "given.css", "setup.css", "diskmap.css", "agents.css",
-		"policy.css", "context.css":
+		"policy.css", "context.css", "home.css":
 	default:
 		http.NotFound(w, r)
 		return
@@ -796,6 +842,8 @@ func startUIServer(ctx context.Context) {
 	// they are — that code has early returns, and a person's ability to ask
 	// must not depend on a free TCP port.
 	startContextSock(ctx.Done())
+	// Asks from other accounts to stop an agent (agentask.go).
+	startAskSock(ctx.Done())
 	secret, err := loadOrCreateUISecret()
 	if err != nil {
 		uilogf("not started (%v)\n", err)
@@ -822,15 +870,18 @@ func startUIServer(ctx context.Context) {
 		return
 	}
 	addr := ln.Addr().String()
+	srv.addr = addr
 	if p, err := uiAddrPath(); err == nil {
 		_ = os.WriteFile(p, []byte(addr), 0o600)
 	}
+	consoleLaneServer.Store(srv)
 	h := &http.Server{
 		Handler:           srv.handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
 		<-ctx.Done()
+		consoleLaneServer.CompareAndSwap(srv, nil)
 		sh, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = h.Shutdown(sh)
@@ -907,7 +958,7 @@ func localUIEntryURLTo(to string) (entry, addr string, err error) {
 // belongs to the running daemon, because that is the process that knows what is
 // live.
 func cmdUI() error {
-	entry, addr, err := localUIEntryURL()
+	entry, addr, err := consoleEntryForThisAccount()
 	if err != nil {
 		return err
 	}
@@ -934,4 +985,48 @@ func openBrowser(url string) error {
 	}
 	hideConsole(cmd)
 	return cmd.Start()
+}
+
+// uiDaemonListening reports whether THIS account's bastion daemon is up. It is
+// how `status` tells a running bastion with no Host from one that is not
+// running: with no pairing there is no pairing listener to probe.
+//
+// A port answering is not enough. ui.addr can outlive its daemon, and the port
+// it names can then belong to another account's bastion (the system service
+// beside a person's own, say), which would read as "running" when this one is
+// not. So the console must accept this account's own ui.secret, the same proof
+// `ui` uses (localUIEntryURLTo). The ticket that proves it lapses unused after
+// uiTicketTTL.
+func uiDaemonListening() bool {
+	p, err := uiAddrPath()
+	if err != nil {
+		return false
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	addr := strings.TrimSpace(string(b))
+	if !bastionListening(addr) {
+		return false
+	}
+	sp, err := uiSecretPath()
+	if err != nil {
+		return false
+	}
+	sb, err := os.ReadFile(sp)
+	if err != nil {
+		return false // a daemon that ran under this state would have written it
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/auth/ticket", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(sb)))
+	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	if err != nil {
+		return false
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }

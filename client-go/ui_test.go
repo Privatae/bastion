@@ -105,13 +105,26 @@ func TestTheFrontDoorFlow(t *testing.T) {
 		t.Fatalf("no session cookie was set: %q", cookie)
 	}
 
-	// 4. The page renders, and renders THIS machine.
+	// 4. The home page is the agents on this machine (uihome.go), and the
+	// machine's own state, which was home before it, renders at /machine.
 	r = uiReq(http.MethodGet, "/")
 	r.Header.Set("Cookie", cookie)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusOK {
 		t.Fatalf("/ with a session = %d: %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{"Agents on this machine", `hx-get="/fragments/home"`, `href="/machine"`} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("the home page does not contain %q", want)
+		}
+	}
+	r = uiReq(http.MethodGet, "/machine")
+	r.Header.Set("Cookie", cookie)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("/machine with a session = %d: %s", w.Code, w.Body.String())
 	}
 	body := w.Body.String()
 	for _, want := range []string{
@@ -271,7 +284,14 @@ func TestEveryRouteRefusesARebindingHost(t *testing.T) {
 		// is exactly what a rebinding page would want here: this one names
 		// every automated program on the machine and adds the machine's own
 		// opinion of which it would stop.
-		"/policy", "/fragments/policy", "/assets/policy.css"} {
+		"/policy", "/fragments/policy", "/assets/policy.css",
+		// The agents home and one agent's page (uihome.go): each session's
+		// name, title, folder, what it is running, and its last prompt.
+		"/fragments/home", "/agent?pid=1", "/machine", "/assets/home.css",
+		"/agent/stop", "/agent/mark", "/approvals/machine/approve", "/approvals/machine/deny", "/activity",
+		"/fragments/machine/schedules", "/fragments/machine/tools", "/fragments/machine/baseline",
+		"/machine/compare", "/machine/baseline", "/machine/report",
+		"/setup/host/disconnect", "/setup/host/release"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.Host = "evil.example:" + uiTestPort // resolves to 127.0.0.1, is not 127.0.0.1
 		r.Header.Set("Cookie", uiCookieName+"="+tok)
@@ -352,7 +372,13 @@ func TestNothingAboutTheMachineLeaksWithoutASession(t *testing.T) {
 		"/agents", "/fragments/agents", "/agents/mark", "/agents/unmark",
 		// The policy page names the same programs and adds this machine's own
 		// opinion of which of them it would stop.
-		"/policy", "/fragments/policy"} {
+		"/policy", "/fragments/policy",
+		// Every session's name, title and last prompt (uihome.go).
+		"/fragments/home", "/agent?pid=1", "/machine",
+		"/agent/stop", "/agent/mark", "/approvals/machine/approve", "/approvals/machine/deny", "/activity",
+		"/fragments/machine/schedules", "/fragments/machine/tools", "/fragments/machine/baseline",
+		"/machine/compare", "/machine/baseline", "/machine/report",
+		"/setup/host/disconnect", "/setup/host/release"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, uiReq(http.MethodGet, path))
 		if w.Code != http.StatusUnauthorized {

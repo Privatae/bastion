@@ -15,12 +15,12 @@ import (
 )
 
 // cmdStepupDrop revokes one unused approval this box issued for a pairing.
-func cmdStepupDrop(host, prefix string) error {
-	cfg, err := stepupPairing(host)
+func cmdStepupDrop(host string, machine bool, prefix string) error {
+	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
 		return err
 	}
-	dir := cfg.dcnDir()
+	dir := t.dir
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return errors.New("which approval? (the id `approve` printed)")
@@ -36,7 +36,7 @@ func cmdStepupDrop(host, prefix string) error {
 	}
 	switch len(hits) {
 	case 0:
-		return fmt.Errorf("no unused approval starts with %q for %s", prefix, cfg.HostName)
+		return fmt.Errorf("no unused approval starts with %q %s", prefix, t.forWhom())
 	case 1:
 	default:
 		return fmt.Errorf("%d approvals start with %q — give more of the id", len(hits), prefix)

@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // anchoredBox is the state capsAllow needs: a real anchor with its key pinned,
@@ -150,10 +151,11 @@ func TestTheSwitchAppliesToTheAnchorPairing(t *testing.T) {
 
 // ── failure directions ──────────────────────────────────────────────────────
 
-// AN UNREADABLE DENY LIST BLOCKS NOTHING. A corrupt file must not stop the
-// machine serving its host — that is a far worse outcome than a switch not
-// taking effect, and the page reports the read error separately.
-func TestAnUnreadableDenyListBlocksNothing(t *testing.T) {
+// AN UNREADABLE DENY LIST SWITCHES EVERYTHING OFF. The person switched
+// something off; a file that will not parse cannot say what, so every family
+// is refused until the person resets the list at the machine. It used to read
+// as "nothing is off", which handed the host back exactly what was refused.
+func TestAnUnreadableDenyListRefusesEverything(t *testing.T) {
 	const self = "h1.host.privatae.ai"
 	anchoredBox(t, self, allCaps)
 	p, err := localDenyPath()
@@ -163,14 +165,64 @@ func TestAnUnreadableDenyListBlocksNothing(t *testing.T) {
 	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if why := capsAllow(self, "observe:agents"); why != "" {
-		t.Errorf("a corrupt deny list refused an op: %q. Failing closed here means one "+
-			"bad file stops this machine serving its host.", why)
+	for _, op := range []string{"observe:agents", "session:root"} {
+		if why := capsAllow(self, op); why == "" {
+			t.Errorf("a corrupt deny list let %s through: an unreadable list must "+
+				"refuse everything, or a switch the person turned off is back on", op)
+		}
 	}
 	// And it is reported rather than swallowed.
 	if _, err := localDenyLoad(); err == nil {
 		t.Error("the unreadable list was loaded without an error, so nothing can tell " +
-			"the person their switches are not in effect")
+			"the person why everything is refused")
+	}
+	if _, note := localDenyIndex(); !strings.Contains(note, "switch --reset") {
+		t.Errorf("the page note does not name the way out: %q", note)
+	}
+}
+
+// A MISSING list is not an unreadable one: a machine nobody has switched
+// anything off on serves its grant.
+func TestAMissingDenyListBlocksNothing(t *testing.T) {
+	const self = "h1.host.privatae.ai"
+	anchoredBox(t, self, allCaps)
+	if why := capsAllow(self, "observe:agents"); why != "" {
+		t.Errorf("with no deny list at all an op was refused: %q", why)
+	}
+}
+
+// --reset sets an unreadable list aside (kept, never deleted) and serves the
+// grant again; it refuses on a list that reads fine, because that would
+// clear the person's switches without them choosing each one.
+func TestResetSetsAnUnreadableListAsideAndRefusesAGoodOne(t *testing.T) {
+	const self = "h1.host.privatae.ai"
+	anchoredBox(t, self, allCaps)
+	p, err := localDenyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := localDenySet(self, "dcn", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := localDenyReset(); err == nil {
+		t.Fatal("a list that reads fine was reset, clearing a switch nobody turned on")
+	}
+	if !localDenied(self, "dcn") {
+		t.Fatal("the refused reset lost the switch")
+	}
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 30, 3, 0, 0, 0, time.UTC)
+	kept, err := localDenyResetAt(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(kept); err != nil || string(b) != "{not json" {
+		t.Errorf("the unreadable file was not kept at %s: %q %v", kept, string(b), err)
+	}
+	if why := capsAllow(self, "observe:agents"); why != "" {
+		t.Errorf("after a reset the grant is still refused: %q", why)
 	}
 }
 
@@ -275,5 +327,30 @@ func TestSwitchingOffAHostThisMachineNeverHeardOfIsRefused(t *testing.T) {
 	// The real one still works, so this is a guard and not a wall.
 	if err := localDenySet("real.host.privatae.ai", "dcn", true); err != nil {
 		t.Errorf("a paired host was refused: %v", err)
+	}
+}
+
+// Every reader of an unreadable list gives the gate's answer: everything is
+// off. The given page's box-wide card included, and localDenyFamilies too.
+func TestEveryReaderOfAnUnreadableListSaysEverythingIsOff(t *testing.T) {
+	const self = "h1.host.privatae.ai"
+	anchoredBox(t, self, allCaps)
+	p, err := localDenyPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := localDenyFamilies(self); len(got) != len(localSwitchFamilies()) {
+		t.Errorf("localDenyFamilies on an unreadable list: %v", got)
+	}
+	g := collectGiven()
+	for _, h := range g.Hosts {
+		for _, f := range h.Families {
+			if !f.SwitchedOff {
+				t.Errorf("%s: the %s card does not read as switched off", h.Host, f.Name)
+			}
+		}
 	}
 }

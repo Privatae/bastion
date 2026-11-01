@@ -1,10 +1,24 @@
 #!/bin/sh
-# privatae-bastion installer (macOS / Linux). Run as root (a server), it installs the
-# NETWORKED bastion as a system service (systemd on Linux, launchd on macOS), and the
-# first host paired anchors it, so onboarding a server is two commands:
-#   curl -fsSL https://privatae.ai/bastion/install.sh | sudo sh
-#   sudo -H privatae-bastion pair <token>
-# Run as your own user (a desktop), it installs the LOCAL bastion for that user.
+# privatae-bastion installer (macOS / Linux).
+#
+# On your own computer:   curl -fsSL https://privatae.ai/bastion/install.sh | sh
+# It installs the bastion for the WHOLE MACHINE, as a system service (systemd on
+# Linux, launchd on macOS), so that no program running as you, an AI agent
+# included, can stop it or change what it allows. sudo asks for your password
+# once. Your own computer is the default ("personal": one Host at most, chosen at
+# the machine), and your account opens the console without sudo:
+# privatae-bastion ui. It watches the AI agents on the machine at once; no Host is
+# needed.
+#
+# On a server:   curl -fsSL https://privatae.ai/bastion/install.sh | sudo sh
+# Run as root, it installs the SHARED bastion (several Hosts, the first one paired
+# is in charge), as before:   sudo -H privatae-bastion pair <token>
+#
+# --just-me installs it for your own account only, with no sudo. Any program
+# running as you can then stop it; the installer says so. Without sudo, or when
+# sudo refuses, that is what it falls back to, and it says that too.
+# --personal / --shared choose the kind of machine (also spelled --local /
+# --networked, their earlier names).
 #
 # PRIVATAE_PAIR_CODE='<code>' pairs as well, with the code from your Host's "Set
 # up a bastion" card, and starts the bastion so it serves now and after a
@@ -55,17 +69,43 @@ bin="$bindir/privatae-bastion"
 # it is always local. --networked is accepted and is the root default.
 networked=0
 local=0
+just_me=0
+code_on_stdin=0
 for a in "$@"; do
   case "$a" in
-    --networked) networked=1 ;;
-    --local) local=1 ;;
+    --networked|--shared) networked=1 ;;
+    --local|--personal) local=1 ;;
+    --just-me) just_me=1 ;;
+    # Internal: the whole-machine step this script runs through sudo
+    # (elevate_whole_machine) hands the pairing code on standard input, never
+    # in its arguments.
+    --pair-code-on-stdin) code_on_stdin=1 ;;
     # An unknown argument is never echoed: it may be a pairing code given in
     # the wrong place, and a log of the failed install must not hold it.
-    *) echo "ERROR: unknown option. This installer takes --networked or --local; a pairing code goes in PRIVATAE_PAIR_CODE, as your Host's card shows. Nothing was installed." >&2; exit 2 ;;
+    *) echo "ERROR: unknown option. This installer takes --personal, --shared or --just-me; a pairing code goes in PRIVATAE_PAIR_CODE, as your Host's card shows. Nothing was installed." >&2; exit 2 ;;
   esac
 done
 if [ "$networked" = 1 ] && [ "$local" = 1 ]; then
-  echo "ERROR: --networked and --local contradict each other; pass one" >&2; exit 2
+  echo "ERROR: --shared and --personal contradict each other; pass one" >&2; exit 2
+fi
+if [ "$just_me" = 1 ] && [ "$(id -u)" = 0 ]; then
+  echo "ERROR: --just-me installs the bastion for your own account; run it without sudo. Nothing was installed." >&2; exit 2
+fi
+if [ "$just_me" = 1 ] && [ "$networked" = 1 ]; then
+  echo "ERROR: a shared machine's bastion runs for the whole machine; --just-me and --shared contradict each other" >&2; exit 2
+fi
+if [ "$code_on_stdin" = 1 ]; then
+  if [ "$(id -u)" != 0 ] || [ -n "$pair_given" ]; then
+    echo "ERROR: unknown option. Nothing was installed." >&2; exit 2
+  fi
+  IFS= read -r pair_code || true
+  pair_given=1
+  case "$pair_code" in
+    skp_*[!A-Za-z0-9_-]* | skp_) pair_code="" ;;
+    skp_?*) ;;
+    *) pair_code="" ;;
+  esac
+  [ -n "$pair_code" ] || { echo "ERROR: the pairing code did not arrive. Nothing was installed." >&2; exit 2; }
 fi
 asked_networked=$networked
 
@@ -173,7 +213,7 @@ start_bastion() {
     mkdir -p "$sb_dir"
     cat > "$sb_dir/privatae-bastion.service" <<UNIT
 [Unit]
-Description=Privatae bastion - serves this machine to your Hosts (tunnel + lanes)
+Description=Privatae bastion - watches the AI agents in this account
 [Service]
 Type=simple
 ExecStart=$sb_bin run
@@ -231,6 +271,36 @@ PLIST
   echo "The bastion is running, until this machine restarts. Start it again with:  $sb_bin run"
 }
 
+# record_owner BIN ROOT OS: run through sudo from a person's account on their
+# own computer, record that account as the machine's owner, whose own account
+# then opens the console without sudo (privatae-bastion ui). SUDO_UID is set by
+# sudo itself. Not on a shared machine: there the console stays the
+# administrator's (sudo -H privatae-bastion ui), so no agent running as the
+# account that ran sudo can reach it. A second administrator's reinstall leaves
+# the first owner in place; the bastion says so.
+record_owner() {
+  ro_bin=$1; ro_root=$2; ro_os=$3
+  [ "$ro_root" = 1 ] || return 0
+  [ "$networked" != 1 ] || return 0
+  case "${SUDO_UID-}" in ""|0|*[!0-9]*) return 0 ;; esac
+  pair_as "$ro_root" "$ro_os" "$ro_bin" approvals-owner --account "$SUDO_UID" </dev/null || \
+    echo "NOTE: your account was not recorded as this machine's owner (the reason is above); open the console with: sudo -H privatae-bastion ui" >&2
+}
+
+# whole_machine_next BIN: what to do next on a person's own computer, the
+# bastion installed for the whole machine and no Host connected.
+whole_machine_next() {
+  echo "The bastion runs for the whole machine and starts at boot. It is watching the AI agents on this computer now; no Host is needed."
+  echo "  Open its console:      privatae-bastion ui"
+  case "$(uname -s)" in
+    Darwin) wmn_state="/var/root/Library/Application Support/privatae-bastion" ;;
+    *) wmn_state=/root/.config/privatae-bastion ;;
+  esac
+  [ -f "$wmn_state/machine-factor/stepup.json" ] && return 0
+  echo "  Set up your code, to stop an agent or answer what agents ask (an authenticator app on your phone):"
+  echo "                         sudo -H privatae-bastion stepup-enroll --machine"
+}
+
 # pair_and_start BIN CODE ROOT OS: pair with CODE, handed to `pair -` on
 # standard input and never as an argument, where the process list would show
 # it. Then start the bastion and show its status. `pair` exits 3 when this
@@ -254,6 +324,124 @@ pair_and_start() {
   echo ""
   echo "$ps_done $ps_how"
 }
+
+# whole_machine_script is what the whole-machine step runs as root: this same
+# installer, fetched by root from the one place it is published. A script
+# piped to sh cannot hand itself on, and a copy this account wrote would be a
+# file this account could change before root ran it. Hardcoded, like $base.
+whole_machine_script="https://privatae.ai/bastion/install.sh"
+
+# account_install_paired: 0 when this account already has a bastion of its own
+# that is paired. An upgrade keeps it where it is: moved to the whole machine,
+# its pairings would stay behind in this account.
+account_install_paired() {
+  case "$(uname -s)" in
+    Darwin) aip_dir="${HOME}/Library/Application Support/privatae-bastion" ;;
+    *) aip_dir="${XDG_CONFIG_HOME:-$HOME/.config}/privatae-bastion" ;;
+  esac
+  [ -f "$aip_dir/config.json" ] && return 0
+  for aip_f in "$aip_dir"/pairings/*.json; do [ -f "$aip_f" ] && return 0; done
+  return 1
+}
+
+# elevate_whole_machine: install for the whole machine through sudo. Returns 3
+# when sudo is missing or refuses (no admin rights, no terminal to ask on, a
+# wrong password): nothing was installed. Otherwise the root step's own exit
+# status. The pairing code reaches the root step on standard input, never in
+# an argument, where the process list would show it.
+elevate_whole_machine() {
+  command -v sudo >/dev/null 2>&1 || return 3
+  echo "Installing the bastion for the whole machine, so that no program running as you, an AI agent included, can stop it or change what it allows."
+  echo "sudo asks for your password once."
+  # `sudo true`, not `sudo -v`: -v asks for a password unless every sudo rule
+  # of the account is NOPASSWD (sudoers verifypw), so an account that may run
+  # anything without one was asked anyway, and fell back to itself where no
+  # terminal could answer.
+  sudo -p '[bastion] sudo password for %u: ' true </dev/null || return 3
+  ew_kind=--personal
+  [ "$networked" = 1 ] && ew_kind=--shared
+  # -H and curl -q: root's step reads nothing from this account's home. A sudo
+  # configured to keep HOME (env_keep) would otherwise have root's curl
+  # read this account's ~/.curlrc, which can point the fetch at another server
+  # (resolve, proxy) and switch off its certificate check: a file this account
+  # can change, deciding what root runs.
+  ew_cmd='f=$(mktemp) || exit 1; if curl -q -fsSL "$1" -o "$f"; then shift; /bin/sh "$f" "$@"; rc=$?; else echo "ERROR: could not fetch $1. Nothing was installed." >&2; rc=1; fi; rm -f "$f"; exit $rc'
+  ew_rc=0
+  if [ -n "$pair_code" ]; then
+    printf '%s\n' "$pair_code" | sudo -H /bin/sh -c "$ew_cmd" sh "$whole_machine_script" "$ew_kind" --pair-code-on-stdin || ew_rc=$?
+  else
+    sudo -H /bin/sh -c "$ew_cmd" sh "$whole_machine_script" "$ew_kind" </dev/null || ew_rc=$?
+  fi
+  # 3 means sudo refused (above); the root step's own failure is never read
+  # as that.
+  [ "$ew_rc" = 3 ] && ew_rc=1
+  return "$ew_rc"
+}
+
+# account_copy_cleanup: what an earlier install for this account alone left
+# that would run a second bastion beside the machine's: its unit or LaunchAgent
+# and its program. Its state, pairings included, stays in the account. Reached
+# when that install held no pairing, or when the machine already has a
+# bastion for the whole machine, beside which it could not run anyway.
+account_copy_cleanup() {
+  acc_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/privatae-bastion.service"
+  if [ -f "$acc_unit" ]; then
+    systemctl --user disable --now privatae-bastion >/dev/null 2>&1 || true
+    rm -f "$acc_unit"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    echo "Removed this account's own bastion service; the machine's replaces it."
+  fi
+  acc_plist="$HOME/Library/LaunchAgents/ai.privatae.bastion.user.plist"
+  if [ -f "$acc_plist" ]; then
+    /bin/launchctl bootout "gui/$(id -u)/ai.privatae.bastion.user" >/dev/null 2>&1 || true
+    rm -f "$acc_plist"
+    echo "Removed this account's own bastion LaunchAgent; the machine's replaces it."
+  fi
+  if [ -f "$HOME/.local/bin/privatae-bastion" ] && [ ! -L "$HOME/.local/bin/privatae-bastion" ]; then
+    rm -f "$HOME/.local/bin/privatae-bastion"
+    echo "Removed $HOME/.local/bin/privatae-bastion, an earlier copy that would come first on PATH."
+  fi
+  if [ "$(uname -s)" = Linux ]; then stop_user_copies; fi
+}
+
+# machine_install_present: 0 when this machine's bastion is already installed
+# for the whole machine. A second one for an account beside it would only be
+# refused (the bastion's own guard), so none is installed.
+machine_install_present() {
+  case "$(uname -s)" in
+    Darwin) [ -f /Library/LaunchDaemons/ai.privatae.bastion.plist ] ;;
+    *) [ -f /etc/systemd/system/privatae-bastion.service ] ;;
+  esac
+}
+
+# Not root: the whole machine, through sudo, unless this account's own bastion
+# is asked for (--just-me) or is already paired. Where sudo cannot be used,
+# this account, and the installer says what that means; but never beside a
+# bastion installed for the whole machine.
+kept_account=0
+fell_back=0
+if [ "$root" != 1 ] && [ "$just_me" = 1 ] && machine_install_present; then
+  echo "ERROR: this machine's bastion is installed for the whole machine, and a second one for your account would be refused beside it. Its console opens from its owner's account with: privatae-bastion ui. Nothing was installed." >&2
+  exit 1
+fi
+if [ "$root" != 1 ] && [ "$just_me" != 1 ]; then
+  if account_install_paired && ! machine_install_present; then
+    kept_account=1
+  else
+    ew_rc=0
+    elevate_whole_machine || ew_rc=$?
+    case "$ew_rc" in
+      0) account_copy_cleanup; exit 0 ;;
+      3) if machine_install_present; then
+           echo "ERROR: this machine's bastion is installed for the whole machine, and updating it needs an account that may use sudo, in a terminal. Nothing was installed." >&2
+           exit 1
+         fi
+         fell_back=1
+         echo "sudo could not be used here, so the bastion is installed for your account only." >&2 ;;
+      *) exit "$ew_rc" ;;
+    esac
+  fi
+fi
 
 if [ "$root" = 1 ] && [ "$local" != 1 ]; then
   case "$(uname -s)" in
@@ -340,7 +528,7 @@ fi
 echo "Checksum verified ($expected)."
 
 darwin_service=0
-if [ "$os" = darwin ] && [ "$networked" = 1 ]; then
+if [ "$os" = darwin ] && [ "$root" = 1 ]; then
   # The launchd daemon runs this program as root, so only root may be able to
   # replace it: a root-owned folder, not /usr/local/bin, which a common package
   # manager hands to the signed-in user on many Macs. `service install` checks
@@ -376,7 +564,7 @@ if [ "$os" = linux ] && [ "$root" = 1 ] && command -v systemctl >/dev/null 2>&1;
   # the installer WITHOUT sudo and gets the --user path below instead.
   cat > /etc/systemd/system/privatae-bastion.service <<UNIT
 [Unit]
-Description=Privatae bastion - your secure door into your private mesh (tunnel + lanes)
+Description=Privatae bastion - watches the AI agents on this machine
 After=network-online.target
 Wants=network-online.target
 [Service]
@@ -397,8 +585,10 @@ UNIT
     # binary itself so the path is resolved exactly one way.
     HOME=/root "$bin" set-mode networked || die "could not set networked mode"
   fi
-  systemctl enable --now privatae-bastion >/dev/null 2>&1 || true
-  echo "Service installed + enabled (it restarts until you pair, then connects automatically)."
+  systemctl enable privatae-bastion >/dev/null 2>&1 || true
+  # restart, not start: a reinstall must run the new program.
+  systemctl restart privatae-bastion >/dev/null 2>&1 || true
+  record_owner "$bin" "$root" "$os"
   echo ""
   if [ -n "$pair_code" ]; then
     :
@@ -417,17 +607,23 @@ UNIT
     echo "  sudo -H privatae-bastion stepup-enroll"
     echo "  sudo systemctl restart privatae-bastion"
   else
-    echo "Now pair:   sudo -H privatae-bastion pair <token>"
+    whole_machine_next "$bin"
+    echo "  Connect a Host, if you run one (optional):  sudo -H privatae-bastion pair <token>"
   fi
 elif [ "$darwin_service" = 1 ]; then
   # The mode is box state under root's home, where the daemon keeps its state
   # (the daemon's HOME is /var/root), written by the binary itself so the path
   # is resolved exactly one way. Before the service starts, so its first run
   # already sees it.
-  HOME=/var/root "$bin" set-mode networked || die "could not set networked mode"
+  if [ "$networked" = 1 ]; then
+    HOME=/var/root "$bin" set-mode networked || die "could not set networked mode"
+  fi
   "$bin" service install || die "could not register the system service"
+  record_owner "$bin" "$root" "$os"
   echo ""
-  if [ -z "$pair_code" ]; then
+  if [ -z "$pair_code" ] && [ "$networked" != 1 ]; then
+    whole_machine_next "$bin"
+  elif [ -z "$pair_code" ]; then
   echo "Networked bastion, running as a system service (launchd, as root)."
   echo "Pair it with YOUR host; the first host paired becomes its anchor:"
   # The full path, not the name on PATH: /usr/local/bin may belong to the
@@ -444,13 +640,26 @@ elif [ "$networked" = 1 ]; then
 else
   case ":$PATH:" in *":$bindir:"*) ;; *) echo "Add to PATH:  export PATH=\"\$PATH:$bindir\"" ;; esac
   echo ""
-  if [ "$kept_local" = 1 ]; then
-    echo "This machine is already paired as a LOCAL bastion, and reinstalling keeps it local."
-    echo "To make it a networked server instead, run the installer again with --networked."
+  if [ "$kept_account" = 1 ]; then
+    echo "This account's own bastion is already paired, so it stays installed for this account."
+    echo "To move it to the whole machine: disconnect its Host (privatae-bastion unpair <host>), run this"
+    echo "installer again, and connect the Host again with: sudo -H privatae-bastion pair <token>"
+  fi
+  echo "WARNING: installed for your account only. Any program running as you, an AI agent included, can stop"
+  echo "  the bastion or change what it allows."
+  if [ "$just_me" = 1 ]; then
+    echo "  To install it for the whole machine instead, run this installer again without --just-me."
+  elif [ "$fell_back" = 1 ]; then
+    echo "  To install it for the whole machine, run this installer again in a terminal, from an account that may use sudo."
   fi
   if [ -z "$pair_code" ]; then
-  echo "Now pair:   privatae-bastion pair <token>"
-  echo "Run it:     privatae-bastion run    (Linux non-root: 'loginctl enable-linger \$USER' + a --user unit for boot persistence)"
+    if start_how=$(start_bastion "$bin" "$root" "$os"); then
+      echo "$start_how"
+      echo "It is watching the AI agents in this account now; no Host is needed. Open its console:  $bin ui"
+    else
+      echo "Start it with:  $bin run" >&2
+    fi
+    echo "Connect a Host, if you run one (optional):  $bin pair <token>"
   fi
 fi
 if [ -n "$pair_code" ]; then

@@ -108,6 +108,31 @@ func installShPrivatePIDs(t *testing.T) []string {
 	return nil
 }
 
+// installShHere is a copy of deploy/install.sh whose machine_install_present
+// looks in dir instead of the machine running the test, which may well have
+// the bastion installed for the whole machine. machine says whether the copy
+// finds one there.
+func installShHere(t *testing.T, dir string, machine bool) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "deploy", "install.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := installShFunc(t, "machine_install_present")
+	unit := filepath.Join(dir, "machine-unit")
+	if machine {
+		if err := os.WriteFile(unit, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	here := "machine_install_present() {\n  [ -f '" + unit + "' ]\n}\n"
+	out := filepath.Join(dir, "install.sh")
+	if err := os.WriteFile(out, []byte(strings.Replace(string(raw), fn, here, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // pairShSetup is a stand-in machine for install.sh: a log directory, a
 // home, and a PATH directory of stand-ins for systemctl, loginctl and sleep,
 // each logging what it was given. unit is how the stand-in systemd reports
@@ -138,8 +163,17 @@ exit 0
 `)
 	s.write(t, filepath.Join(s.path, "loginctl"), "#!/bin/sh\necho \"$*\" >> \"$LOGS/loginctl\"\nexit \"$LINGER_RC\"\n")
 	s.write(t, filepath.Join(s.path, "sleep"), "#!/bin/sh\nexit 0\n")
+	// sudo is ALWAYS a stand-in. The suite runs as root, and the installer run
+	// as a pretend ordinary account installs for the whole machine through
+	// sudo: the real one would hand the published installer to root on the
+	// machine running the test. This one refuses, as sudo does for an account
+	// that may not use it, unless a test says otherwise (sudoStandIn).
+	s.write(t, filepath.Join(s.path, "sudo"), sudoRefuses)
 	return s
 }
+
+// sudoRefuses is sudo for an account that may not use it.
+const sudoRefuses = "#!/bin/sh\necho \"sudo $*\" >> \"${LOGS:-/dev/null}\"/sudo 2>/dev/null\necho \"Sorry, user tester may not run sudo.\" >&2\nexit 1\n"
 
 func (s *pairShSetup) write(t *testing.T, p, body string) {
 	t.Helper()
@@ -352,10 +386,7 @@ exit 0
 		b, _ := os.ReadFile(p)
 		s.write(t, p, strings.Replace(string(b), "#!/bin/sh\n", "#!/bin/sh\n"+record, 1))
 	}
-	sh, err := filepath.Abs(filepath.Join("..", "deploy", "install.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := installShHere(t, s.dir, false)
 	args := append(append([]string{}, wrap...), "sh", sh)
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = s.env("PRIVATAE_PAIR_CODE="+code, "STAND="+s.dir, "LINGER_RC=0", "UNIT=steady")
@@ -384,6 +415,12 @@ exit 0
 	if !strings.HasSuffix(strings.TrimSpace(string(out)), "https://privatae.ai/bastion/LICENSE.txt") || !strings.Contains(string(out), "This machine is paired.") {
 		t.Fatalf("the ending: %s", out)
 	}
+	// sudo refused (the stand-in), so it is installed for this account, and
+	// the installer says what that means.
+	if !strings.Contains(readPairShLog(t, s.logs, "sudo"), " true") || !strings.Contains(string(out), "installed for your account only") ||
+		!strings.Contains(string(out), "in a terminal, from an account that may use sudo") {
+		t.Fatalf("the fall back to this account is not said:\n%s", out)
+	}
 }
 
 // A PRIVATAE_PAIR_CODE that is empty or not a whole pairing code is refused
@@ -400,6 +437,7 @@ func TestInstallShRefusesABadPairCodeBeforeDownloading(t *testing.T) {
 	for name, body := range map[string]string{
 		"id":   `case "$1" in -u) echo 1000 ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac`,
 		"curl": `echo "REACHED-THE-DOWNLOAD" >&2; exit 1`,
+		"sudo": `echo "REACHED-SUDO" >&2; exit 1`,
 	} {
 		if err := os.WriteFile(filepath.Join(stand, name), []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
 			t.Fatal(err)
@@ -424,11 +462,232 @@ func TestInstallShRefusesABadPairCodeBeforeDownloading(t *testing.T) {
 		cmd.Env = append([]string{"PATH=" + stand + ":/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + home}, c.env...)
 		out, err := cmd.CombinedOutput()
 		ee, ok := err.(*exec.ExitError)
-		if !ok || ee.ExitCode() != 2 || strings.Contains(string(out), "Fetching manifest") || strings.Contains(string(out), "REACHED-THE-DOWNLOAD") {
+		if !ok || ee.ExitCode() != 2 || strings.Contains(string(out), "Fetching manifest") || strings.Contains(string(out), "REACHED-THE-DOWNLOAD") ||
+			strings.Contains(string(out), "REACHED-SUDO") {
 			t.Fatalf("%v %v: want exit 2 before the download, got %v\n%s", c.env, c.args, err, out)
 		}
 		if strings.Contains(string(out), code) || strings.Contains(string(out), "skb_") || strings.Contains(string(out), "networkd") {
 			t.Fatalf("%v %v: the refusal echoes what it was given: %s", c.env, c.args, out)
 		}
+	}
+}
+
+// On a person's own account the installer installs for the whole machine
+// through sudo: sudo true first, then root (sudo -H) fetches the installer and
+// runs it with --personal, the pairing code on its standard input. sudo's
+// arguments never hold the code. What an earlier install for this account
+// alone left (never paired) is removed, so it does not run a second bastion.
+//
+// Nothing here runs as root on the machine running the test: the installer
+// root fetches is a stand-in that records what it was given, and sudo runs
+// it as the test's own account, in a PID namespace of its own.
+func TestInstallShInstallsForTheWholeMachineThroughSudo(t *testing.T) {
+	wrap := installShPrivatePIDs(t)
+	s := newPairShSetup(t)
+	const code = "skp_eyJ2IjoxLCJ0IjoiSU5WRU5URUQtV0hPTEUifQ"
+	s.write(t, filepath.Join(s.dir, "root-step.sh"), "echo \"$*\" > \"$LOGS/root-args\"\ncat > \"$LOGS/root-stdin\"\nexit 0\n")
+	s.write(t, filepath.Join(s.path, "sudo"), "#!/bin/sh\necho \"$*\" >> \"$LOGS/sudo\"\ncase \"$1\" in -p) exit 0 ;; -H) shift ;; esac\nexec \"$@\"\n")
+	for name, body := range map[string]string{
+		"uname": `case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac`,
+		"id":    `case "$1" in -u) echo 1000 ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac`,
+		"curl": `echo "$*" >> "$LOGS/curl"; for a; do o=$a; done; u=""; for a; do case "$a" in https://*) u=$a ;; esac; done
+case "$u" in https://privatae.ai/bastion/install.sh) cp "$STAND/root-step.sh" "$o" ;; *) echo "REACHED-THE-DOWNLOAD" >&2; exit 1 ;; esac`,
+	} {
+		s.write(t, filepath.Join(s.path, name), "#!/bin/sh\n"+body+"\n")
+	}
+	unit := filepath.Join(s.home, ".config", "systemd", "user", "privatae-bastion.service")
+	own := filepath.Join(s.home, ".local", "bin", "privatae-bastion")
+	for _, p := range []string{unit, own} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		s.write(t, p, "an earlier install for this account\n")
+	}
+	sh := installShHere(t, s.dir, false)
+	args := append(append([]string{}, wrap...), "sh", sh)
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = s.env("PRIVATAE_PAIR_CODE="+code, "STAND="+s.dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if got := readPairShLog(t, s.logs, "root-args"); strings.TrimSpace(got) != "--personal --pair-code-on-stdin" {
+		t.Fatalf("the root step was given %q\n%s", got, out)
+	}
+	if got := readPairShLog(t, s.logs, "root-stdin"); got != code+"\n" {
+		t.Fatalf("the root step's standard input: %q", got)
+	}
+	sudo := readPairShLog(t, s.logs, "sudo")
+	if !strings.HasPrefix(sudo, "-p [bastion] sudo password for %u:  true\n") || !strings.Contains(sudo, "/bin/sh -c ") {
+		t.Fatalf("sudo was asked: %s\n%s", sudo, out)
+	}
+	if strings.Contains(sudo, code) || strings.Contains(string(out), code) {
+		t.Fatalf("the code is in sudo's arguments or the output:\n%s\n%s", sudo, out)
+	}
+	// Root's step reads nothing from this account's home: sudo -H, so HOME is
+	// root's, and curl -q, so no ~/.curlrc can point root's fetch elsewhere.
+	if !strings.Contains(sudo, "\n-H /bin/sh -c ") {
+		t.Errorf("the root step runs with this account's HOME (no sudo -H): %s", sudo)
+	}
+	if got := readPairShLog(t, s.logs, "curl"); !strings.HasPrefix(got, "-q ") {
+		t.Errorf("root's fetch of the installer reads a curl config (no -q first): %q", got)
+	}
+	if strings.Contains(string(out), "Fetching manifest") || strings.Contains(string(out), "REACHED-THE-DOWNLOAD") {
+		t.Fatalf("the installer also installed for this account:\n%s", out)
+	}
+	for _, p := range []string{unit, own} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s is still there", p)
+		}
+	}
+	if !strings.Contains(readPairShLog(t, s.logs, "systemctl"), "--user disable --now privatae-bastion") {
+		t.Error("this account's own unit was not stopped")
+	}
+}
+
+// An account whose own bastion is already paired keeps it on an upgrade:
+// sudo is never asked, and the installer goes on for this account.
+func TestInstallShKeepsAPairedAccountInstallWhereItIs(t *testing.T) {
+	s := newPairShSetup(t)
+	for name, body := range map[string]string{
+		"uname": `case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac`,
+		"id":    `case "$1" in -u) echo 1000 ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac`,
+		"curl":  `echo "REACHED-THE-DOWNLOAD" >&2; exit 1`,
+	} {
+		s.write(t, filepath.Join(s.path, name), "#!/bin/sh\n"+body+"\n")
+	}
+	pd := filepath.Join(s.home, ".config", "privatae-bastion", "pairings")
+	if err := os.MkdirAll(pd, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s.write(t, filepath.Join(pd, "member.host.privatae.ai.json"), "{}")
+	cmd := exec.Command("sh", installShHere(t, s.dir, false))
+	cmd.Env = s.env()
+	out, _ := cmd.CombinedOutput()
+	if got := readPairShLog(t, s.logs, "sudo"); got != "" {
+		t.Fatalf("sudo was asked for a paired account install: %s", got)
+	}
+	if !strings.Contains(string(out), "Fetching manifest") {
+		t.Fatalf("the installer did not go on for this account:\n%s", out)
+	}
+}
+
+// Beside a bastion installed for the whole machine, an account that cannot
+// use sudo gets no second bastion of its own (the machine's would refuse it),
+// asked for with --just-me or fallen back to.
+func TestInstallShInstallsNoSecondBastionBesideTheMachines(t *testing.T) {
+	for _, args := range [][]string{nil, {"--just-me"}} {
+		s := newPairShSetup(t)
+		for name, body := range map[string]string{
+			"uname": `case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac`,
+			"id":    `case "$1" in -u) echo 1000 ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac`,
+			"curl":  `echo "REACHED-THE-DOWNLOAD" >&2; exit 1`,
+		} {
+			s.write(t, filepath.Join(s.path, name), "#!/bin/sh\n"+body+"\n")
+		}
+		cmd := exec.Command("sh", append([]string{installShHere(t, s.dir, true)}, args...)...)
+		cmd.Env = s.env()
+		out, err := cmd.CombinedOutput()
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 || strings.Contains(string(out), "REACHED-THE-DOWNLOAD") ||
+			!strings.Contains(string(out), "installed for the whole machine") {
+			t.Fatalf("%v: want a refusal before the download, got %v\n%s", args, err, out)
+		}
+	}
+}
+
+// The root step takes the pairing code on standard input only when told to,
+// checks it before anything is downloaded, and never echoes it. --just-me is
+// refused as root and beside --shared.
+//
+// "Root" here is a stand-in id; curl fails every download, so nothing past
+// the checks can run.
+func TestInstallShRootStepTakesTheCodeOnStdin(t *testing.T) {
+	stand := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(stand, name), []byte("#!/bin/sh\n"+body+"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("curl", `echo "REACHED-THE-DOWNLOAD" >&2; exit 1`)
+	write("sudo", `echo "REACHED-SUDO" >&2; exit 1`)
+	write("uname", `case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac`)
+	run := func(uid, stdin string, args ...string) (string, int) {
+		write("id", `case "$1" in -u) echo `+uid+` ;; -un) echo tester ;; *) echo "uid=`+uid+`" ;; esac`)
+		home := t.TempDir()
+		cmd := exec.Command("sh", append([]string{filepath.Join("..", "deploy", "install.sh")}, args...)...)
+		cmd.Env = []string{"PATH=" + stand + ":/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + home}
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if ee, ok := err.(*exec.ExitError); ok {
+			return string(out), ee.ExitCode()
+		}
+		return string(out), 0
+	}
+	const code = "skp_eyJ2IjoxLCJ0IjoiU1RESU4ifQ"
+	out, rc := run("0", code+"\n", "--personal", "--pair-code-on-stdin")
+	if rc != 1 || !strings.Contains(out, "REACHED-THE-DOWNLOAD") || strings.Contains(out, code) {
+		t.Fatalf("a good code on stdin did not reach the download, or was echoed (%d):\n%s", rc, out)
+	}
+	for _, bad := range []string{"", "skp_\n", "skb_aG9tZQ\n", code + " x\n"} {
+		out, rc := run("0", bad, "--personal", "--pair-code-on-stdin")
+		if rc != 2 || strings.Contains(out, "REACHED") || (bad != "" && strings.Contains(out, strings.TrimSpace(bad))) {
+			t.Fatalf("stdin %q: want exit 2 before the download, unechoed (%d):\n%s", bad, rc, out)
+		}
+	}
+	if out, rc := run("1000", code+"\n", "--pair-code-on-stdin"); rc != 2 || strings.Contains(out, "REACHED") {
+		t.Fatalf("an ordinary account's --pair-code-on-stdin was taken (%d):\n%s", rc, out)
+	}
+	if out, rc := run("0", "", "--just-me"); rc != 2 || !strings.Contains(out, "without sudo") {
+		t.Fatalf("--just-me as root (%d):\n%s", rc, out)
+	}
+	if out, rc := run("1000", "", "--just-me", "--shared"); rc != 2 || strings.Contains(out, "REACHED") {
+		t.Fatalf("--just-me --shared (%d):\n%s", rc, out)
+	}
+}
+
+// The owner's account is recorded on a person's own computer only. On a
+// shared machine the console stays the administrator's.
+func TestInstallShRecordsTheOwnerOnAPersonalInstallOnly(t *testing.T) {
+	d := t.TempDir()
+	bin := filepath.Join(d, "privatae-bastion")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"$*\" >> \""+filepath.Join(d, "log")+"\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fns := installShFunc(t, "pair_as") + installShFunc(t, "record_owner")
+	for _, c := range []struct {
+		networked, sudoUID, want string
+	}{{"0", "1000", "approvals-owner --account 1000\n"}, {"1", "1000", ""}, {"0", "0", ""}, {"0", "", ""}} {
+		os.Remove(filepath.Join(d, "log"))
+		cmd := exec.Command("sh", "-c", fns+`networked=$1; record_owner "$2" 1 linux`, "sh", c.networked, bin)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "SUDO_UID=" + c.sudoUID}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%+v: %v %s", c, err, out)
+		}
+		got, _ := os.ReadFile(filepath.Join(d, "log"))
+		if string(got) != c.want {
+			t.Errorf("networked=%s SUDO_UID=%q: recorded %q, want %q", c.networked, c.sudoUID, got, c.want)
+		}
+	}
+}
+
+// The root step's own failure, whatever its exit code, is never read as sudo
+// refusing: the installer stops, and installs nothing for the account.
+func TestInstallShRootStepFailureIsNotAFallBack(t *testing.T) {
+	s := newPairShSetup(t)
+	s.write(t, filepath.Join(s.dir, "root-step.sh"), "exit 3\n")
+	s.write(t, filepath.Join(s.path, "sudo"), "#!/bin/sh\nwhile [ \"$1\" = -H ]; do shift; done\ncase \"$1\" in -p) exit 0 ;; esac\nexec \"$@\"\n")
+	for name, body := range map[string]string{
+		"uname": `case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) echo Linux ;; esac`,
+		"id":    `case "$1" in -u) echo 1000 ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac`,
+		"curl":  `for a; do o=$a; done; for a; do case "$a" in https://privatae.ai/bastion/install.sh) cp "$STAND/root-step.sh" "$o"; exit 0 ;; esac; done; echo "REACHED-THE-DOWNLOAD" >&2; exit 1`,
+	} {
+		s.write(t, filepath.Join(s.path, name), "#!/bin/sh\n"+body+"\n")
+	}
+	cmd := exec.Command("sh", installShHere(t, s.dir, false))
+	cmd.Env = s.env("STAND=" + s.dir)
+	out, err := cmd.CombinedOutput()
+	ee, ok := err.(*exec.ExitError)
+	if !ok || ee.ExitCode() != 1 || strings.Contains(string(out), "your account only") || strings.Contains(string(out), "REACHED-THE-DOWNLOAD") {
+		t.Fatalf("want exit 1 and no install for the account, got %v\n%s", err, out)
 	}
 }

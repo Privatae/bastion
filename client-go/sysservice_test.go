@@ -164,9 +164,17 @@ func TestWindowsSystemAppDataIsLocalSystemsProfile(t *testing.T) {
 }
 
 func TestServiceGuardRefusesAUserspaceBastionBesideTheService(t *testing.T) {
-	for _, goos := range []string{"darwin", "windows"} {
-		for _, cmd := range []string{"pair", "run", "status", "switch"} {
+	for _, goos := range []string{"darwin", "windows", "linux"} {
+		for _, cmd := range []string{"pair", "run", "status", "switch", "activity", "report"} {
 			err := serviceGuard(goos, cmd, true, false)
+			if (cmd == "status" || cmd == "activity" || cmd == "report") && goos != "windows" {
+				// These read the machine's bastion over its socket (reads.go),
+				// which answers the owner's account and refuses any other.
+				if err != nil {
+					t.Errorf("%s: `%s` was refused before it could ask the machine's bastion: %v", goos, cmd, err)
+				}
+				continue
+			}
 			if err == nil {
 				t.Errorf("%s: `%s` from an ordinary account beside a system service was allowed", goos, cmd)
 				continue
@@ -178,7 +186,7 @@ func TestServiceGuardRefusesAUserspaceBastionBesideTheService(t *testing.T) {
 			if goos == "windows" && strings.Contains(msg, "sudo") {
 				t.Errorf("windows: the refusal tells a Windows user to run sudo: %s", msg)
 			}
-			if goos == "darwin" && !strings.Contains(msg, "sudo -H") {
+			if goos != "windows" && !strings.Contains(msg, "sudo -H") {
 				t.Errorf("darwin: the refusal does not say how: %s", msg)
 			}
 			// The administrator, the service itself, and a machine with no
@@ -196,10 +204,6 @@ func TestServiceGuardRefusesAUserspaceBastionBesideTheService(t *testing.T) {
 				t.Errorf("%s: `%s` was refused but does not fork the bastion: %v", goos, cmd, err)
 			}
 		}
-	}
-	// Linux's service is its systemd unit; nothing here changes how it behaves.
-	if err := serviceGuard("linux", "pair", true, false); err != nil {
-		t.Errorf("linux: refused: %v", err)
 	}
 }
 

@@ -15,9 +15,10 @@ package main
 // the host's signed grant remains the ceiling it was before. That distinction is
 // the whole safety argument: a switch that could widen would make the machine a
 // place to escalate FROM, which inverts the product. So the state stored here is
-// a DENY LIST, never an allow list. An empty file means "nothing switched off",
-// which is exactly the behaviour that existed before this file, and an
-// unreadable file means the same — see localDenyLoad.
+// a DENY LIST, never an allow list. A missing file means "nothing switched
+// off", which is exactly the behaviour that existed before this file. A file
+// that exists but cannot be read means EVERYTHING switched off — see
+// localDenied.
 //
 // WHY THE MACHINE MAY DO THIS AT ALL. It already decides what it actually
 // executes: every op passes capsAllow (anchor.go) on the way in, and the box
@@ -64,12 +65,11 @@ func localDenyPath() (string, error) {
 
 // localDenyLoad reads the deny list.
 //
-// EVERY FAILURE RETURNS AN EMPTY LIST, and that direction is deliberate. A
-// deny list that cannot be read must not become a deny-everything: the machine
-// would stop serving its host because of a corrupt file, which is a far worse
-// outcome than a switch not taking effect. The page reports the read error
-// separately so the person is not left believing something is off when it is
-// not.
+// Every failure returns an empty list WITH the error, and what an error means
+// is decided by the caller, not here. The gate (localDenied) refuses every
+// family while the error stands; the page and --list say why and name
+// `switch --reset`. An empty list must never be read on its own as "nothing
+// is off": that is how a corrupt file used to switch everything back on.
 func localDenyLoad() (*localDenyFile, error) {
 	p, err := localDenyPath()
 	if err != nil {
@@ -84,9 +84,7 @@ func localDenyLoad() (*localDenyFile, error) {
 	}
 	var f localDenyFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		return &localDenyFile{Off: map[string][]string{}}, fmt.Errorf(
-			"this machine's list of switched-off capabilities cannot be read (%w). "+
-				"Nothing is being blocked by it while that is true", err)
+		return &localDenyFile{Off: map[string][]string{}}, fmt.Errorf("%s is not valid JSON: %w", p, err)
 	}
 	if f.Off == nil {
 		f.Off = map[string][]string{}
@@ -146,13 +144,25 @@ func localSwitchFamilies() []string {
 }
 
 // localDenied reports whether a family is switched off for a host here.
+//
+// A LIST THAT CANNOT BE READ SWITCHES EVERYTHING OFF. The person at the
+// machine switched something off; a file that will not parse cannot say what,
+// so the only answer that keeps their decision is all of it. The other
+// direction (read it as "nothing is off") turned a session or files switch
+// back on without anyone being told, and the host was served exactly what the
+// person had refused it. Recovery is at the machine: `switch --reset` sets the
+// unreadable file aside and starts an empty list.
 func localDenied(host, family string) bool {
 	if host == "" || family == "" {
 		return false
 	}
 	localDenyMu.Lock()
 	defer localDenyMu.Unlock()
-	f, _ := localDenyLoad()
+	f, err := localDenyLoad()
+	if err != nil {
+		localDenyReportUnreadable(err)
+		return true
+	}
 	for _, c := range f.Off[host] {
 		if c == family {
 			return true
@@ -165,7 +175,11 @@ func localDenied(host, family string) bool {
 func localDenyFamilies(host string) []string {
 	localDenyMu.Lock()
 	defer localDenyMu.Unlock()
-	f, _ := localDenyLoad()
+	f, err := localDenyLoad()
+	if err != nil {
+		// The same answer the gate gives (localDenied): everything is off.
+		return localSwitchFamilies()
+	}
 	out := append([]string(nil), f.Off[host]...)
 	sort.Strings(out)
 	return out
@@ -257,10 +271,9 @@ func localDenyRefusal(family string) string {
 // localDenyIndex is every switched-off (host, family) plus WHY the list could
 // not be read, when it could not.
 //
-// It exists because the per-family localDenied() swallows that error by design
-// — it has to, since a gate must not fail closed on a corrupt file — and the
-// PAGE has the opposite obligation: it must say so, or it shows a person their
-// switches as not existing rather than as not working.
+// It exists because the per-family localDenied() answers only yes or no, and
+// the PAGE has to say why every switch reads off: without the reason a person
+// sees their machine refusing everything and no way out.
 func localDenyIndex() (map[string]bool, string) {
 	localDenyMu.Lock()
 	defer localDenyMu.Unlock()
@@ -272,9 +285,62 @@ func localDenyIndex() (map[string]bool, string) {
 		}
 	}
 	if err != nil {
-		return out, "This machine's list of switched-off capabilities cannot be read (" +
-			err.Error() + "). NOTHING below is being blocked by it while that is true — " +
-			"anything you switched off is not in effect."
+		return out, localDenyUnreadableText(err)
 	}
 	return out, ""
+}
+
+// localDenyUnreadableText is the one sentence the page, --list and the
+// daemon's log give for an unreadable list.
+func localDenyUnreadableText(err error) string {
+	return "This machine's list of switched-off capabilities cannot be read (" +
+		err.Error() + "). Until it can, EVERY capability is refused to every host. " +
+		"To start a fresh list, run: sudo -H privatae-bastion switch --reset " +
+		"(the unreadable file is kept beside it)."
+}
+
+// localDenyUnreadableLogged is the last unreadable-list error written to the
+// log, so the gate, which runs on every op, logs each distinct failure once
+// instead of once per op. Guarded by localDenyMu.
+var localDenyUnreadableLogged string
+
+// localDenyReportUnreadable logs the refusal-of-everything once per distinct
+// error. Caller holds localDenyMu.
+func localDenyReportUnreadable(err error) {
+	msg := err.Error()
+	if msg == localDenyUnreadableLogged {
+		return
+	}
+	localDenyUnreadableLogged = msg
+	fmt.Printf("local switch: %s\n", localDenyUnreadableText(err))
+}
+
+// localDenyReset sets an unreadable deny list aside and leaves no list, so
+// nothing is switched off. It refuses when the list reads fine: resetting a
+// good list would silently clear what the person switched off, and that is
+// done one family at a time with `switch <host> <family> on`. The old file is
+// renamed, never deleted, so whatever is still legible in it can be read back.
+func localDenyReset() (string, error) {
+	return localDenyResetAt(time.Now().UTC())
+}
+
+func localDenyResetAt(now time.Time) (string, error) {
+	var kept string
+	err := withLocalDenyLock(func() error { // holds localDenyMu and the file lock
+		p, err := localDenyPath()
+		if err != nil {
+			return err
+		}
+		if _, err := localDenyLoad(); err == nil {
+			return fmt.Errorf("the list of switched-off capabilities reads fine, so there is " +
+				"nothing to reset; switch a family back on with: switch <host> <family> on")
+		}
+		kept = p + ".unreadable-" + now.Format("20060102T150405Z")
+		if err := os.Rename(p, kept); err != nil {
+			return fmt.Errorf("could not set the unreadable list aside: %w", err)
+		}
+		localDenyUnreadableLogged = ""
+		return nil
+	})
+	return kept, err
 }

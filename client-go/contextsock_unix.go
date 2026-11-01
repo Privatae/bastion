@@ -62,13 +62,20 @@ func contextSockListen(path string) (net.Listener, error) {
 
 // contextPeerUser reads the connecting process's user from the kernel.
 func contextPeerUser(c net.Conn) (string, error) {
+	_, who, err := contextPeerIdentity(c)
+	return who, err
+}
+
+// contextPeerIdentity is the connecting process's uid from the kernel, and
+// the account's name for messages (or "uid N" when it has none).
+func contextPeerIdentity(c net.Conn) (uint32, string, error) {
 	uc, ok := c.(*net.UnixConn)
 	if !ok {
-		return "", errors.New("not a unix socket")
+		return 0, "", errors.New("not a unix socket")
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	var uid uint32
 	var serr error
@@ -76,16 +83,16 @@ func contextPeerUser(c net.Conn) (string, error) {
 		uid, serr = contextPeerUID(fd)
 	})
 	if err != nil {
-		return "", err
+		return 0, "", err
 	}
 	if serr != nil {
-		return "", serr
+		return 0, "", serr
 	}
 	name := ""
 	if u, err := user.LookupId(strconv.FormatUint(uint64(uid), 10)); err == nil {
 		name = u.Username
 	}
-	return contextSockFmtUser(uid, name), nil
+	return uid, contextSockFmtUser(uid, name), nil
 }
 
 // contextSockDir is machine-wide and root-owned. See contextSockPath.

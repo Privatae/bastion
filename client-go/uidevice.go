@@ -129,9 +129,9 @@ func (u *uiServer) deviceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/approvals", u.guarded(u.approvalsPage))
 	mux.HandleFunc("/fragments/approvals", u.guarded(u.approvalsFragment))
 	mux.HandleFunc("/fragments/approvals-news", u.guarded(u.approvalsNews))
-	mux.HandleFunc("/device/approve", u.guarded(u.deviceApproveOne))
+	mux.HandleFunc("/device/approve", u.adminOnly(u.deviceApproveOne))
 	mux.HandleFunc("/device/deny", u.guarded(u.deviceDenyOne))
-	mux.HandleFunc("/device/approve-shown", u.guarded(u.deviceApproveShown))
+	mux.HandleFunc("/device/approve-shown", u.adminOnly(u.deviceApproveShown))
 }
 
 func (u *uiServer) approvalsPage(w http.ResponseWriter, r *http.Request) {

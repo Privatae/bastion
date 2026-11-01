@@ -1,0 +1,64 @@
+/* The agents home page and an agent's page (uihome.go). */
+
+.topnav { display: flex; gap: 1.1rem; margin: 0.9rem 0 0; font-size: 0.9rem; flex-wrap: wrap; }
+.topnav a { color: var(--dim); text-decoration: none; padding-bottom: 0.2rem; border-bottom: 2px solid transparent; }
+.topnav a:hover { color: var(--ink); }
+.topnav a.on { color: var(--ink); border-bottom-color: var(--ok); }
+
+.tally { margin: 0 0 1rem; color: var(--dim); }
+h2.family { font-size: 0.95rem; font-weight: 600; margin: 1.6rem 0 0.6rem; }
+
+.agent-row {
+  display: block; color: var(--ink); text-decoration: none;
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line);
+  border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.6rem;
+}
+a.agent-row:hover { border-color: #3d4452; }
+.agent-row.waiting { border-left-color: var(--warn); }
+.agent-row.service { opacity: 0.75; }
+.agent-head { font-weight: 600; overflow-wrap: anywhere; }
+.agent-line { margin: 0.15rem 0 0; font-size: 0.88rem; overflow-wrap: anywhere; }
+.agent-line.urgent { color: var(--warn); }
+.dim { color: var(--dim); }
+.agent-line code, .panel code { font-size: 0.8rem; }
+
+.flags { margin-top: 0.45rem; }
+.flag {
+  display: inline-block; font-size: 0.75rem; padding: 0.05rem 0.5rem; margin-right: 0.35rem;
+  border-radius: 999px; border: 1px solid var(--line); color: var(--dim);
+}
+.flag.waiting, .flag.warn { color: var(--warn); border-color: #5a4524; }
+.flag.bad { color: var(--bad); border-color: #5a2a27; }
+.flag.ok { color: var(--ok); border-color: #2a4a33; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 0.75rem 1rem; }
+.panel p { margin: 0.25rem 0; }
+.tool { padding: 0.35rem 0; border-bottom: 1px solid var(--line); }
+.tool:last-child { border-bottom: 0; }
+.problem { color: var(--warn); font-size: 0.88rem; }
+.reason { font-size: 0.85rem; }
+.facts dl { display: grid; grid-template-columns: 7rem 1fr; gap: 0.2rem 0.8rem; margin: 0 0 0.5rem; }
+.facts dt { color: var(--dim); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+.panel a, footer a { color: var(--ink); }
+.acts { margin: 0 0 1rem; }
+.acts form, .panel form { display: flex; gap: 0.5rem; align-items: center; margin: 0.4rem 0; }
+.filters { display: flex; gap: 0.9rem; flex-wrap: wrap; font-size: 0.85rem; margin: 0 0 1rem; }
+.filters a { color: var(--dim); text-decoration: none; }
+.filters a.on { color: var(--ink); text-decoration: underline; }
+.activity { display: grid; grid-template-columns: 7.5rem 1fr; gap: 0.8rem; padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line); font-size: 0.9rem; }
+.activity .when { color: var(--dim); white-space: nowrap; }
+.activity .what { overflow-wrap: anywhere; }
+.tool-sub { margin: 0.25rem 0 0 0.8rem; font-size: 0.88rem; }
+.machine-sections { margin-top: 1.5rem; }
+.inline-form { display: flex; gap: 0.5rem; align-items: center; margin: 0.35rem 0; flex-wrap: wrap; }
+.start { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--ok);
+  border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 1.2rem; }
+.start h2 { font-size: 1rem; margin: 0 0 0.4rem; }
+.start ol { margin: 0; padding-left: 1.2rem; }
+.start li { margin: 0.25rem 0; }
+.start li.done { color: var(--dim); }
+.start li.done::marker { content: "✓  "; color: var(--ok); }
+.start li.optional { color: var(--dim); }
+.start a { color: var(--ink); }

@@ -174,7 +174,7 @@ func statusOutput(t *testing.T) string {
 	}
 	stdout := os.Stdout
 	os.Stdout = w
-	serr := cmdStatus()
+	serr := cmdStatus(nil)
 	os.Stdout = stdout
 	_ = w.Close()
 	out, _ := io.ReadAll(r)

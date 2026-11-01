@@ -969,12 +969,24 @@ func TestSwitchingThroughTheRouteFlipsTheStateAndSaysSo(t *testing.T) {
 	}
 
 	// AND BACK ON — the inverted-drift case: if these two ever do the same
-	// thing, one of them is silently wrong.
+	// thing, one of them is silently wrong. Back on gives the Host its reach
+	// again, so it takes the owner's code: none set up, nothing changes.
 	w = uiPost(t, h, "/given/switch", url.Values{
 		"host": {host}, "family": {"dcn"}, "off": {"0"},
 	}, cookie)
+	if !localDenied(host, "dcn") || !strings.Contains(w.Body.String(), "Set up your code") {
+		t.Errorf("turned back on with no owner code: %q", dmSnip(w.Body.String(), "flash"))
+	}
+	d, err := machineFactorDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolFactorAt(t, d, machineTestSecret)
+	w = uiPost(t, h, "/given/switch", url.Values{
+		"host": {host}, "family": {"dcn"}, "off": {"0"}, "code": {codeFor(t, machineTestSecret)},
+	}, cookie)
 	if localDenied(host, "dcn") {
-		t.Error("posting off=0 did not clear the denial")
+		t.Error("posting off=0 with the owner's code did not clear the denial")
 	}
 	if !strings.Contains(w.Body.String(), "grants nothing") {
 		t.Errorf("turning it back on does not say it grants nothing: %q",
@@ -982,10 +994,9 @@ func TestSwitchingThroughTheRouteFlipsTheStateAndSaysSo(t *testing.T) {
 	}
 }
 
-// AN UNREADABLE LIST IS SAID OUT LOUD. The gate must fail OPEN on a corrupt
-// file — one bad file must not stop the machine serving its host — so the page
-// carries the opposite obligation: say it, or the person is shown their
-// switches as not existing rather than as not working.
+// AN UNREADABLE LIST IS SAID OUT LOUD. The gate refuses every family while
+// the list cannot be read (localDenied), so the page must say why and name the
+// way out, or the person sees their machine refusing everything for no reason.
 func TestAnUnreadableDenyListIsReportedOnThePage(t *testing.T) {
 	uiTestConfigDir(t)
 	const host = "member.host.privatae.ai"
@@ -1008,9 +1019,12 @@ func TestAnUnreadableDenyListIsReportedOnThePage(t *testing.T) {
 		t.Errorf("the page renders every capability as granted while the switches are "+
 			"silently not in effect, and never says so: %q", dmSnip(body, "granted"))
 	}
-	if !strings.Contains(body, "not in effect") {
-		t.Error("the note does not say what it MEANS for the person — that what they " +
-			"switched off is not being blocked")
+	if !strings.Contains(body, "EVERY capability is refused") {
+		t.Error("the note does not say what it MEANS for the person — that every " +
+			"capability is refused until the list is reset")
+	}
+	if !strings.Contains(body, "switch --reset") {
+		t.Error("the note does not name the way out")
 	}
 }
 

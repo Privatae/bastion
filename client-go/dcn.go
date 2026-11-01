@@ -190,10 +190,19 @@ func dcnSaveFile(dir string, f *dcnGrantFile) error {
 // accounting ("every read is logged for you"). Best-effort: auditing never blocks
 // a result, but a refusal is still a refusal whether or not the line lands.
 func dcnAudit(dir, op string, storeID int64, path, decision string) {
-	rec, _ := json.Marshal(map[string]any{
-		"ts": time.Now().UTC().Format(time.RFC3339), "op": op,
-		"store_id": storeID, "path": path, "decision": decision,
-	})
+	dcnAuditWith(dir, op, storeID, path, decision, nil)
+}
+
+// dcnAuditWith is dcnAudit with more fields on the row (an ask's asker and
+// target, askparties.go). They never replace the five every reader expects.
+func dcnAuditWith(dir, op string, storeID int64, path, decision string, extra map[string]any) {
+	row := map[string]any{}
+	for k, v := range extra {
+		row[k] = v
+	}
+	row["ts"], row["op"] = time.Now().UTC().Format(time.RFC3339), op
+	row["store_id"], row["path"], row["decision"] = storeID, path, decision
+	rec, _ := json.Marshal(row)
 	auditToSystemLog(auditFilePairingD, auditPairingOfDir(dir), rec)
 	fh, err := os.OpenFile(filepath.Join(dir, "audit.jsonl"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

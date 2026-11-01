@@ -205,6 +205,23 @@ func (s *uiTokenStore) valid(tok string) bool {
 	return ok && !uiNow().After(exp)
 }
 
+// mintCapped is mint, refused once max tokens are live, counted and minted
+// under one lock so callers at the same instant cannot pass max together.
+func (s *uiTokenStore) mintCapped(max int) (string, bool, error) {
+	tok, err := genSecret(32)
+	if err != nil {
+		return "", false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked()
+	if len(s.m) >= max {
+		return "", false, nil
+	}
+	s.m[tok] = uiNow().Add(s.ttl)
+	return tok, true, nil
+}
+
 func (s *uiTokenStore) drop(tok string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

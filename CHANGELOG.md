@@ -22,6 +22,75 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.59.0
+
+- **The bastion works on its own, with no Host.** It keeps watching the
+  machine with no Host connected, and `status` says it is running on its
+  own. Connecting a Host is optional and comes last.
+- **Every AI agent on the machine, in the console and at a terminal.** The
+  console's home page lists each agent and what it is doing: for Claude
+  Code, the session's title, folder, git branch, permission mode and what
+  it is running now; for the others, the folder and tool servers.
+  `agents [--json] [--prompts]` prints the same list. None of it goes into
+  the heartbeat or to a Host.
+- **The machine's owner can stop an agent without a Host.** `stop <pid or
+  session>` at a terminal, or Stop on the agent's page, takes the owner's
+  code: a second factor for the machine itself, set up with
+  `stepup-enroll --machine` or the QR code in Settings. An agent can only
+  file the request; it waits for the owner under Waiting for you, and the
+  bastion carries it out within two minutes of the approval. Wrong codes are
+  slowed down after five and locked after a hundred.
+- **New console pages.** Waiting for you lists requests from agents,
+  including agents running under other accounts, and which account asked.
+  Activity is one timeline of what happened on the machine (`activity`).
+  This machine shows scheduled jobs that start an agent, problems with tool
+  servers, and changes since a recorded baseline. Write report saves one
+  Markdown file of what the bastion knows, prompts left out (`report`).
+  Settings is in plain words, with the owner's acts as buttons.
+- **Installed for the whole machine by default.** On Linux and macOS,
+  `curl -fsSL https://privatae.ai/bastion/install.sh | sh` from your own
+  account asks for your password once through sudo and installs the bastion
+  as the machine's service, so no program running as you, an AI agent
+  included, can stop it. `--just-me` installs it for your account alone,
+  with a warning; so does a machine where sudo is missing or refuses. On
+  Windows, `install.ps1` does the same through one administrator prompt
+  (`-JustMe` for your account alone). `--personal` and `--shared` are the
+  new names for `--local` and `--networked`, which still work; on Windows
+  they are `-Personal` and `-Shared`, and `-Networked` still works.
+- **The console opens from the owner's own account.** On a whole-machine
+  install, `privatae-bastion ui` from the account that installed it opens a
+  limited console without sudo. It shows everything, and it does whatever
+  takes the owner's code or only narrows what reaches the machine.
+  Connecting a Host, setting up the owner's code, choosing the Host in
+  charge, proposing a folder, approving devices and the disk map need
+  `sudo -H privatae-bastion ui`, and the pages say so. Any other account is
+  refused.
+- **`privatae-bastion uninstall`.** It removes the service and the program
+  and keeps the bastion's state and audit log, unless `--delete-data` is
+  given and confirmed at a terminal. From an ordinary account it removes
+  only that account's own bastion.
+- **What changes for existing installs.**
+  - A local switch list that cannot be read now refuses everything; it used
+    to allow everything. `switch --reset` sets the unreadable list aside.
+  - Marking an agent as yours, and turning a switched-off capability back on
+    at the console, take the owner's code.
+  - The Claude Code background service is shown as a service, not counted
+    as a session.
+  - On Linux, `pair`, `run`, `status`, `switch`, `activity` and `report`
+    from an ordinary account beside the system service are refused with the
+    command to use instead, as on macOS and Windows. They used to act on
+    that account's own empty state.
+  - Reinstalling restarts the system service on the new program, and the
+    installer no longer puts a second bastion in an account beside the
+    machine's.
+- **Documentation.** The README starts with the bastion on its own.
+  `docs/STATUS.md` says what has run on a real machine, what is tested and
+  what is only built, for each system; `docs/skills/bastion.md` tells an AI
+  agent on the machine what it may do with the bastion. The whole-machine
+  install has run on a fresh Linux machine
+  (`docs/verification/m0-gate-linux-2026-10-31.md`); the macOS and Windows
+  installers have not yet run on a real machine.
+
 ## 0.58.1
 
 - **An excluded path that names more than one folder now matches.** A

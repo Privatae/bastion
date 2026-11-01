@@ -29,12 +29,28 @@ import (
 )
 
 const switchUsage = "usage: sudo -H privatae-bastion switch <host> <family> on|off\n" +
-	"       privatae-bastion switch --list"
+	"       privatae-bastion switch --list\n" +
+	"       sudo -H privatae-bastion switch --reset   (only when the list cannot be read)"
 
-// cmdSwitch parses the arguments and runs one switch, or the listing.
+// cmdSwitch parses the arguments and runs one switch, the listing, or the
+// reset of an unreadable list.
 func cmdSwitch(args []string) error {
 	if len(args) == 1 && args[0] == "--list" {
 		return switchList(os.Stdout)
+	}
+	if len(args) == 1 && args[0] == "--reset" {
+		// The same authority as switching anything back on: a reset leaves
+		// nothing switched off.
+		if err := requireMachineAuthority("switch"); err != nil {
+			return err
+		}
+		kept, err := localDenyReset()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("The unreadable list is kept at %s. Nothing is switched off now; "+
+			"switch off again whatever you had off: switch <host> <family> off\n", kept)
+		return nil
 	}
 	if len(args) != 3 {
 		return errors.New(switchUsage)
@@ -113,10 +129,9 @@ func switchList(w io.Writer) error {
 	f, readErr := localDenyLoad()
 	localDenyMu.Unlock()
 	if readErr != nil {
-		// The same direction the page takes (localDenyIndex): say so, because
-		// every family below then reads "on" while the person may believe
-		// something is off.
-		fmt.Fprintf(w, "warning: %v\n", readErr)
+		// The gate refuses everything while the list cannot be read
+		// (localDenied), so every line says off, and the warning says why.
+		fmt.Fprintf(w, "warning: %s\n", localDenyUnreadableText(readErr))
 	}
 	names := hostNames(cfgs)
 	sort.Strings(names)
@@ -127,6 +142,10 @@ func switchList(w io.Writer) error {
 			off[fam] = true
 		}
 		for _, fam := range fams {
+			if readErr != nil {
+				fmt.Fprintln(w, host+" "+fam+" off")
+				continue
+			}
 			if off[fam] {
 				line := host + " " + fam + " off"
 				if at := f.At[host+"/"+fam]; at != "" {

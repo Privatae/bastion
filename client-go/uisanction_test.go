@@ -28,6 +28,12 @@ import (
 func agentsTestBox(t *testing.T, seen ...agentObs) {
 	t.Helper()
 	uiTestConfigDir(t)
+	// Marking takes the owner's code (markCodeRefusal); the box has one.
+	d, err := machineFactorDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrolFactorAt(t, d, machineTestSecret)
 	prev := observedAgents
 	t.Cleanup(func() { observedAgents = prev })
 	observedAgents = func() ([]agentObs, error) { return seen, nil }
@@ -122,7 +128,7 @@ func TestMarkingAndUnmarkingThroughThePage(t *testing.T) {
 	cookie := uiSignedIn(t, u)
 	id := sanctionIdentityOf(mine).fingerprint()
 
-	w := uiPost(t, h, "/agents/mark", url.Values{"id": {id}}, cookie)
+	w := uiPost(t, h, "/agents/mark", url.Values{"id": {id}, "code": {codeFor(t, machineTestSecret)}}, cookie)
 	if w.Code != http.StatusOK {
 		t.Fatalf("mark = %d: %s", w.Code, w.Body.String())
 	}
@@ -207,7 +213,7 @@ func TestNothingOnThisPageCanTerminateAnything(t *testing.T) {
 	id := sanctionIdentityOf(mine).fingerprint()
 
 	body := agentsGet(t, h, "/agents", cookie).Body.String()
-	uiPost(t, h, "/agents/mark", url.Values{"id": {id}}, cookie)
+	uiPost(t, h, "/agents/mark", url.Values{"id": {id}, "code": {codeFor(t, machineTestSecret)}}, cookie)
 	uiPost(t, h, "/agents/unmark", url.Values{"id": {id}}, cookie)
 	if len(killed) != 0 {
 		t.Fatalf("this page terminated %v — containment is host-directed and marking "+

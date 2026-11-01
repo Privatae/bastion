@@ -547,7 +547,9 @@ func collectGiven() uiGiven {
 			// either way — and the page has to tell the two APART: "the host
 			// was never granted this" and "you switched it off" are different
 			// facts, and only one of them has a way back.
-			f.SwitchedOff = off[c.HostName+"/"+fam.Name]
+			// An unreadable list switches every family off (localDenied), and
+			// DenyNote says why and how to reset it.
+			f.SwitchedOff = off[c.HostName+"/"+fam.Name] || denyNote != ""
 			if f.Held {
 				h.HeldCount++
 			}
@@ -568,7 +570,7 @@ func collectGiven() uiGiven {
 		// the question the directives actually face.
 		d := uiDirectivesCard
 		d.Held = anchorOnly(c.HostName, localFamilyDirectives) == "" && !localDenied(c.HostName, localFamilyDirectives)
-		d.SwitchedOff = off[c.HostName+"/"+localFamilyDirectives]
+		d.SwitchedOff = off[c.HostName+"/"+localFamilyDirectives] || denyNote != ""
 		if d.Held {
 			h.HeldCount++
 		}
@@ -636,6 +638,17 @@ func (u *uiServer) givenSwitch(w http.ResponseWriter, r *http.Request) {
 	host := strings.TrimSpace(r.FormValue("host"))
 	family := strings.TrimSpace(r.FormValue("family"))
 	off := r.FormValue("off") == "1"
+	// Switching OFF only takes reach away and needs nothing. Turning it back
+	// ON gives the Host its reach again (up to its grant), which the
+	// terminal's `switch ... on` asks the administrator for; on this page it
+	// takes the owner's code, because anything driving the browser can press
+	// the button.
+	if !off {
+		if why := ownerCodeRefusal(r.FormValue("code"), "local_switch_on|"+host+"|"+family); why != "" {
+			u.renderGivenFlash(w, "given", "Not turned back on: "+why, "warn")
+			return
+		}
+	}
 
 	if err := localDenySet(host, family, off); err != nil {
 		u.renderGivenFlash(w, "given", "Nothing was changed: "+err.Error(), "bad")

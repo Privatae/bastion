@@ -129,6 +129,8 @@ type uiDormantSanction struct {
 type uiAgentsView struct {
 	Version   string
 	CheckedAt string
+	// OwnerCode: marking takes the owner's code (markCodeRefusal).
+	OwnerCode bool
 
 	Rows         []uiAgentRow
 	Observed     int
@@ -169,6 +171,7 @@ func collectAgentsView() uiAgentsView {
 		Version:   clientVersion,
 		CheckedAt: uiNow().Format("15:04:05"),
 		Blind:     !agentScanSupported,
+		OwnerCode: stepupEnrolled(existingMachineFactorDir()),
 	}
 	if _, err := loadSanctions(); err != nil {
 		v.ReadError = err.Error()
@@ -381,6 +384,10 @@ func (u *uiServer) agentsMark(w http.ResponseWriter, r *http.Request) {
 		if sanctionIdentityOf(a).fingerprint() != id {
 			continue
 		}
+		if why := markCodeRefusal(id, r.FormValue("code")); why != "" {
+			u.agentsFlash(w, why, "warn")
+			return
+		}
 		rec, err := addSanction(a, sanctionByLocalUI)
 		if err != nil {
 			u.agentsFlash(w, "Not marked: "+err.Error(), "bad")
@@ -418,4 +425,38 @@ func (u *uiServer) agentsUnmark(w http.ResponseWriter, r *http.Request) {
 	default:
 		u.agentsFlash(w, "Unmarked. Nothing at this machine vouches for that program now.", "ok")
 	}
+}
+
+// markCodeRefusal is why a mark may not be made, or "". Once the owner's code
+// is set up (stepup_machine.go), marking a program as yours takes it: a mark
+// takes the program off "not marked as yours" and out of the stopping rule,
+// which is exactly what an agent clicking through a signed-in console in the
+// person's browser would want, and the code is on the person's phone. The
+// code is spent on an approval bound to this one program and burned at once.
+// With no code set up, nothing is marked: set the code up first.
+func markCodeRefusal(id, code string) string {
+	dir := existingMachineFactorDir()
+	if !stepupEnrolled(dir) {
+		// Vouching for a program is the act an agent driving the browser
+		// would most want, so it waits for the code rather than being a click.
+		return "Not marked: set up your code under Settings first. Marking a program as yours takes it."
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "Not marked: type the code from your authenticator to mark this as yours."
+	}
+	purpose := "local_mark|" + id
+	if err := purposeBad([]string{id}, nil); err != nil {
+		return "Not marked: " + err.Error()
+	}
+	approval, err := machineCodeSpend(dir, uiNow(), func() (string, error) {
+		return stepupIssueApproval(dir, code, purpose)
+	})
+	if err != nil {
+		return "Not marked: " + err.Error()
+	}
+	if err := stepupConsumeApproval(dir, approval, purpose); err != nil {
+		return "Not marked: " + err.Error()
+	}
+	return ""
 }

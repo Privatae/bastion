@@ -6,14 +6,16 @@
 <meta name="referrer" content="no-referrer">
 <title>Privatae — approvals</title>
 <link rel="stylesheet" href="/assets/app.css">
+{{if not .TrayView}}<link rel="stylesheet" href="/assets/home.css">{{end}}
 <!-- Same CSP reasoning as page.html: htmx must not inject its indicator styles. -->
 <meta name="htmx-config" content='{"includeIndicatorStyles":false}'>
 <script src="/assets/htmx.min.js"></script>
 </head>
 <body>
 <header>
-  <h1>Approvals</h1>
-  <p class="sub">What your hosts are waiting on you for.{{if not .TrayView}} <a href="/">This machine</a>{{end}}</p>
+  <h1>Waiting for you</h1>
+  <p class="sub">What is waiting on your answer: asked of this machine, or by a Host.</p>
+  {{if not .TrayView}}{{template "nav" "approvals"}}{{end}}
 </header>
 
 <!-- NOT polled, unlike the front page. The list is redrawn only when the person
@@ -54,11 +56,16 @@
       <input type="hidden" name="id" value="{{.ID}}">
       <button class="no" type="submit">Deny</button>
     </form>
+    {{if $.Limited}}
+    <p class="approval-line">Approving signs with this device's key, which is the administrator's:
+      <code>sudo -H privatae-bastion ui</code></p>
+    {{else}}
     <form hx-post="/device/approve" hx-target="#approvals" hx-swap="innerHTML">
       <input type="hidden" name="id" value="{{.ID}}">
       {{if .NeedsCode}}<input name="code" inputmode="numeric" autocomplete="one-time-code" placeholder="your code" required>{{end}}
       <button class="go" type="submit">Approve</button>
     </form>
+    {{end}}
   </div>
   {{if .Plan}}
   <p class="approval-foot">Asked {{.At}}. Approving signs this ship plan with this device's key:
@@ -70,7 +77,7 @@
   {{end}}
 </div>
 {{end}}
-{{if gt .NoCodeApprovals 1}}
+{{if and (gt .NoCodeApprovals 1) (not .Limited)}}
 {{/* "All" means all SHOWN: the form carries the ids drawn above and nothing
      else, so an ask that lands after this was drawn is left waiting. A plan
      that runs root work is never in it: it needs the code, one at a time. */}}
@@ -81,17 +88,40 @@
 {{end}}
 {{end}}
 
+{{if .MachineAsks}}
+<h3 class="urgent">Asked of this machine</h3>
+{{range .MachineAsks}}
+<div class="approval">
+  <div class="approval-head">Request <span class="id">{{.Short}}</span></div>
+  <p class="approval-line">{{.Text}}</p>
+  <div class="approval-acts">
+    <form hx-post="/approvals/machine/deny" hx-target="#approvals" hx-swap="innerHTML">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <button class="no" type="submit">Deny</button>
+    </form>
+    <form hx-post="/approvals/machine/approve" hx-target="#approvals" hx-swap="innerHTML" autocomplete="off">
+      <input type="hidden" name="id" value="{{.ID}}">
+      <input class="code" name="code" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code"
+             placeholder="your code" aria-label="Your code" required>
+      <button class="go" type="submit">Approve</button>
+    </form>
+  </div>
+  <p class="approval-foot">Asked {{.At}}. Approving takes your code; anything that can drive your browser can click Approve.</p>
+</div>
+{{end}}
+{{end}}
+
 {{if .Approvals}}
 <h3 class="urgent">Waiting for your code on this machine</h3>
 {{template "stepup-approvals" .}}
 {{end}}
 
-{{if and (not .DeviceApprovals) (not .Approvals)}}
+{{if and (not .DeviceApprovals) (not .Approvals) (not .MachineAsks)}}
 <p class="approval-line">Nothing is waiting for your approval.</p>
 {{if .TrayView}}
 <p class="approval-foot">When your Host asks for something on this machine, it shows here and
   this window asks for a code from the authenticator app enrolled when this machine's bastion was set up.</p>
-{{else if not .IsDevice}}
+{{else if and (not .IsDevice) .Pairings}}
 <p class="approval-foot">This machine is not your approval device, so asks from your
   hosts are not answered here. Run <code>privatae-bastion device-init</code> on the machine
   you want to approve from.</p>

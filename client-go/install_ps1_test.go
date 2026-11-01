@@ -19,18 +19,24 @@ func TestInstallPs1PairShape(t *testing.T) {
 	}
 	s := string(raw)
 	for _, want := range []string{
-		"param([switch]$Networked, [string]$Pair)",
+		"param([switch]$Networked, [switch]$Shared, [switch]$Personal, [switch]$JustMe, [string]$Pair,",
 		"$Pair | & $exe pair -",
 		"elseif ($rc -eq 3)",
 		"Start-ScheduledTask -TaskName 'PrivataeBastion'",
 		"Restart-Service -Name 'PrivataeBastion'",
-		`Write-Host "Open a NEW terminal, then:  privatae-bastion pair <token>"`,
+		// The whole machine by default, through one UAC prompt; the code
+		// reaches the elevated step in a file, and the owner by SID.
+		"Start-Process -FilePath 'powershell.exe' -Verb RunAs",
+		"[IO.File]::WriteAllText($pf, $Pair)",
+		"& $exe approvals-owner --sid $owner",
+		"if (-not $elevatedDone) {",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("install.ps1 lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"pair $Pair", "pair -- $Pair", "-ArgumentList $Pair", "Write-Host $Pair", "$Pair\"", "'$Pair'"} {
+	for _, bad := range []string{"pair $Pair", "pair -- $Pair", "-ArgumentList $Pair", "Write-Host $Pair", "$Pair\"", "'$Pair'",
+		"-Pair '$Pair'", "-Pair $Pair"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("install.ps1 must never put the code in an argument or the output: %q", bad)
 		}
@@ -50,6 +56,20 @@ func TestInstallPs1PairBlockRunsUnderPwsh(t *testing.T) {
 	}
 	out, err := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-File",
 		filepath.Join("testdata", "install_ps1_pair.ps1"), filepath.Join("..", "deploy", "install.ps1")).CombinedOutput()
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "ok:") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+// The elevation block, run by pwsh with Windows' prompt stood in
+// (testdata/install_ps1_elevate.ps1). Skipped where pwsh is not installed.
+func TestInstallPs1ElevatesForTheWholeMachineUnderPwsh(t *testing.T) {
+	pwsh, err := exec.LookPath("pwsh")
+	if err != nil {
+		t.Skip("pwsh is not installed: install.ps1's elevation is checked only by TestInstallPs1PairShape here")
+	}
+	out, err := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-File",
+		filepath.Join("testdata", "install_ps1_elevate.ps1"), filepath.Join("..", "deploy", "install.ps1")).CombinedOutput()
 	if err != nil || !strings.HasPrefix(strings.TrimSpace(string(out)), "ok:") {
 		t.Fatalf("%v\n%s", err, out)
 	}

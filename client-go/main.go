@@ -11,11 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `privatae-bastion — your bastion into your Privatae network.
+	fmt.Fprintln(os.Stderr, `privatae-bastion — watches the AI agents on this machine, and connects it to a Host if you run one.
 
 Usage:
   privatae-bastion pair <token>   enroll this machine with a token from your host's "Set up a bastion".
@@ -93,16 +94,22 @@ Usage:
                                paired and anchored. Needs machine authority. --host-ca is the
                                NEW Host's CA, refused when it is the one this box pinned (that
                                Host is not gone); --force skips that check, at a terminal only
-  privatae-bastion approvals-owner --sid <SID> [--replace]
-                               Windows, beside the system service: the one account whose tray
-                               may list and answer approvals. Machine authority; a different
-                               SID needs --replace, at an Administrator terminal only
+  privatae-bastion uninstall [--delete-data]
+                               remove the service and the program. The state stays (pairings,
+                               keys, the audit log) unless --delete-data, confirmed at a terminal.
+                               Installed for the whole machine, it needs the administrator
+  privatae-bastion approvals-owner --sid <SID> [--replace]    (Windows)
+  privatae-bastion approvals-owner --account <name> [--replace]   (Linux, macOS)
+                               beside the system service, the one person's account it serves:
+                               on Windows the tray's approvals, on Linux and macOS the console
+                               (privatae-bastion ui) without sudo. Machine authority; another
+                               account needs --replace, at a terminal only
   sudo -H privatae-bastion claim-anchor --repin
                                same host, new name: re-sign anchor.json from the
                                pairing this box already holds, after the host's
                                own address changed. No token. Cannot move the
                                anchor anywhere.
-  privatae-bastion approvals [--host <host>]
+  privatae-bastion approvals [--host <host> | --machine] [--json]
                                show what your host is asking to do on this machine, in plain words
   privatae-bastion approve [--host <host>] <id>
                                approve one request with a code from the authenticator enrolled here
@@ -131,11 +138,44 @@ Usage:
   privatae-bastion quarantine clear <host>
                                reopen a host's write lanes this machine closed after repeated
                                refusals (5 in 10 minutes)
+  privatae-bastion quarantine clear --asker <account>
+                               let agents running as that account ask this machine again, after
+                               5 of their asks were refused in 10 minutes
   sudo -H privatae-bastion switch <host> <family> on|off
                                switch one capability family off for a host on this machine,
                                or clear that refusal (the console page's switch). Off only
                                removes reach; on grants nothing past the host's signed grant
   privatae-bastion switch --list  every paired host's families, on or off, one per line
+  privatae-bastion agents [--json] [--prompts]
+                               every AI agent on this machine and what it is doing: its
+                               session name and title, whether it waits for you, its folder
+                               and branch, what it is running now (--prompts: its last prompt)
+  privatae-bastion report [--since 7d] [--json] [--out FILE | --out -]
+                               write what this bastion knows as one Markdown file: agents,
+                               scheduled agents, MCP tool-server problems, the baseline, activity.
+                               --out - prints it
+  privatae-bastion schedules [--json]
+                               scheduled jobs that start an AI agent with nobody at the keyboard
+  privatae-bastion tool-servers [--json]
+                               the MCP tool servers configured here and what is wrong with each
+  privatae-bastion posture [--json]
+                               Linux: firewall, SSH, fail2ban, security updates, disk, load
+  privatae-bastion activity [--since 7d] [--json]
+                               what happened on this machine, newest first: stops, your
+                               approvals, what each Host did, and changes made here
+  privatae-bastion stop <pid or session> [--wait 5m] [--json]
+                               stop an agent this bastion sees, and every process it started,
+                               with your code as the machine's owner (stepup-enroll --machine).
+                               Run by an agent, it only asks: you approve under Waiting for you
+                               in the console. --wait follows the ask until it is answered
+  privatae-bastion request <id> [--wait 5m] [--json]
+                               where an ask stands: waiting, approved, stopped, not stopped or
+                               denied. Exit 0 stopped (or asked), 1 not, 3 still waiting
+                               From the machine's owner account, beside the bastion installed for
+                               the whole machine, the reads (status, agents, schedules,
+                               tool-servers, posture, baseline, activity, report, approvals)
+                               ask that bastion and show the whole machine
+  privatae-bastion help        this text
   privatae-bastion coders set [--max N] [--mem MB] [--cpus F] [--engines a,b|all] [--allow-lan h[:p],...]
                           [--image-prefix <registry/path/>|default]
   privatae-bastion coders on | off | drop [--host H] | status [--json]
@@ -153,15 +193,20 @@ Usage:
   privatae-bastion context        choose what your files become on your network. Runs as
                                you, so it shows exactly what you can already open, and asks
                                your host before anything is added
-  privatae-bastion status         show every pairing + tunnel status
-  privatae-bastion observe:baseline   record what is NORMAL on this machine: every automated
+  privatae-bastion status [--json]   show every pairing + tunnel status
+  privatae-bastion baseline record [--force]
+                               record what is NORMAL on this machine: every automated
                                program, its user and a digest of the file it runs from.
                                Administrator only. --force replaces an existing baseline
-  privatae-bastion observe:baseline:show   print the baseline this machine holds
-  privatae-bastion observe:delta  what is running here that the baseline does not hold:
+                               (also: observe:baseline)
+  privatae-bastion baseline [show] [--json]
+                               print the baseline this machine holds (also: observe:baseline:show)
+  privatae-bastion baseline diff [--json]
+                               what is running here that the baseline does not hold:
                                new programs, replaced binaries, new standing jobs, with
                                the ordinary ones filtered out. Administrator only.
                                --json for the full record including what was filtered
+                               (also: observe:delta)
   privatae-bastion observe        print what this machine would report about agents, automations
                                and scheduled jobs on its next check-in (read-only, JSON)
   privatae-bastion backup key init | key show | reseal | requests | approve | deny |
@@ -341,12 +386,15 @@ func main() {
 		err = cmdBackup(os.Args[2:])
 	case "stepup-enroll":
 		args := os.Args[2:]
-		host, rotate, consoleOnly := "", false, false
+		host, machine, rotate, consoleOnly := "", false, false, false
 		for len(args) > 0 {
 			switch {
 			case args[0] == "--host" && len(args) >= 2:
 				host = args[1]
 				args = args[2:]
+			case args[0] == "--machine":
+				machine = true
+				args = args[1:]
 			case args[0] == "--rotate":
 				rotate = true
 				args = args[1:]
@@ -354,36 +402,42 @@ func main() {
 				consoleOnly = true
 				args = args[1:]
 			default:
-				fmt.Fprintln(os.Stderr, "usage: privatae-bastion stepup-enroll [--host <host>] [--rotate] [--console-only]")
+				fmt.Fprintln(os.Stderr, "usage: privatae-bastion stepup-enroll [--host <host> | --machine] [--rotate] [--console-only]")
 				os.Exit(2)
 			}
 		}
-		err = cmdStepupEnroll(host, rotate, consoleOnly)
+		err = cmdStepupEnroll(host, machine, rotate, consoleOnly)
 	case "approvals", "approve", "deny":
 		// The user confirms (or refuses) what their host asked for, ON this machine,
 		// with the factor enrolled here. The host never handles the code.
 		host, args := takeHostFlag(os.Args[2:])
+		machine, args := takeMachineFlag(args)
 		switch os.Args[1] {
 		case "approvals":
 			// approvals drop <id>: revoke an approval this box issued and has
 			// not yet burned — the console can always take back what it gave.
 			if len(args) >= 2 && args[0] == "drop" {
-				err = cmdStepupDrop(host, args[1])
+				err = cmdStepupDrop(host, machine, args[1])
 				break
 			}
-			err = cmdStepupApprovals(host)
+			asJSON, jerr := jsonOnly("usage: privatae-bastion approvals [--host <host> | --machine] [--json]", args)
+			if jerr != nil {
+				fmt.Fprintln(os.Stderr, jerr)
+				os.Exit(2)
+			}
+			err = cmdStepupApprovals(host, machine, asJSON)
 		case "approve":
 			if len(args) < 1 {
-				fmt.Fprintln(os.Stderr, "usage: privatae-bastion approve [--host <host>] <request id>")
+				fmt.Fprintln(os.Stderr, "usage: privatae-bastion approve [--host <host> | --machine] <request id>")
 				os.Exit(2)
 			}
-			err = cmdStepupApprove(host, args[0])
+			err = cmdStepupApprove(host, machine, args[0])
 		case "deny":
 			if len(args) < 1 {
-				fmt.Fprintln(os.Stderr, "usage: privatae-bastion deny [--host <host>] <request id>")
+				fmt.Fprintln(os.Stderr, "usage: privatae-bastion deny [--host <host> | --machine] <request id>")
 				os.Exit(2)
 			}
-			err = cmdStepupDeny(host, args[0])
+			err = cmdStepupDeny(host, machine, args[0])
 		}
 	case "release-anchor":
 		// An anchor whose Host is gone (anchor_release.go): machine authority
@@ -410,26 +464,40 @@ func main() {
 		err = cmdReleaseAnchor(host, caFile, force)
 	case "approvals-owner":
 		// The one account the tray's lane serves (approvals_owner.go).
+		// On Linux and macOS, the account the console lane serves
+		// (owner_account.go): --account.
 		args := os.Args[2:]
-		sid, replace := "", false
+		sid, account, replace, bad := "", "", false, false
 		for len(args) > 0 {
 			switch {
 			case args[0] == "--sid" && len(args) >= 2:
 				sid = args[1]
 				args = args[2:]
+			case args[0] == "--account" && len(args) >= 2:
+				account = args[1]
+				args = args[2:]
 			case args[0] == "--replace":
 				replace = true
 				args = args[1:]
 			default:
-				sid = ""
+				bad = true
 				args = nil
 			}
 		}
-		if sid == "" {
-			fmt.Fprintln(os.Stderr, "usage: privatae-bastion approvals-owner --sid <account SID> [--replace]   (from an Administrator terminal)")
+		windows := runtime.GOOS == "windows"
+		if bad || (windows && (sid == "" || account != "")) || (!windows && (account == "" || sid != "")) {
+			if windows {
+				fmt.Fprintln(os.Stderr, "usage: privatae-bastion approvals-owner --sid <account SID> [--replace]   (from an Administrator terminal)")
+			} else {
+				fmt.Fprintln(os.Stderr, "usage: sudo -H privatae-bastion approvals-owner --account <name> [--replace]")
+			}
 			os.Exit(2)
 		}
-		err = cmdApprovalsOwner(sid, replace)
+		if windows {
+			err = cmdApprovalsOwner(sid, replace)
+		} else {
+			err = cmdOwnerAccount(account, replace)
+		}
 	case "tray":
 		// The signed-in person's icon beside a system service
 		// (tray_pipe_windows.go), started at every sign-in.
@@ -522,13 +590,25 @@ func main() {
 		// starts a server of its own and stays in the foreground: it is not a
 		// view of the daemon, it is a separate surface with a different owner.
 		err = cmdContextUI()
+	case "uninstall":
+		// Removes the service and the program; keeps the state and the audit
+		// log unless --delete-data (uninstall.go).
+		del := false
+		for _, a := range os.Args[2:] {
+			if a != "--delete-data" {
+				fmt.Fprintln(os.Stderr, "usage: privatae-bastion uninstall [--delete-data]")
+				os.Exit(2)
+			}
+			del = true
+		}
+		err = cmdUninstall(del)
 	case "ui":
 		// Opens a browser at the RUNNING daemon's UI (ui.go). It starts no
 		// server of its own: the UI belongs to the process that knows what is
 		// live, and a second one would render a machine nobody is serving.
 		err = cmdUI()
 	case "status":
-		err = cmdStatus()
+		err = cmdStatus(os.Args[2:])
 	// ── the approval device (device.go) and the write gate's console side ──
 	case "device-init":
 		err = cmdDeviceInit()
@@ -622,15 +702,58 @@ func main() {
 	case "quarantine":
 		// quarantine clear <host>: lift the box's own hold on a pairing's
 		// write lanes (quarantine.go) — the person at the machine, only.
+		// quarantine clear --asker <account>: the same for an account whose
+		// agents' asks were held (askquarantine.go).
 		if len(os.Args) < 4 || os.Args[2] != "clear" {
-			fmt.Fprintln(os.Stderr, "usage: privatae-bastion quarantine clear <host>")
+			fmt.Fprintln(os.Stderr, "usage: privatae-bastion quarantine clear <host> | --asker <account>")
 			os.Exit(2)
+		}
+		if os.Args[3] == "--asker" {
+			if len(os.Args) != 5 {
+				fmt.Fprintln(os.Stderr, "usage: privatae-bastion quarantine clear --asker <account>")
+				os.Exit(2)
+			}
+			err = cmdQuarantineClearAsker(os.Args[4])
+			break
 		}
 		err = cmdQuarantineClear(os.Args[3])
 	case "coders":
 		// coders set|on|off|drop|status (coders_cli.go): size this machine
 		// for coder runs. Off by default.
 		err = cmdCoders(os.Args[2:])
+	case "report":
+		// report [--since 7d] [--json] [--out FILE] (report.go).
+		err = cmdReport(os.Args[2:])
+	case "activity":
+		// activity [--since 7d] [--json] (activity.go): what happened here.
+		err = cmdActivity(os.Args[2:])
+	case "agents":
+		// agents [--json] [--prompts] (agents_cli.go): every agent here and
+		// what it is doing — its session, folder, branch, what it runs now.
+		err = cmdAgents(os.Args[2:])
+	case "stop":
+		// stop <pid> [--wait D] [--json] (stop_local.go): the machine's owner
+		// stops an agent, with their own second factor; run by an agent it
+		// only files the request.
+		err = cmdStop(os.Args[2:])
+	case "request":
+		// request <id> [--wait D] [--json] (askstatus.go): where an ask stands.
+		err = cmdRequest(os.Args[2:])
+	case "schedules":
+		// schedules [--json] (machine_cli.go): scheduled jobs that start an agent.
+		err = cmdSchedules(os.Args[2:])
+	case "tool-servers":
+		// tool-servers [--json] (machine_cli.go): MCP tool servers and their problems.
+		err = cmdToolServers(os.Args[2:])
+	case "posture":
+		// posture [--json] (machine_cli.go): the checks a Host runs on its servers.
+		err = cmdPosture(os.Args[2:])
+	case "baseline":
+		// baseline show|diff [--json], baseline record [--force]
+		// (machine_cli.go): observe:baseline* under the words people use.
+		err = cmdBaseline(os.Args[2:])
+	case "help", "-h", "--help":
+		usage()
 	case "switch":
 		// switch <host> <family> on|off, switch --list (switch_cli.go): the
 		// local switch without the console page, for a machine nobody sits at.
@@ -648,6 +771,10 @@ func main() {
 	// The command's audit rows reach the system log before the process ends
 	// (auditlog.go queues them off the op's own path).
 	auditFlush(auditFlushOnExit)
+	var quiet quietExit
+	if errors.As(err, &quiet) {
+		os.Exit(quiet.code) // the command already said what happened
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)

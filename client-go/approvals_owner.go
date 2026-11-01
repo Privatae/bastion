@@ -41,9 +41,15 @@ import (
 
 const approvalsOwnerFile = "approvals_owner.json"
 
+// The record names the owner one way per platform: a SID on Windows, a uid
+// on Linux and macOS, where the account is the one the console lane serves
+// (consolelane.go). Account is that uid's name when it was recorded, for
+// messages only; the uid is what is compared, since a name can be changed.
 type approvalsOwnerRecord struct {
-	SID   string `json:"sid"`
-	SetAt string `json:"set_at"`
+	SID     string  `json:"sid,omitempty"`
+	UID     *uint32 `json:"uid,omitempty"`
+	Account string  `json:"account,omitempty"`
+	SetAt   string  `json:"set_at"`
 }
 
 var winSIDShape = regexp.MustCompile(`^S-1-[0-9]+(-[0-9]+)+$`)
@@ -61,28 +67,52 @@ func approvalsOwnerPath() (string, error) {
 	return filepath.Join(d, approvalsOwnerFile), nil
 }
 
-// approvalsOwnerLoad reads the record. present is true when a record exists,
-// readable or not; sid is "" unless it is readable and names a person.
-func approvalsOwnerLoad() (sid string, present bool, err error) {
+// ownerRecordLoad reads the record as it is. present is true when a record
+// exists, readable or not.
+func ownerRecordLoad() (r approvalsOwnerRecord, present bool, err error) {
 	p, err := approvalsOwnerPath()
 	if err != nil {
-		return "", false, err
+		return r, false, err
 	}
 	raw, err := os.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", false, nil
+		return r, false, nil
 	}
 	if err != nil {
-		return "", true, err
+		return r, true, err
 	}
-	var r approvalsOwnerRecord
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return "", true, fmt.Errorf("%s cannot be read: %w", p, err)
+		return approvalsOwnerRecord{}, true, fmt.Errorf("%s cannot be read: %w", p, err)
+	}
+	return r, true, nil
+}
+
+// approvalsOwnerLoad reads the record. present is true when a record exists,
+// readable or not; sid is "" unless it is readable and names a person.
+func approvalsOwnerLoad() (sid string, present bool, err error) {
+	r, present, err := ownerRecordLoad()
+	if err != nil || !present {
+		return "", present, err
 	}
 	if !approvalsOwnerSIDOK(r.SID) {
+		p, _ := approvalsOwnerPath()
 		return "", true, fmt.Errorf("%s names no person's account", p)
 	}
 	return r.SID, true, nil
+}
+
+// ownerAccountLoad is the Linux and macOS reading of the record: the owner's
+// uid, never root's (root needs no lane to its own bastion).
+func ownerAccountLoad() (uid uint32, account string, present bool, err error) {
+	r, present, err := ownerRecordLoad()
+	if err != nil || !present {
+		return 0, "", present, err
+	}
+	if r.UID == nil || *r.UID == 0 {
+		p, _ := approvalsOwnerPath()
+		return 0, "", true, fmt.Errorf("%s names no person's account on this system", p)
+	}
+	return *r.UID, r.Account, true, nil
 }
 
 // approvalsOwner is the SID the pipe serves, "" when none is recorded or the

@@ -1083,3 +1083,36 @@ func TestTheExtractApprovalBindsStableFields(t *testing.T) {
 		t.Fatal("a re-minted ticket must not change the purpose")
 	}
 }
+
+// The Host's door itself drops the fields only this machine writes: a
+// stepup_request that names a local account as its asker is filed without
+// it, so nothing downstream (the audit, a deny's strike) ever sees it.
+func TestAHostsDoorDropsTheLocalAskerFields(t *testing.T) {
+	setupBox(t)
+	ctx, dcn := t.TempDir(), t.TempDir()
+	enrollFactor(t, dcn)
+	hn, _ := os.Hostname()
+	details := map[string]any{"kind": "mgmt_op", "op": putOp, "server": hn, "args": []any{putJob("").Args[0]},
+		"asked_by_account": "u", "asker": map[string]any{"account": "u"}}
+	purpose, err := purposeFromDetails(details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(details)
+	out, errOut, code := driveJob(t, tAnchor, mgmtJob{Op: "stepup_request",
+		Args: []string{purpose, base64.StdEncoding.EncodeToString(raw)}}, ctx, dcn)
+	if code != 0 {
+		t.Fatalf("stepup_request: %d %s %s", code, out, errOut)
+	}
+	var reply struct{ Request string }
+	_ = json.Unmarshal([]byte(out), &reply)
+	r, ok := requestsLoad(dcn)[reply.Request]
+	if !ok {
+		t.Fatalf("no request filed: %s", out)
+	}
+	for _, k := range []string{"asked_by_account", "asker"} {
+		if _, ok := r.Details[k]; ok {
+			t.Fatalf("a Host's request kept %q: %v", k, r.Details)
+		}
+	}
+}

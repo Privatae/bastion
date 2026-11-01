@@ -41,7 +41,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -87,7 +89,14 @@ type stepupRequest struct {
 	// Delivered: the approval id was handed to the pod once. The same ask
 	// again after that is a new act (a new request), not a spent id.
 	Delivered bool `json:"delivered,omitempty"`
+	// DeniedAt: when the owner refused it. A refusal blocks the same ask for
+	// stepupRequestTTL from HERE, not from the ask: denied 23 h after it was
+	// asked, it used to block for one hour.
+	DeniedAt string `json:"denied_at,omitempty"`
 }
+
+// errRefusedRecently: the owner refused this same ask within the last day.
+var errRefusedRecently = errors.New("you refused this on this machine; it cannot be asked again for 24h")
 
 func stepupPath(dir string) string    { return filepath.Join(dir, "stepup.json") }
 func approvalsPath(dir string) string { return filepath.Join(dir, "approvals.json") }
@@ -408,6 +417,8 @@ func purposeFromDetails(d map[string]any) (string, error) {
 		return 0
 	}
 	switch str("kind") {
+	case localStopKind:
+		return purposeForLocalStop(int(num("pid")), str("signature"))
 	case "dcn_store_grant":
 		sens, _ := d["sensitive"].(bool)
 		return purposeForGrant(&dcnTerms{Server: str("server"), Root: str("root"), Mask: strs(d["mask"]),
@@ -529,6 +540,12 @@ func describeRequest(r stepupRequest) string {
 		return out
 	}
 	switch str("kind") {
+	case localStopKind:
+		out := "Stop " + describeStopTarget(d) + " on this machine, and every process it started."
+		if by := str("asked_by"); by != "" {
+			out += " Asked from " + by + "."
+		}
+		return out
 	case "dcn_store_grant":
 		var b strings.Builder
 		fmt.Fprintf(&b, "Your host asks to reach the folder  %s  on %s\n", str("root"), str("server"))
@@ -886,7 +903,11 @@ func requestsLoad(dir string) map[string]stepupRequest {
 		_ = json.Unmarshal(raw, &out)
 	}
 	for id, r := range out {
-		if t, err := time.Parse(time.RFC3339, r.At); err != nil || time.Since(t) > stepupRequestTTL {
+		since := r.At
+		if r.State == "denied" && r.DeniedAt != "" {
+			since = r.DeniedAt
+		}
+		if t, err := time.Parse(time.RFC3339, since); err != nil || time.Since(t) > stepupRequestTTL {
 			delete(out, id)
 		}
 	}
@@ -928,10 +949,30 @@ func stepupNewRequest(dir, purpose string, details map[string]any) (string, erro
 	// the map is walked in: two passes, deny first.
 	for _, r := range m {
 		if r.Purpose == purpose && r.State == "denied" {
-			return "", fmt.Errorf("you refused this on this machine; it cannot be asked again for 24h")
+			return "", errRefusedRecently
 		}
 	}
+	localStop := false
+	if kind, _ := details["kind"].(string); kind == localStopKind {
+		localStop = true
+	}
+	asker, _ := details["asked_by_account"].(string)
 	for id, r := range m {
+		if localStop {
+			// A local stop belongs to the account that asked it, which alone
+			// can follow it (askstatus.go): handing another account the same
+			// id told it that someone else had asked, and gave it an id it
+			// could not follow. An approved stop was acted on already, so the
+			// same stop asked again is a new request (it used to return the
+			// approved id for a day, so a stop that failed could not be asked
+			// again). The 24 h block after a deny, above, holds for every
+			// account: the owner refused that stop, not that asker.
+			if theirs, _ := r.Details["asked_by_account"].(string); r.Purpose == purpose &&
+				r.State == "pending" && theirs == asker {
+				return id, nil
+			}
+			continue
+		}
 		if r.Purpose == purpose && r.State == "pending" {
 			return id, nil
 		}
@@ -989,7 +1030,7 @@ func stepupApproveRequest(dir, id, code string) (string, error) {
 	// A code was accepted, on whichever lane: the tray's count of wrong codes
 	// starts again (approvalpipe.go).
 	pipeThrottleReset(dir)
-	dcnAudit(dir, "stepup_approve", 0, "", "approved: "+r.Purpose)
+	dcnAuditWith(dir, "stepup_approve", 0, "", "approved: "+r.Purpose, askPartiesOf(r.Details))
 	return approval, nil
 }
 
@@ -1004,10 +1045,21 @@ func stepupDenyRequest(dir, id string) error {
 	if r.State != "pending" {
 		return fmt.Errorf("request is %s, not pending", r.State)
 	}
-	r.State = "denied"
+	r.State, r.DeniedAt = "denied", time.Now().UTC().Format(time.RFC3339)
 	m[id] = r
-	dcnAudit(dir, "stepup_deny", 0, "", "denied: "+r.Purpose)
-	return requestsSave(dir, m)
+	dcnAuditWith(dir, "stepup_deny", 0, "", "denied: "+r.Purpose, askPartiesOf(r.Details))
+	if err := requestsSave(dir, m); err != nil {
+		return err
+	}
+	// An agent on this machine asked, and the owner said no: a strike
+	// against the account that asked (askquarantine.go). Only a local stop
+	// is an agent's ask; a Host's request never strikes an account here.
+	if kind, _ := r.Details["kind"].(string); kind == localStopKind {
+		if acct, _ := r.Details["asked_by_account"].(string); acct != "" {
+			askStrike(dir, acct, time.Now())
+		}
+	}
+	return nil
 }
 
 // ── the mgmt ops: stepup_request <purpose> <details_b64>, stepup_status <id> ──
@@ -1035,6 +1087,7 @@ func handleStepupRequest(ws *websocket.Conn, dir string, args []string) {
 		sendMgmtExit(ws, 1)
 		return
 	}
+	hostAskDetails(details)
 	id, err := stepupNewRequest(dir, args[0], details)
 	if err != nil {
 		dcnAudit(dir, "stepup_request", 0, "", "refused: "+err.Error())
@@ -1166,7 +1219,7 @@ func enrolServiceStateRefusal(goos string, installed, authority bool, err error)
 // secret is shown only on the console this elevated process owns, never
 // written to a file or a pipe its output may have been sent to, and saved only
 // in the system service's state. Both are checked BEFORE a secret exists.
-func cmdStepupEnroll(host string, rotate, consoleOnly bool) error {
+func cmdStepupEnroll(host string, machine, rotate, consoleOnly bool) error {
 	if consoleOnly {
 		if !enrolConsole() {
 			return fmt.Errorf("stepup-enroll --console-only shows the secret only on a console, and this one's input or output " +
@@ -1176,16 +1229,13 @@ func cmdStepupEnroll(host string, rotate, consoleOnly bool) error {
 			return fmt.Errorf("stepup-enroll --console-only enrols only into the system service's state: %s — nothing was enrolled", why)
 		}
 	}
-	cfg, err := stepupPairing(host)
+	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
 		return err
 	}
-	dir := cfg.dcnDir()
-	if dir == "" {
-		return fmt.Errorf("cannot open this pairing's state directory")
-	}
+	dir := t.dir
 	if stepupEnrolled(dir) && !rotate {
-		fmt.Println("a second factor is already enrolled for", cfg.HostName, "on this machine (use --rotate to replace it)")
+		fmt.Println("a second factor is already enrolled " + t.forWhom() + " (use --rotate to replace it)")
 		return nil
 	}
 	var secret [20]byte
@@ -1194,8 +1244,12 @@ func cmdStepupEnroll(host string, rotate, consoleOnly bool) error {
 	}
 	b32 := strings.TrimRight(base32.StdEncoding.EncodeToString(secret[:]), "=")
 	hn, _ := os.Hostname()
-	label := url.PathEscape("Privatae NAC:" + hn + " for " + cfg.HostName)
-	uri := "otpauth://totp/" + label + "?secret=" + b32 + "&issuer=" + url.QueryEscape("Privatae NAC") +
+	issuer, label := "Privatae NAC", "Privatae NAC:"+hn+" for "+t.host
+	if t.machine() {
+		// The owner's own factor: named for the machine, not for a Host.
+		issuer, label = "Privatae bastion", "Privatae bastion:"+hn
+	}
+	uri := "otpauth://totp/" + url.PathEscape(label) + "?secret=" + b32 + "&issuer=" + url.QueryEscape(issuer) +
 		"&digits=6&period=30"
 	fmt.Println("Add this second factor to your authenticator app — it lives on THIS machine only:")
 	fmt.Println()
@@ -1223,6 +1277,16 @@ func cmdStepupEnroll(host string, rotate, consoleOnly bool) error {
 	if err := stepupSave(dir, f); err != nil {
 		return err
 	}
+	if t.machine() {
+		// A new code at an administrator terminal is the person: the
+		// console's count of wrong codes starts again (machineCodeSpend).
+		stepupMu.Lock()
+		pipeThrottleReset(dir)
+		stepupMu.Unlock()
+		fmt.Println("enrolled. This is your code as the owner of this machine: what is asked of the machine itself,")
+		fmt.Println("rather than by a Host, waits for it. `privatae-bastion approvals" + t.flag() + "` shows what is waiting.")
+		return nil
+	}
 	fmt.Println("enrolled. From now on, your host can only reach a folder or move files on this machine after")
 	fmt.Println("you approve the request HERE: `privatae-bastion approvals` shows what it asks, `privatae-bastion approve` confirms it.")
 	return nil
@@ -1240,29 +1304,66 @@ func sortedPending(m map[string]stepupRequest) []string {
 }
 
 // privatae-bastion approvals [--host <host>]
-func cmdStepupApprovals(host string) error {
-	cfg, err := stepupPairing(host)
+// approvalsRead is `approvals`: what waits for the code of one second factor.
+type approvalsRead struct {
+	For       string            `json:"for"`            // "for this machine", or a Host's
+	Host      string            `json:"host,omitempty"` // "" is the machine's owner
+	CodeSetUp bool              `json:"code_set_up"`
+	Waiting   []approvalWaiting `json:"waiting"`
+}
+
+type approvalWaiting struct {
+	ID      string `json:"id"` // what approve and deny take
+	AskedAt string `json:"asked_at"`
+	Purpose string `json:"purpose"`
+	Text    string `json:"text"`
+}
+
+func readApprovals(o readOpts) (approvalsRead, error) {
+	t, err := resolveStepupTarget(o.Host, o.Machine)
 	if err != nil {
-		return err
+		return approvalsRead{}, err
 	}
-	dir := cfg.dcnDir()
-	if !stepupEnrolled(dir) {
-		fmt.Println("no second factor enrolled on this machine for", cfg.HostName, "— run `privatae-bastion stepup-enroll` first")
-		return nil
+	r := approvalsRead{For: t.forWhom(), Host: t.host, CodeSetUp: stepupEnrolled(t.dir), Waiting: []approvalWaiting{}}
+	if !r.CodeSetUp {
+		return r, nil
 	}
 	stepupMu.Lock()
-	m := requestsLoad(dir)
+	m := requestsLoad(t.dir)
 	stepupMu.Unlock()
-	ids := sortedPending(m)
-	if len(ids) == 0 {
-		fmt.Println("nothing waiting for your approval on this machine (for", cfg.HostName+")")
-		return nil
+	for _, id := range sortedPending(m) {
+		r.Waiting = append(r.Waiting, approvalWaiting{ID: id[:8], AskedAt: m[id].At, Purpose: m[id].Purpose,
+			Text: describeRequest(m[id])})
 	}
-	for _, id := range ids {
-		fmt.Printf("[%s]  asked %s\n%s\n\n", id[:8], m[id].At, describeRequest(m[id]))
+	return r, nil
+}
+
+func cmdStepupApprovals(host string, machine, asJSON bool) error {
+	r, err := readMachine("approvals", readOpts{Host: host, Machine: machine}, readApprovals)
+	if err != nil {
+		return laneRefusalError("approvals", err)
 	}
-	fmt.Println("approve one:  privatae-bastion approve <id>      deny one:  privatae-bastion deny <id>")
+	if asJSON {
+		return printJSON(os.Stdout, r)
+	}
+	printApprovals(os.Stdout, r)
 	return nil
+}
+
+func printApprovals(w io.Writer, r approvalsRead) {
+	flag := stepupTarget{host: r.Host}.flag()
+	if !r.CodeSetUp {
+		fmt.Fprintln(w, "no second factor enrolled "+r.For+" — run `privatae-bastion stepup-enroll"+flag+"` first")
+		return
+	}
+	if len(r.Waiting) == 0 {
+		fmt.Fprintln(w, "nothing waiting for your approval "+r.For)
+		return
+	}
+	for _, q := range r.Waiting {
+		fmt.Fprintf(w, "[%s]  asked %s\n%s\n\n", q.ID, q.AskedAt, q.Text)
+	}
+	fmt.Fprintln(w, "approve one:  privatae-bastion approve"+flag+" <id>      deny one:  privatae-bastion deny"+flag+" <id>")
 }
 
 func findRequest(m map[string]stepupRequest, prefix string) (string, error) {
@@ -1285,15 +1386,15 @@ func findRequest(m map[string]stepupRequest, prefix string) (string, error) {
 	return hit, nil
 }
 
-// privatae-bastion approve [--host <host>] <request id>
-func cmdStepupApprove(host, prefix string) error {
-	cfg, err := stepupPairing(host)
+// privatae-bastion approve [--host <host> | --machine] <request id>
+func cmdStepupApprove(host string, machine bool, prefix string) error {
+	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
 		return err
 	}
-	dir := cfg.dcnDir()
+	dir := t.dir
 	if !stepupEnrolled(dir) {
-		return fmt.Errorf("no second factor enrolled on this machine — run `privatae-bastion stepup-enroll` first")
+		return fmt.Errorf("no second factor enrolled %s — run `privatae-bastion stepup-enroll%s` first", t.forWhom(), t.flag())
 	}
 	stepupMu.Lock()
 	m := requestsLoad(dir)
@@ -1314,17 +1415,21 @@ func cmdStepupApprove(host, prefix string) error {
 	if _, err := stepupApproveRequest(dir, id, code); err != nil {
 		return err
 	}
+	if t.machine() {
+		fmt.Println("approved.")
+		return nil
+	}
 	fmt.Println("approved. Your host picks this up on its next check-in (within a minute) — or click Approve again on your Host.")
 	return nil
 }
 
-// privatae-bastion deny [--host <host>] <request id>
-func cmdStepupDeny(host, prefix string) error {
-	cfg, err := stepupPairing(host)
+// privatae-bastion deny [--host <host> | --machine] <request id>
+func cmdStepupDeny(host string, machine bool, prefix string) error {
+	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
 		return err
 	}
-	dir := cfg.dcnDir()
+	dir := t.dir
 	stepupMu.Lock()
 	m := requestsLoad(dir)
 	stepupMu.Unlock()
@@ -1334,6 +1439,10 @@ func cmdStepupDeny(host, prefix string) error {
 	}
 	if err := stepupDenyRequest(dir, id); err != nil {
 		return err
+	}
+	if t.machine() {
+		fmt.Println("denied.")
+		return nil
 	}
 	fmt.Println("denied — the host is told on its next check-in")
 	return nil

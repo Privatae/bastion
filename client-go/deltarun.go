@@ -20,9 +20,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -675,53 +675,50 @@ func runDeltaRefresh(ctx context.Context) {
 // ── the operator's own eyes ─────────────────────────────────────────────────
 
 func cmdObserveDelta(asJSON bool) error {
-	if err := requireMachineAuthority("observe:delta"); err != nil {
-		return err
-	}
-	r := deltaPass(&digestCache{}, time.Now(), deltaRoleOperator)
+	args := []string{"diff"}
 	if asJSON {
-		b, err := json.MarshalIndent(r, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(b))
-		return nil
+		args = append(args, "--json")
 	}
+	return cmdBaseline(args)
+}
+
+// printDelta is `baseline diff` in words.
+func printDelta(w io.Writer, r deltaReport) error {
 	switch r.Baseline {
 	case deltaBaselineNone:
 		return errors.New("this machine has no accounting to compare against — " +
 			"`privatae-bastion observe:baseline` takes one (as an administrator)")
 	case deltaBaselineEdit:
-		fmt.Printf("WARNING: the accounting has been changed since it was taken — " +
+		fmt.Fprintf(w, "WARNING: the accounting has been changed since it was taken — "+
 			"what follows is measured against an edited file\n")
 	}
-	fmt.Printf("%d findings against the accounting taken %s (%s), from %d processes in %s\n",
+	fmt.Fprintf(w, "%d findings against the accounting taken %s (%s), from %d processes in %s\n",
 		len(r.Findings), r.BaselineTakenAt, r.Coverage, r.Scanned, r.Elapsed)
 	switch {
 	case r.WalkFailed != "" && len(r.Findings) > 0:
 		// The binary rung read the disk; everything else did not happen. Said
 		// so that the finding below is not discounted by "nothing was compared".
-		fmt.Printf("the process walk failed this pass (%s): only the bastion-binary check ran — "+
+		fmt.Fprintf(w, "the process walk failed this pass (%s): only the bastion-binary check ran — "+
 			"the finding(s) below are real; nothing else was compared\n", r.WalkFailed)
 	case r.WalkFailed != "":
 		// The one sentence a failed walk must never print is the all-clear.
-		fmt.Printf("NOTHING WAS COMPARED: the process walk failed this pass (%s) — "+
+		fmt.Fprintf(w, "NOTHING WAS COMPARED: the process walk failed this pass (%s) — "+
 			"the zero above means nothing looked, not that nothing differs\n", r.WalkFailed)
 	case len(r.Findings) == 0:
-		fmt.Printf("nothing on this machine is outside what was accounted for\n")
+		fmt.Fprintf(w, "nothing on this machine is outside what was accounted for\n")
 	}
 	for _, ev := range r.Findings {
-		fmt.Printf("  %-8s %-20s %s\n", ev.Level, ev.Kind, deltaOneLine(ev))
+		fmt.Fprintf(w, "  %-8s %-20s %s\n", ev.Level, ev.Kind, deltaOneLine(ev))
 		for _, e := range ev.Evidence {
-			fmt.Printf("           %-12s %s\n", e.Tier, e.Signal+": "+e.Value)
+			fmt.Fprintf(w, "           %-12s %s\n", e.Tier, e.Signal+": "+e.Value)
 		}
 	}
 	if r.ShortLived > 0 || len(r.Filtered) > 0 {
-		fmt.Printf("%d filtered as ordinary (%d came and went before they were old enough to report; %d since the accounting)\n",
+		fmt.Fprintf(w, "%d filtered as ordinary (%d came and went before they were old enough to report; %d since the accounting)\n",
 			len(r.Filtered), r.ShortLived, r.ShortLivedTotal)
 	}
 	for _, n := range r.Notes {
-		fmt.Printf("  note: %s\n", n)
+		fmt.Fprintf(w, "  note: %s\n", n)
 	}
 	return nil
 }

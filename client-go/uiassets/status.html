@@ -53,8 +53,8 @@
 <h3>Hosts this machine serves</h3>
 {{if not .Pairings}}
   <div class="host">
-    <div class="host-name">No host is paired yet.</div>
-    <p class="sub">Pair one with a token from your host's “Set up a bastion”.</p>
+    <div class="host-name">No Host is connected.</div>
+    <p class="sub">That is fine: the bastion watches this machine on its own. Connecting a Host is optional, under <a href="/setup">Settings</a>.</p>
   </div>
 {{end}}
 {{range .Pairings}}

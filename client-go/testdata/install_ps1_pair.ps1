@@ -5,8 +5,11 @@
 param([string]$Script)
 $ErrorActionPreference = 'Stop'
 $src = Get-Content -Raw $Script
-$m = [regex]::Match($src, '(?ms)^if \(\$Pair\) \{\r?\n.*?^\}\r?\n')
-if (-not $m.Success) { Write-Output 'FAIL: install.ps1 has no top-level if ($Pair) { … } block'; exit 1 }
+# The block that pairs: of every `if ($Pair) { … }`, the one that hands the
+# code to `pair -`.
+$m = [regex]::Matches($src, '(?ms)^( *)if \(\$Pair\) \{\r?\n.*?^\1\}\r?\n') |
+    Where-Object { $_.Value.Contains('$Pair | & $exe pair -') } | Select-Object -First 1
+if (-not $m) { Write-Output 'FAIL: install.ps1 has no if ($Pair) { … } block that pairs'; exit 1 }
 $block = [scriptblock]::Create($m.Value)
 
 $dir = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
@@ -26,11 +29,11 @@ function Get-Process { @() }
 function Start-Sleep { }
 function Write-Host { param($Object) $script:out += "$Object`n" }
 
-function Run-Case([string]$rc, [bool]$networked) {
+function Run-Case([string]$rc, [bool]$service) {
     $script:calls = @(); $script:out = ''
     if (Test-Path $log) { Remove-Item $log }
     $env:FAKE_RC = $rc
-    $Pair = 'skp_INVENTEDCODE'; $Networked = $networked
+    $Pair = 'skp_INVENTEDCODE'; $Service = $service
     $threw = $null
     try { . $block } catch { $threw = $_.Exception.Message }
     $l = if (Test-Path $log) { Get-Content -Raw $log } else { '' }
@@ -52,7 +55,7 @@ $r = Run-Case '1' $false
 if (-not $r.threw -or $r.calls -ne '') { Fail "a failed pair must throw before starting anything: $($r.threw) $($r.calls)" }
 
 $r = Run-Case '0' $true
-if ($r.threw -or $r.calls -ne 'restart-service' -or $r.out -notmatch 'Windows service PrivataeBastion') { Fail "networked restarts the service: $($r.threw) $($r.calls)" }
+if ($r.threw -or $r.calls -ne 'restart-service' -or $r.out -notmatch 'Windows service PrivataeBastion') { Fail "the service is restarted: $($r.threw) $($r.calls)" }
 
 Remove-Item -Recurse -Force $dir
 Write-Output 'ok: install.ps1 -Pair pairs over stdin, treats exit 3 as success, stops on a failure, restarts task or service'

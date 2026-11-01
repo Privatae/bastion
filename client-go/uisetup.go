@@ -95,6 +95,9 @@ const uiEnrolTTL = 10 * time.Minute
 // console — and that reason does not apply in a browser, so the default here is
 // the stricter one.
 type uiEnrol struct {
+	// Machine: the owner's own code (stepup_machine.go), not a Host's. Host
+	// is empty then.
+	Machine   bool
 	Host      string
 	SecretB32 string
 	URI       string
@@ -198,15 +201,23 @@ type uiSetup struct {
 func (u *uiServer) setupRoutes(mux *http.ServeMux) *uiSetup {
 	s := &uiSetup{u: u, enrols: newUIEnrolStore()}
 	mux.HandleFunc("/setup", u.guarded(s.page))
-	mux.HandleFunc("/setup/pair", u.guarded(s.pair))
-	mux.HandleFunc("/setup/stepup/start", u.guarded(s.stepupStart))
-	mux.HandleFunc("/setup/stepup/qr", u.guarded(s.stepupQR))
-	mux.HandleFunc("/setup/stepup/key", u.guarded(s.stepupKey))
-	mux.HandleFunc("/setup/stepup/confirm", u.guarded(s.stepupConfirm))
-	mux.HandleFunc("/setup/folder/check", u.guarded(s.folderCheck))
-	mux.HandleFunc("/setup/folder/propose", u.guarded(s.folderPropose))
-	mux.HandleFunc("/setup/anchor/choose", u.guarded(s.anchorChoose))
+	mux.HandleFunc("/setup/pair", u.adminOnly(s.pair))
+	mux.HandleFunc("/setup/stepup/start", u.adminOnly(s.stepupStart))
+	mux.HandleFunc("/setup/stepup/qr", u.adminOnly(s.stepupQR))
+	mux.HandleFunc("/setup/stepup/key", u.adminOnly(s.stepupKey))
+	mux.HandleFunc("/setup/stepup/confirm", u.adminOnly(s.stepupConfirm))
+	// The folder check stats any path the page posts, as the daemon: root on a
+	// whole-machine install. It exists only to help fill in the proposal,
+	// which is the administrator's, so it is the administrator's too; from the
+	// owner's lane it would tell a program running as the person what exists
+	// in folders that account cannot read.
+	mux.HandleFunc("/setup/folder/check", u.adminOnly(s.folderCheck))
+	mux.HandleFunc("/setup/folder/propose", u.adminOnly(s.folderPropose))
+	mux.HandleFunc("/setup/anchor/choose", u.adminOnly(s.anchorChoose))
 	mux.HandleFunc("/setup/owner/name", u.guarded(s.ownerName))
+	// The owner's acts on a Host (uisetup_owner.go).
+	mux.HandleFunc("/setup/host/disconnect", u.guarded(s.hostDisconnect))
+	mux.HandleFunc("/setup/host/release", u.guarded(s.hostRelease))
 	return s
 }
 
@@ -217,17 +228,21 @@ type uiSetupHost struct {
 	State    string
 	Active   bool
 	IsAnchor bool
-	Serving  bool // its loopback control port answers — add-folder goes there
-	Stepup   bool // a second factor is enrolled for this pairing
+	// QuarantinedUntil: this machine refuses the Host's writes until then
+	// (quarantine.go); Release takes the owner's code.
+	QuarantinedUntil string
+	Serving          bool // its loopback control port answers — add-folder goes there
+	Stepup           bool // a second factor is enrolled for this pairing
 }
 
 // uiEnrolView is an enrolment in flight. The SECRET IS NOT IN IT: the handle
 // addresses it server-side and the QR route turns it into pixels. Key is filled
 // only by the one route the person has to press a button to reach.
 type uiEnrolView struct {
-	Handle string
-	Host   string
-	Key    string
+	Handle  string
+	Machine bool
+	Host    string
+	Key     string
 }
 
 // uiFolderCheck is one typed path resolved against the real filesystem, before
@@ -258,6 +273,15 @@ type uiSetupView struct {
 	AnchorOwner    string
 	AnchorRequired bool
 	Owner          string
+	// OwnerCode: the machine owner's code is set up (stepup_machine.go).
+	OwnerCode bool
+	// Whole: the bastion runs for the whole machine, so the owner acts that
+	// need the machine's administrator can be done from this page.
+	Whole bool
+	// Limited: opened from the owner's own account (consolelane.go). Setting
+	// up the code, connecting a Host, the Host in charge and folder proposals
+	// are the administrator's there.
+	Limited bool
 
 	// ReadError is why the pairing list could not be read — see uiGiven's copy
 	// of this field. Returning the bare view here showed an empty setup page
@@ -291,6 +315,8 @@ func (s *uiSetup) view() uiSetupView {
 	if o := currentOwnerClaim(); o != nil {
 		v.Owner = o.Owner
 	}
+	v.OwnerCode = stepupEnrolled(existingMachineFactorDir())
+	v.Whole = machineAuthorityHeld()
 	cfgs, err := loadPairings()
 	if err != nil {
 		v.ReadError = err.Error()
@@ -302,6 +328,9 @@ func (s *uiSetup) view() uiSetupView {
 			State:    c.stateName(),
 			Active:   c.active(),
 			IsAnchor: v.AnchorHost != "" && c.HostName == v.AnchorHost,
+		}
+		if until := quarantinedUntil(c.HostName, time.Now()); !until.IsZero() {
+			h.QuarantinedUntil = until.Local().Format("Jan 2 15:04")
 		}
 		// dcnDir() is MkdirAll-on-read (config.go:115), so asking a PENDING
 		// pairing whether it has a factor would create its state directory —
@@ -325,6 +354,7 @@ func (s *uiSetup) view() uiSetupView {
 // into that one because the view model differs; TestTheSetupPageIsHeldToTheSame
 // HeadersAsTheStatusPage is what stops the two drifting apart.
 func (s *uiSetup) render(w http.ResponseWriter, name string, v uiSetupView) {
+	v.Limited = limitedWriter(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; form-action 'self'")
@@ -522,6 +552,10 @@ func (s *uiSetup) stepupStart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	if r.FormValue("target") == "machine" {
+		s.stepupStartMachine(w, r)
+		return
+	}
 	cfg, err := setupHost(r.FormValue("host"))
 	if err != nil {
 		s.flash(w, err.Error(), "bad")
@@ -662,6 +696,10 @@ func (s *uiSetup) stepupConfirm(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.FormValue("code"))
 	if code == "" {
 		s.flash(w, "Type a code from the authenticator you just scanned with.", "warn")
+		return
+	}
+	if e.Machine {
+		s.stepupConfirmMachine(w, handle, e, code)
 		return
 	}
 	cfg, err := setupHost(e.Host)
@@ -951,6 +989,10 @@ func (s *uiSetup) ownerName(w http.ResponseWriter, r *http.Request) {
 	}
 	cmdView := func(c uiCommand) { s.render(w, "owner-cmd", uiSetupView{Cmd: &c}) }
 	name := strings.TrimSpace(r.FormValue("owner"))
+	if machineAuthorityHeld() && stepupEnrolled(existingMachineFactorDir()) {
+		s.ownerNameHere(w, name, r.FormValue("code"))
+		return
+	}
 	// claimNameOK (anchor.go:121) is the real rule: it is what stops a name
 	// being read as more than one field of the signed input.
 	if err := claimNameOK(name); err != nil {
@@ -987,4 +1029,63 @@ func (s *uiSetup) ownerName(w http.ResponseWriter, r *http.Request) {
 // nothing into a browser.
 func uiSetupTemplates() []string {
 	return []string{"setup-page", "setup", "folder-check", "stepup-key", "anchor-cmd", "owner-cmd"}
+}
+
+// ── the owner's own code ────────────────────────────────────────────────────
+
+// stepupStartMachine is stepupStart for the machine owner's code: the same
+// in-memory secret, QR and confirm-before-write, written to the owner's
+// factor directory (stepup_machine.go) instead of a pairing's. It needs no
+// Host, which is the point: on a machine with none it is the only code there is.
+func (s *uiSetup) stepupStartMachine(w http.ResponseWriter, r *http.Request) {
+	if stepupEnrolled(existingMachineFactorDir()) && r.FormValue("replace") == "" {
+		s.flash(w, "Your code is already set up on this machine. Tick “replace it” to set up a new one — "+
+			"the authenticator set up now stops working.", "warn")
+		return
+	}
+	var secret [20]byte
+	if _, err := rand.Read(secret[:]); err != nil {
+		s.flash(w, "Could not generate a secret on this machine: "+err.Error(), "bad")
+		return
+	}
+	b32 := strings.TrimRight(base32.StdEncoding.EncodeToString(secret[:]), "=")
+	hn, _ := os.Hostname()
+	// The same URI the CLI builds for --machine (stepup.go cmdStepupEnroll).
+	uri := "otpauth://totp/" + url.PathEscape("Privatae bastion:"+hn) + "?secret=" + b32 +
+		"&issuer=" + url.QueryEscape("Privatae bastion") + "&digits=6&period=30"
+	handle, err := s.enrols.put(&uiEnrol{Machine: true, SecretB32: b32, URI: uri, Expires: uiNow().Add(uiEnrolTTL)})
+	if err != nil {
+		s.flash(w, "Could not start setting up your code: "+err.Error(), "bad")
+		return
+	}
+	v := s.view()
+	v.Enrol = &uiEnrolView{Handle: handle, Machine: true}
+	v.Flash = "Scan the square with your authenticator app, then type a code from it below. " +
+		"Nothing is written to this machine until that code matches."
+	v.FlashClass = "ok"
+	s.render(w, "setup", v)
+}
+
+func (s *uiSetup) stepupConfirmMachine(w http.ResponseWriter, handle string, e *uiEnrol, code string) {
+	if stepupMatchedCounter(e.SecretB32, code, time.Now()) < 0 {
+		s.flash(w, "That code did not match — nothing was set up. Check the app is showing a code for "+
+			"“Privatae bastion”, and try the next one.", "bad")
+		return
+	}
+	dir, err := machineFactorDir()
+	if err != nil {
+		s.flash(w, "Could not open this machine's place for your code: "+err.Error(), "bad")
+		return
+	}
+	if err := stepupSave(dir, &stepupFile{
+		SecretB32:   e.SecretB32,
+		EnrolledAt:  time.Now().UTC().Format(time.RFC3339),
+		LastCounter: -1,
+	}); err != nil {
+		s.flash(w, "Could not write your code to this machine: "+err.Error(), "bad")
+		return
+	}
+	s.enrols.drop(handle)
+	s.flash(w, "Your code is set up. Stopping an agent, marking one as yours, and answering what is "+
+		"asked of this machine now take a code from that app.", "ok")
 }

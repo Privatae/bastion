@@ -7,6 +7,7 @@
 <title>Privatae bastion — this machine</title>
 <link rel="stylesheet" href="/assets/app.css">
 <link rel="stylesheet" href="/assets/given.css">
+<link rel="stylesheet" href="/assets/home.css">
 <!-- htmx injects its own indicator stylesheet with insertAdjacentHTML (it does
      `<style>` + `.htmx-indicator{opacity:0...}` when includeIndicatorStyles is
      true, which is its default). This page's CSP is `default-src 'self'` with no
@@ -25,26 +26,13 @@
 <body>
 <header>
   <h1>This machine</h1>
-  <p class="sub">The bastion running here, and what it is doing.</p>
-  <!-- The links off this page, all in the header rather than the footer on
-       purpose. None of these is a footnote: which host may read this screen,
-       read these files or open a root shell here; the way in for someone who
-       has not set the machine up yet; what is running here that nobody has
-       vouched for; and what a rule would stop if it were allowed to. They sit
-       outside <main>, so the 3s htmx swap never touches them.
-
-       Five units each added one link without knowing about the others, and
-       each merge duplicated the block. Resolved by hand
-       at integration; the order below is deliberate — set it up, then what you
-       gave away, then what is on the disk, then what is running, then what a
-       rule would do about it. -->
+  <p class="sub">The bastion running here, and the Hosts it serves.</p>
+  {{template "nav" "machine"}}
+  <!-- The older pages, until the steps that replace them land (plan Addendum 4):
+       what each Host may do here, and the disk. -->
   <p class="sub">
-    <a href="/approvals">Approvals</a> &middot;
-    <a href="/setup">Set this machine up</a> &middot;
     <a href="/given">What this machine has given away</a> &middot;
-    <a href="/diskmap">This machine's disk</a> &middot;
-    <a href="/agents">Automated programs running here</a> &middot;
-    <a href="/policy">What would be stopped</a>
+    <a href="/diskmap">This machine's disk</a>
   </p>
 </header>
 
@@ -56,6 +44,23 @@
       hx-trigger="every 3s"
       hx-swap="innerHTML">
 {{template "status" .}}
+</main>
+
+{{/* Loaded once when the page opens (uimachine.go): they read files and walk
+     processes, and nothing in them changes at the status block's pace. */}}
+<main class="machine-sections">
+<h3>Report</h3>
+<div class="panel">
+  <form method="post" action="/machine/report"><button class="go" type="submit">Write report</button></form>
+  <p class="dim">One Markdown file: the agents running now, scheduled jobs that start one, MCP tool-server problems,
+    changes since your baseline, and the last seven days of activity. No AI model writes any of it.</p>
+</div>
+<h3>Scheduled jobs that start an agent</h3>
+<div class="panel" hx-get="/fragments/machine/schedules" hx-trigger="load" hx-swap="innerHTML"><p class="dim">Reading…</p></div>
+<h3>MCP tool servers on this machine</h3>
+<div class="panel" hx-get="/fragments/machine/tools" hx-trigger="load" hx-swap="innerHTML"><p class="dim">Reading…</p></div>
+<h3>Changes since your baseline</h3>
+<div class="panel" id="machine-baseline" hx-get="/fragments/machine/baseline" hx-trigger="load" hx-swap="innerHTML"><p class="dim">Reading…</p></div>
 </main>
 
 <footer>

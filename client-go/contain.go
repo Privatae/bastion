@@ -136,13 +136,7 @@ func maybeContain(pairing, dcnDir string, heartbeatResponse []byte) {
 		// fingerprint is in the accounting (one running as a service, say)
 		// would otherwise be spared in silence — killTree returns 0 for a
 		// spared root and a zero kill is not recorded.
-		root := pid
-		killed := killTree(pid, func(p int) bool {
-			if p == root {
-				return spareFromContain(p)
-			}
-			return guard(p)
-		})
+		killed := stopAgentTree(pid, guard)
 		if killed > 0 {
 			fmt.Printf("contain: terminated agent pid %d and %d child process(es) (host-directed)\n", pid, killed-1)
 			// The Printf stays — under systemd it is journald, which is a real
@@ -175,7 +169,13 @@ func hostPhrase(pairing string) string {
 // here rather than in events.go because this is the only place that still holds
 // the host, the signature and the count together.
 func containSentence(pairing, signature string, pid, children int) string {
-	s := hostPhrase(pairing) + " stopped " + signature + " (pid " + strconv.Itoa(pid) +
+	return stopSentence(hostPhrase(pairing), signature, pid, children)
+}
+
+// stopSentence is containSentence with the one who stopped it named: a Host,
+// or "You" when the machine's owner did (stop_local.go).
+func stopSentence(subject, signature string, pid, children int) string {
+	s := subject + " stopped " + signature + " (pid " + strconv.Itoa(pid) +
 		") running on this machine"
 	switch {
 	case children == 0:
@@ -207,4 +207,20 @@ func observedAgentMap() map[int]agentObs {
 		out[a.PID] = a
 	}
 	return out
+}
+
+// stopAgentTree stops one observed agent and everything beneath it, sparing
+// init, this bastion and its own local agent at the root, and the protected
+// set (containGuard) below it. It is the ONE stop path: a Host's order
+// (maybeContain) and the machine owner's own (stop_local.go) both come
+// through here, so what each may not touch cannot drift apart. It returns how
+// many processes the kill reached, the agent included.
+func stopAgentTree(pid int, guard func(int) bool) int {
+	root := pid
+	return killTree(pid, func(p int) bool {
+		if p == root {
+			return spareFromContain(p)
+		}
+		return guard(p)
+	})
 }

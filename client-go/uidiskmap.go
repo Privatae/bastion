@@ -941,10 +941,13 @@ func dmLegendBytes(bytes map[string]int64, label string) int64 {
 // TestNothingAboutTheMachineLeaksWithoutASession as well as in the rebinding
 // walk.
 func (u *uiServer) diskMapRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/diskmap", u.guarded(u.diskMapPage))
-	mux.HandleFunc("/fragments/diskmap", u.guarded(u.diskMapFragment))
-	mux.HandleFunc("/diskmap/scan", u.guarded(u.diskMapScan))
-	mux.HandleFunc("/diskmap/stop", u.guarded(u.diskMapStop))
+	// The administrator's only: run as root, the map names files in every
+	// account's home, and the owner's lane is a person's account, where any
+	// agent running as them reaches it too (consolelane.go).
+	mux.HandleFunc("/diskmap", u.adminOnly(u.diskMapPage))
+	mux.HandleFunc("/fragments/diskmap", u.adminOnly(u.diskMapFragment))
+	mux.HandleFunc("/diskmap/scan", u.adminOnly(u.diskMapScan))
+	mux.HandleFunc("/diskmap/stop", u.adminOnly(u.diskMapStop))
 }
 
 func (u *uiServer) diskMapPage(w http.ResponseWriter, r *http.Request) {

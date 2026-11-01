@@ -119,6 +119,10 @@
       <input type="hidden" name="family" value="{{.Name}}">
       {{if .SwitchedOff}}
         <input type="hidden" name="off" value="0">
+        {{/* hx-preserve: this page is swapped every 10s and a half-typed code
+             must survive it. Turning back on takes the owner's code. */}}
+        <input class="code" id="on-code-{{$h.Host}}-{{.Name}}" hx-preserve="true" name="code" inputmode="numeric"
+               pattern="[0-9]*" autocomplete="one-time-code" placeholder="your code" aria-label="Your code">
         <button class="go" type="submit">Turn back on</button>
       {{else}}
         <input type="hidden" name="off" value="1">

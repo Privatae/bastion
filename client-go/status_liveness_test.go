@@ -39,7 +39,7 @@ func TestStatusReportsWhetherItIsRunning(t *testing.T) {
 		t.Fatal("a real listener must read as running — this is the whole probe")
 	}
 	// And cmdStatus itself must not explode on either path.
-	if err := cmdStatus(); err != nil {
+	if err := cmdStatus(nil); err != nil {
 		t.Fatalf("status must not error while running: %v", err)
 	}
 	_ = os.Stdout
