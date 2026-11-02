@@ -11,6 +11,8 @@ it shares with Linux is tested there, but it has not run on that system yet.
 |---|---|---|---|
 | Install for the whole machine from your own account | run ([gate](verification/m0-gate-linux-2026-10-31.md)) | built | not run |
 | `--just-me`, and the fall back where sudo cannot be used | run | built | not run |
+| Moving from an install for your account to one for the whole machine keeps its pairings | not needed (one state folder) | not built | built |
+| An update restarts the bastion | run | built | built (the service restarts it; a sign-in task's copy waits for the old one to exit) |
 | Every AI agent, by its program or its connection to a model | run | built | built |
 | Who started each one (terminal, remote login, schedule, service, another agent) | run | built | built |
 | Claude Code: session title, permission mode, what it is running now | tested | read, not checked against the process's start time | read, not checked against the process's start time |
@@ -19,11 +21,11 @@ it shares with Linux is tested there, but it has not run on that system yet.
 | MCP tool servers and their problems | tested | built | built |
 | Changes since your baseline | tested | built | built |
 | Stop an agent with your code, from the console or `stop` | run | built | built |
-| An agent on the machine asks to stop another, and follows the answer | run ([gate](verification/m1-gate-linux-2026-11-02.md)) | built | not built (the ask socket is Unix only) |
-| An agent reads the machine: `agents`, `agents show`, `activity`, `doctor`, the `--json` reads | run | built | not built (no ask pipe) |
-| The owner answers from their own account: `approve`, `deny`, `switch`, the drops | run | built | not built (no ask pipe) |
+| An agent on the machine asks to stop another, and follows the answer | run ([gate](verification/m1-gate-linux-2026-11-02.md)) | built | built (the ask pipe) |
+| An agent reads the machine: `agents`, `agents show`, `activity`, `doctor`, the `--json` reads | run | built | built (the ask pipe) |
+| The owner answers from their own account: `approve`, `deny`, `switch`, the drops | run | built | built (the ask pipe) |
 | The installer checks the release's signature | tested | built | not built (`install.ps1` checks the digest only) |
-| The console from the owner's own account, no sudo | run | built | the tray's approvals window only |
+| The console from the owner's own account, no sudo or Administrator terminal | run | built | built (the ask pipe); the tray's approvals window |
 | Activity, report | run | built | built |
 | `uninstall`, keeping the audit log | run | built | built |
 | A notice when something is waiting | none yet | none yet | the tray |

@@ -23,10 +23,13 @@
 # that form errors without installing anything.)
 # On an install that already exists, `privatae-bastion set-mode networked` (from
 # an Administrator terminal) changes the mode but not how it runs: it stays a
-# logon task. Re-run this installer with -Networked to make it a service. The
-# service starts with its own state: pairings made by the earlier per-user
-# install stay in that user's profile and are not carried over, so the machine
-# is paired again (claim-anchor with a token from the host).
+# logon task. Re-run this installer with -Networked to make it a service. When
+# an install moves the bastion from your account to the service, the service
+# takes over your account's bastion state before it first starts: its
+# pairings, keys and grants, so every Host it served goes on being served and
+# nothing is paired again (`service install --from-account`, servicecarry.go).
+# The copy in your profile is then removed, so the keys no longer sit where
+# programs running as you can read them.
 #
 # ELEVATE AS YOURSELF, not as a different administrator account. The state
 # directory is per-user (a folder under %APPDATA%), and UAC elevation of your
@@ -248,9 +251,16 @@ if (-not $elevatedDone) {
             Where-Object { $_.Path -and ($_.Path -ne $exe) } |
             ForEach-Object {
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                # Stop-Process returns before the process is gone, and its run
+                # lock goes with it; the carry below needs that lock free.
+                Wait-Process -Id $_.Id -Timeout 10 -ErrorAction SilentlyContinue
                 Write-Host "Stopped the bastion running from $($_.Path) (an earlier per-user install)."
             }
-        & $exe service install
+        # The account that asked for this install, or this one when run elevated
+        # by hand: its bastion's pairings go into the service, and it is recorded
+        # as the machine's owner below.
+        $owner = if ($OwnerSid) { $OwnerSid } else { ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value }
+        & $exe service install --from-account $owner
         if ($LASTEXITCODE -ne 0) { throw "could not register the Windows service (exit $LASTEXITCODE)" }
     } else {
     try {
@@ -326,10 +336,8 @@ if (-not $elevatedDone) {
             & $exe set-mode networked
             if ($LASTEXITCODE -ne 0) { throw "could not set networked mode (exit $LASTEXITCODE)" }
         }
-        # The machine's owner: the account that asked for this install, or this
-        # one when run elevated by hand. A second administrator's reinstall leaves
-        # the first owner in place; the bastion says so.
-        $owner = if ($OwnerSid) { $OwnerSid } else { ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value }
+        # The machine's owner ($owner, above). A second administrator's
+        # reinstall leaves the first owner in place; the bastion says so.
         & $exe approvals-owner --sid $owner
         if ($LASTEXITCODE -ne 0) { Write-Host "NOTE: your account was not recorded as this machine's owner (the reason is above)." }
         Write-Host ""

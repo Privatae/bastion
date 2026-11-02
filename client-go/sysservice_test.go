@@ -167,9 +167,10 @@ func TestServiceGuardRefusesAUserspaceBastionBesideTheService(t *testing.T) {
 	for _, goos := range []string{"darwin", "windows", "linux"} {
 		for _, cmd := range []string{"pair", "run", "status", "switch", "switch --list", "activity", "report"} {
 			err := serviceGuard(goos, cmd, true, false)
-			if (cmd == "status" || cmd == "switch" || cmd == "switch --list" || cmd == "activity" || cmd == "report") && goos != "windows" {
-				// These read the machine's bastion over its socket (reads.go),
-				// which answers the owner's account and refuses any other.
+			if cmd == "status" || cmd == "switch" || cmd == "switch --list" || cmd == "activity" || cmd == "report" {
+				// These read the machine's bastion over its lane (reads.go:
+				// ask.sock, or the ask pipe on Windows), which answers the
+				// owner's account and refuses any other.
 				if err != nil {
 					t.Errorf("%s: `%s` was refused before it could ask the machine's bastion: %v", goos, cmd, err)
 				}
@@ -445,16 +446,17 @@ func TestKeepOneLogAsideEmptiesInPlaceAndKeepsTheLastOne(t *testing.T) {
 	}
 }
 
-// The narrowing acts beside a system service: on Linux and macOS they go
-// through the owner's lane (owneracts.go), so the guard lets them by; on
-// Windows there is no lane, and the ordinary account's own profile is a
-// separate, empty bastion, so they are refused with the administrator's way,
-// as `ops` (and so `ops drop`) already was. device-approve is the
-// administrator's on every system: the console keeps it adminOnly, and from
-// an ordinary account it read that account's own, empty asks.
+// The narrowing acts beside a system service go through the owner's lane
+// (owneracts.go) on every system, ask.sock or the Windows ask pipe, so the
+// guard lets them by; each must be both guarded and a lane command, or from
+// an ordinary account it would act on that account's own, empty bastion.
+// device-approve is the administrator's on every system: the console keeps
+// it adminOnly, and from an ordinary account it read that account's own,
+// empty asks.
 //
-// MUTATION: take "device-deny" out of serviceGuardedCommands. RESULT: red on
-// windows. Take "device-approve" out. RESULT: red on every system.
+// MUTATION: take "device-deny" out of serviceLaneReads. RESULT: red on every
+// system. Take "device-approve" out of serviceGuardedCommands. RESULT: red on
+// every system.
 func TestTheNarrowingActsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing.T) {
 	lines := map[string][]string{
 		"approvals drop": {"privatae-bastion", "approvals", "--host", "box-one.example", "drop", "abcd1234"},
@@ -466,6 +468,10 @@ func TestTheNarrowingActsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing
 		if got := serviceGuardKey(args[1], args); got != want {
 			t.Errorf("%v is guarded as %q, want %q", args[1:], got, want)
 		}
+		if !serviceGuardedCommands[want] || !serviceLaneReads[want] {
+			t.Errorf("`%s` is guarded=%v, a lane command=%v: from an ordinary account beside the service it "+
+				"would act on that account's own, empty bastion", want, serviceGuardedCommands[want], serviceLaneReads[want])
+		}
 	}
 	if got := serviceGuardKey("approvals", []string{"privatae-bastion", "approvals", "--machine"}); got != "approvals" {
 		t.Errorf("the approvals read is guarded as %q", got)
@@ -473,11 +479,7 @@ func TestTheNarrowingActsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing
 	approve := serviceGuardKey("device-approve", []string{"privatae-bastion", "device-approve", "all"})
 	for _, goos := range []string{"linux", "darwin", "windows"} {
 		for key := range lines {
-			err := serviceGuard(goos, key, true, false)
-			if goos == "windows" && err == nil {
-				t.Errorf("windows: `%s` from an ordinary account acted on its own empty bastion", key)
-			}
-			if goos != "windows" && err != nil {
+			if err := serviceGuard(goos, key, true, false); err != nil {
 				t.Errorf("%s: `%s` was refused before it could ask the machine's bastion: %v", goos, key, err)
 			}
 			if err := serviceGuard(goos, key, true, true); err != nil {
@@ -497,19 +499,17 @@ func TestTheNarrowingActsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing
 	}
 }
 
-// The machine's approvals beside a system service: through the owner's
-// socket on Linux and macOS, refused on Windows (the tray answers them there).
-func TestTheMachinesApprovalsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing.T) {
+// The machine's approvals beside a system service go through the owner's
+// lane on every platform: ask.sock on Linux and macOS, the ask pipe on
+// Windows, which answers the owner's account and refuses any other.
+func TestTheMachinesApprovalsBesideTheServiceGoThroughTheLane(t *testing.T) {
 	for _, line := range [][]string{
 		{"privatae-bastion", "approvals", "--machine"},
 		{"privatae-bastion", "approve", "--machine", "abcd1234"},
 		{"privatae-bastion", "deny", "abcd1234"},
 	} {
 		key := serviceGuardKey(line[1], line)
-		if err := serviceGuard("windows", key, true, false); err == nil {
-			t.Errorf("windows: %v from an ordinary account beside the service was let through", line[1:])
-		}
-		for _, goos := range []string{"linux", "darwin"} {
+		for _, goos := range []string{"linux", "darwin", "windows"} {
 			if err := serviceGuard(goos, key, true, false); err != nil {
 				t.Errorf("%s: %v was refused before it could ask the machine's bastion: %v", goos, line[1:], err)
 			}

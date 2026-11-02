@@ -8,6 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // runGuardFile holds the "one running bastion" lock for the life of this
@@ -72,8 +75,8 @@ func refuseVisibly(shown uiNotice, err error) error {
 }
 
 // cannotStart is the wording for the two I/O failures below. They have no
-// prepared words the way the already-running case does (secondRunNotice,
-// notify.go), and the error itself is the most accurate thing there is to say:
+// prepared words the way the already-running case does (secondRunWords,
+// runholder.go), and the error itself is the most accurate thing there is to say:
 // both mean the config directory is unusable, which is not a state anyone can be
 // given advice about from here.
 func cannotStart(err error) uiNotice {
@@ -90,19 +93,36 @@ func guardSingleRun() error {
 		err = fmt.Errorf("cannot open the run lock: %w", err)
 		return refuseVisibly(cannotStart(err), err)
 	}
-	if err := flockFileNB(f); err != nil {
+	// Relaunched by the self-update of the bastion this one replaces, which
+	// holds the lock until it has exited (runholder.go).
+	if err := takeRunLock(lockTry(f), relaunchOf(), waitProcessExit,
+		30*time.Second, time.Now, time.Sleep); err != nil {
 		_ = f.Close()
 		// The dialog and the console get DIFFERENT words for the same fact, and
-		// that is on purpose: this text is laid out for a terminal — indented
-		// continuation lines, and "you can close this window" meaning the console
-		// window it is being printed into. secondRunNotice says it for a dialog.
-		return refuseVisibly(secondRunNotice(), errors.New(
-			"a bastion is already running on this machine — that one is serving "+
-				"your hosts, and a second would fight it for the same local ports.\n"+
-				"  Nothing is wrong: you can close this window.\n"+
-				"  If you believe the running one is dead, stop it (Task Manager → "+
-				"privatae-bastion.exe) and run this again"))
+		// that is on purpose: the console's are laid out for a terminal, with
+		// indented continuation lines (secondRunWords).
+		h, known := readRunHolder(d)
+		text, notice := secondRunWords(h, known)
+		return refuseVisibly(notice, errors.New(text))
 	}
 	runGuardFile.Store(f)
+	writeRunHolder(d, stdinIsTerminal())
 	return nil
+}
+
+// lockTry is one attempt at f's lock. Outside guardSingleRun, whose every
+// return is a refusal shown to the person (TestEveryRunGuardRefusalIsVisible).
+func lockTry(f *os.File) func() error {
+	return func() error { return flockFileNB(f) }
+}
+
+// waitProcessExit waits up to d for process pid to exit. A process that
+// cannot be opened has exited already, or is not ours to wait on.
+func waitProcessExit(pid int, d time.Duration) {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		return
+	}
+	defer windows.CloseHandle(h)
+	_, _ = windows.WaitForSingleObject(h, uint32(d/time.Millisecond))
 }

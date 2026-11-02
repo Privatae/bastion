@@ -31,7 +31,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -99,8 +98,8 @@ var machineReads = map[string]machineRead{
 // readsGoThroughLane: the machine's bastion is a system service this account
 // does not administer, so its state is not this process's to read.
 var readsGoThroughLane = func() bool {
-	if runtime.GOOS == "windows" || machineAuthorityHeld() {
-		return false // no ask pipe on Windows yet; the administrator reads directly
+	if machineAuthorityHeld() {
+		return false // the administrator reads the service's state directly
 	}
 	if runtime.GOOS == "linux" {
 		return linuxSystemUnitPresent()
@@ -156,7 +155,7 @@ func laneRefusalError(cmd string, err error) error {
 	if !errors.As(err, &le) {
 		return err
 	}
-	return fmt.Errorf("%s\n  As the administrator:  sudo -H privatae-bastion %s", le.why, cmd)
+	return fmt.Errorf("%s\n  As the administrator:  %s", le.why, adminCommandFor(runtime.GOOS == "windows", cmd))
 }
 
 // ── the asking side ─────────────────────────────────────────────────────────
@@ -166,8 +165,8 @@ func laneRefusalError(cmd string, err error) error {
 var readSockPath = askSockPath
 
 func readViaSock(name string, o readOpts, v any) error {
-	p := readSockPath()
-	c, err := net.DialTimeout("unix", p, 3*time.Second)
+	p := askLaneAddr(readSockPath())
+	c, err := dialAskLane(readSockPath())
 	if err != nil {
 		return &laneError{down: true, why: "nothing answers on " + p + " (" + err.Error() + ")"}
 	}
@@ -207,24 +206,20 @@ type agentReadReply struct {
 	View   json.RawMessage `json:"view,omitempty"`
 }
 
-// readLaneRefusal says why account uid may not read through the lane, or "".
+// readLaneRefusalFor says why peer may not read through the lane, or "".
 // The owner's account only: the agents, folders and prompts of every
 // account's sessions are the owner's to see, not another account's.
-func readLaneRefusal(uid uint32, who string) string {
-	owner, ownerName, present, err := ownerAccountLoad()
+func readLaneRefusalFor(p askPeer) string {
+	match, ownerName, present, err := laneOwnerMatch(p)
 	switch {
 	case err != nil:
 		return "this machine's owner account cannot be read (" + err.Error() + ")"
 	case !present:
 		return "no account is recorded as this machine's owner, so its bastion answers reads only for the " +
 			"administrator. To read from your own account, the administrator records it once: " +
-			"sudo -H privatae-bastion approvals-owner --account " + accountForHint(who)
-	case owner != uid:
-		name := ownerName
-		if name == "" {
-			name = "uid " + strconv.FormatUint(uint64(owner), 10)
-		}
-		return "this machine's bastion answers reads only for its owner's account (" + name + "), not " + who
+			ownerRecordCommand(p)
+	case !match:
+		return "this machine's bastion answers reads only for its owner's account (" + ownerName + "), not " + p.Name
 	}
 	return ""
 }
@@ -249,8 +244,12 @@ var readNow = time.Now
 var readSlots = make(chan struct{}, 4)
 
 func serveRead(uid uint32, user string, req agentAskRequest) agentReadReply {
-	r := agentReadReply{User: user}
-	if why := readLaneRefusal(uid, user); why != "" {
+	return serveReadFor(askPeer{UID: uid, Name: user}, req)
+}
+
+func serveReadFor(p askPeer, req agentAskRequest) agentReadReply {
+	r := agentReadReply{User: p.Name}
+	if why := readLaneRefusalFor(p); why != "" {
 		r.Why = why
 		return r
 	}

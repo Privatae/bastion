@@ -24,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -236,6 +237,20 @@ func installSystemService() error {
 	}
 	defer s.Close()
 
+	// Before the service first starts on this state: the pairings of the
+	// bastion this machine ran for an account until now (servicecarry.go).
+	// A carry that fails leaves the service stopped rather than starting it
+	// empty, which would leave the machine silent to every Host it serves.
+	to := filepath.Join(windowsSystemAppData(os.Getenv("SystemRoot")), "privatae-bastion")
+	from, ferr := serviceCarrySource(serviceCarryFromSID)
+	if ferr != nil {
+		fmt.Printf("  No bastion state of an account was looked for (%v).\n", ferr)
+	} else if res, err := carryStateInto(from, to); err != nil {
+		return fmt.Errorf("the %s service is registered but was not started: %w", winServiceName, err)
+	} else if line := carryReport(res, from); line != "" {
+		fmt.Println(line)
+	}
+
 	restart := mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: 5 * time.Second}
 	if err := s.SetRecoveryActions([]mgr.RecoveryAction{restart, restart, restart}, 24*60*60); err != nil {
 		return fmt.Errorf("cannot set the %s service to restart after a failure: %w", winServiceName, err)
@@ -266,6 +281,41 @@ func installSystemService() error {
 	}
 	fmt.Printf("  Its log is %s.\n", filepath.Join(windowsSystemAppData(os.Getenv("SystemRoot")), "privatae-bastion", "bastion.log"))
 	return nil
+}
+
+// serviceCarrySource is the state folder of the bastion an account ran: the
+// named account's (its profile from the registry's ProfileList, which an
+// elevated step run as another administrator still finds), or else the
+// account running this install, as it was before its APPDATA was pointed at
+// the service's.
+func serviceCarrySource(sid string) (string, error) {
+	// The account running this install, as the installer's elevated step
+	// usually is: its own APPDATA, which is where its bastion kept its state
+	// even when that folder is redirected away from the profile.
+	if u, err := windows.GetCurrentProcessToken().GetTokenUser(); err == nil && strings.EqualFold(u.User.Sid.String(), sid) {
+		sid = ""
+	}
+	if sid == "" {
+		d := systemService.callerAppData
+		if d == "" || samePath(d, windowsSystemAppData(os.Getenv("SystemRoot"))) {
+			return "", nil
+		}
+		return filepath.Join(d, "privatae-bastion"), nil
+	}
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\`+sid, registry.QUERY_VALUE)
+	if err != nil {
+		return "", fmt.Errorf("no profile is recorded for %s: %w", sid, err)
+	}
+	defer k.Close()
+	prof, _, err := k.GetStringValue("ProfileImagePath")
+	if err != nil {
+		return "", fmt.Errorf("the profile of %s has no path: %w", sid, err)
+	}
+	if prof, err = registry.ExpandString(prof); err != nil {
+		return "", err
+	}
+	return filepath.Join(prof, "AppData", "Roaming", "privatae-bastion"), nil
 }
 
 // stopServiceAndWait asks the service to stop and waits up to thirty seconds

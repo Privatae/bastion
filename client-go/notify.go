@@ -362,26 +362,3 @@ func utf16Len(s string) int {
 	}
 	return n
 }
-
-// secondRunNotice is runguard_windows.go's refusal, written for a dialog box
-// rather than for a terminal.
-//
-// It is deliberately NOT the same string as the error that goes to stderr. That
-// one is laid out for a console — indented continuation lines, "you can close
-// this window" meaning the console window — and the two media want different
-// words for the same fact. They live next to each other (runguard_windows.go) so
-// they are maintained together.
-//
-// The length caps above do NOT apply here: MessageBoxW takes an ordinary
-// null-terminated string with no fixed buffer, unlike the notification-area
-// struct.
-func secondRunNotice() uiNotice {
-	return uiNotice{
-		Title: "Privatae bastion is already running",
-		Body: "This machine is already serving your hosts.\r\n\r\n" +
-			"A second copy would fight the first one for the same local ports, so this " +
-			"one is stopping. Nothing is wrong and nothing has stopped working.\r\n\r\n" +
-			"If you believe the running one is dead, end privatae-bastion.exe in Task " +
-			"Manager and start this again.",
-	}
-}

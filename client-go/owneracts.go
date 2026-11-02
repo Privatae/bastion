@@ -28,7 +28,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strings"
 	"time"
@@ -47,8 +46,13 @@ type agentActReply struct {
 var actNow = time.Now
 
 func serveAct(uid uint32, user string, req agentAskRequest) (r agentActReply) {
+	return serveActFor(askPeer{UID: uid, Name: user}, req)
+}
+
+func serveActFor(peer askPeer, req agentAskRequest) (r agentActReply) {
+	user := peer.Name
 	r.User = user
-	if why := readLaneRefusal(uid, user); why != "" {
+	if why := readLaneRefusalFor(peer); why != "" {
 		r.Why = actWording(why)
 		return r
 	}
@@ -65,7 +69,7 @@ func serveAct(uid uint32, user string, req agentAskRequest) (r agentActReply) {
 		r.Failed, r.Why = true, err.Error()
 		return r
 	}
-	ownerActAudit(what, user)
+	ownerActAudit(what, user, peer.windows())
 	r.OK, r.Done = true, done
 	return r
 }
@@ -194,21 +198,25 @@ func switchDoneText(host, family string, off bool) string {
 // factor directory is made if it is not there yet (a deny or a switch off
 // needs no code set up): dcnAuditWith joins its directory onto audit.jsonl,
 // and "" would be the daemon's working directory.
-func ownerActAudit(what, user string) {
+func ownerActAudit(what, user string, pipe bool) {
 	dir, err := machineFactorDir()
 	if err != nil {
 		uilogf("owner act not audited (%v): %s, from %s\n", err, what, user)
 		return
 	}
+	lane := "its ask socket"
+	if pipe {
+		lane = "its ask pipe"
+	}
 	dcnAuditWith(dir, "owner_lane_act", 0, "",
-		what+", from the owner's account "+user+" through its ask socket", nil)
+		what+", from the owner's account "+user+" through "+lane, nil)
 }
 
 // ── the asking side ─────────────────────────────────────────────────────────
 
 func actViaSock(req agentAskRequest) (string, error) {
-	p := readSockPath()
-	c, err := net.DialTimeout("unix", p, 3*time.Second)
+	p := askLaneAddr(readSockPath())
+	c, err := dialAskLane(readSockPath())
 	if err != nil {
 		return "", &laneError{down: true, why: "nothing answers on " + p + " (" + err.Error() + ")"}
 	}

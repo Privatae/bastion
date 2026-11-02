@@ -67,7 +67,7 @@ func TestTheSliceThreeReadsGoThroughTheLane(t *testing.T) {
 
 // `switch --list` passes the guard beside the system unit, as status does;
 // `switch` does too since the owner's account switches through the lane
-// (owneracts.go), and only on Windows is it still refused here.
+// (owneracts.go), and on Windows as well since the ask pipe.
 func TestTheGuardLetsSwitchListThroughAndNotSwitch(t *testing.T) {
 	prevArgs, prevUnit, prevAuth := os.Args, linuxSystemUnitPresent, systemService.authority
 	t.Cleanup(func() { os.Args, linuxSystemUnitPresent, systemService.authority = prevArgs, prevUnit, prevAuth })
@@ -81,7 +81,7 @@ func TestTheGuardLetsSwitchListThroughAndNotSwitch(t *testing.T) {
 	if err := guardServiceFork("switch"); err != nil {
 		t.Errorf("switch from the owner's account beside the system unit, before the lane could decide: %v", err)
 	}
-	if err := serviceGuard("windows", serviceGuardKey("switch", os.Args), true, false); err == nil {
-		t.Error("switch from an ordinary account beside a Windows service was let through")
+	if err := serviceGuard("windows", serviceGuardKey("switch", os.Args), true, false); err != nil {
+		t.Errorf("switch from the owner's account beside a Windows service, before the ask pipe could decide: %v", err)
 	}
 }

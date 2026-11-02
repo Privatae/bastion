@@ -263,6 +263,9 @@ type uiCommand struct {
 	Class   string // ok | warn | bad — bad means "this cannot be run yet"
 }
 
+// Admin is uiStatus.Admin for the setup page.
+func (uiSetupView) Admin(cmd string) string { return adminCommandFor(runtime.GOOS == "windows", cmd) }
+
 type uiSetupView struct {
 	Version        string
 	Mode           string

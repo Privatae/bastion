@@ -8,7 +8,8 @@ package main
 // `stop` run by it had nowhere to ask, and asking is the one thing an agent
 // managing the bastion for the person must be able to do (2026-10-30).
 // This is the context socket's mechanism (contextsock.go) for a second
-// question: any local account may connect; WHO connected comes from the
+// question, and on Windows the service's ask pipe (asklane_windows.go), which
+// answers through the same askAnswer: any local account may connect; WHO connected comes from the
 // kernel, never from the request; it may only ASK. The ask lands in the
 // owner's factor as a pending request (stepup_machine.go), shown on Waiting
 // for you and answered with the owner's code. Nothing here approves anything.
@@ -81,7 +82,13 @@ var askPeerIdentityFn = contextPeerIdentity
 
 func startAskSock(done <-chan struct{}) {
 	if runtime.GOOS == "windows" {
-		return // a named pipe, as context.sock has, is not built yet
+		// The ask pipe (asklane_windows.go). Only the service serves it: a
+		// bastion run by an account is that account's, and nobody else's
+		// requests are its to answer.
+		if runningAsService {
+			startAskPipe(done)
+		}
+		return
 	}
 	p := askSockPath()
 	ln, err := contextSockListen(p)
@@ -123,8 +130,7 @@ func askSockServe(c net.Conn) {
 	_ = c.SetDeadline(time.Now().Add(10 * time.Second))
 	uid, user, err := askPeerIdentityFn(c)
 	if err != nil {
-		_ = json.NewEncoder(c).Encode(agentAskReply{Why: "this machine could not establish who is asking (" +
-			err.Error() + "), so nothing was asked. An ask nobody can attribute is one nobody can answer."})
+		_ = json.NewEncoder(c).Encode(askUnattributable(err))
 		return
 	}
 	var req agentAskRequest
@@ -132,31 +138,42 @@ func askSockServe(c net.Conn) {
 		_ = json.NewEncoder(c).Encode(agentAskReply{User: user, Why: "the request could not be read"})
 		return
 	}
-	if req.Op == "console" {
-		r := agentAskReply{User: user}
-		if link, err := consoleLaneEntry(uid, user); err != nil {
+	extend := func(d time.Duration) { _ = c.SetDeadline(time.Now().Add(d)) }
+	_ = json.NewEncoder(c).Encode(askAnswer(askPeer{UID: uid, Name: user}, req, extend,
+		func() int { return askPeerPIDFn(c) }))
+}
+
+// askUnattributable is the answer to a connection whose account the
+// operating system would not name.
+func askUnattributable(err error) agentAskReply {
+	return agentAskReply{Why: "this machine could not establish who is asking (" + err.Error() +
+		"), so nothing was asked. An ask nobody can attribute is one nobody can answer."}
+}
+
+// askAnswer is the lane's answer to one request from peer, on either
+// platform: ask.sock here, the ask pipe on Windows. extend gives the answer
+// more time where it takes longer (a read, an act); pid is the connecting
+// process, asked only for a stop.
+func askAnswer(peer askPeer, req agentAskRequest, extend func(time.Duration), pid func() int) any {
+	switch req.Op {
+	case "console":
+		r := agentAskReply{User: peer.Name}
+		if link, err := consoleLaneEntryFor(peer); err != nil {
 			r.Why = err.Error()
 		} else {
 			r.OK, r.URL = true, link
 		}
-		_ = json.NewEncoder(c).Encode(r)
-		return
+		return r
+	case "status":
+		return askStatus(existingMachineFactorDir(), req.Request, peer.Name, false)
+	case "read":
+		extend(readDeadline)
+		return serveReadFor(peer, req)
+	case "act":
+		extend(30 * time.Second)
+		return serveActFor(peer, req)
 	}
-	if req.Op == "status" {
-		_ = json.NewEncoder(c).Encode(askStatus(existingMachineFactorDir(), req.Request, user, false))
-		return
-	}
-	if req.Op == "read" {
-		_ = c.SetDeadline(time.Now().Add(readDeadline))
-		_ = json.NewEncoder(c).Encode(serveRead(uid, user, req))
-		return
-	}
-	if req.Op == "act" {
-		_ = c.SetDeadline(time.Now().Add(30 * time.Second))
-		_ = json.NewEncoder(c).Encode(serveAct(uid, user, req))
-		return
-	}
-	_ = json.NewEncoder(c).Encode(fileAsk(req, user, askPeerPIDFn(c)))
+	return fileAsk(req, peer.Name, pid())
 }
 
 // fileAsk turns one ask into a pending request of the machine, or says why not.
@@ -258,10 +275,7 @@ func askPendingBy(dir, user, purpose string) (n int, same bool) {
 // askViaSock is the asking side: `stop` run where it cannot write the
 // machine's state itself.
 func askViaSock(req agentAskRequest) (agentAskReply, error) {
-	if runtime.GOOS == "windows" {
-		return agentAskReply{}, errors.New("asking another account's bastion is not built for Windows yet")
-	}
-	c, err := net.DialTimeout("unix", askSockPath(), 3*time.Second)
+	c, err := dialAskLane(askSockPath())
 	if err != nil {
 		return agentAskReply{}, err
 	}

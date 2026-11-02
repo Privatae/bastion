@@ -177,6 +177,15 @@ func winPersonSID(sid string) bool {
 	return strings.HasPrefix(sid, "S-1-5-21-") || strings.HasPrefix(sid, "S-1-12-1-")
 }
 
+// pipeClientNewer: a process created after the connection was made cannot be
+// the one that made it. The service finds the connecting process by its id
+// (GetNamedPipeClientProcessId), and an id is reused once its process has
+// exited and nothing holds it, so a client that hands its pipe to another
+// process and exits could otherwise be answered as whoever got its id next.
+// The connection time is taken as the service starts serving it, a moment
+// after the connect.
+func pipeClientNewer(created, connected time.Time) bool { return created.After(connected) }
+
 // pipeClientRefusal says why a connected process may not use the lane, or ""
 // when it may: it must run as the person signed in to its own session, in a
 // session someone is in front of.

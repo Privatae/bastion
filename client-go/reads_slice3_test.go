@@ -239,17 +239,17 @@ func TestAReadThatPanicsFailsAndLeavesTheDaemonUp(t *testing.T) {
 	}
 }
 
-// doctor from an ordinary account beside a Windows system service would check
-// that account's own empty bastion and report it as the machine's (not
-// running, no owner, no factor), so it is refused there as status is; on
-// Linux and macOS it reads the machine's bastion through the lane.
+// doctor from an ordinary account beside a system service would, run
+// directly, check that account's own empty bastion and report it as the
+// machine's (not running, no owner, no factor). So it is a lane read, as
+// status is: through ask.sock on Linux and macOS, the ask pipe on Windows.
 //
-// MUTATION: drop "doctor" from serviceGuardedCommands. RESULT: red on windows.
+// MUTATION: drop "doctor" from serviceLaneReads. RESULT: red on every system.
 func TestDoctorBesideAWindowsServiceIsRefusedAsStatusIs(t *testing.T) {
-	if err := serviceGuard("windows", "doctor", true, false); err == nil {
-		t.Error("doctor from an ordinary account beside a Windows service was let through")
+	if !serviceGuardedCommands["doctor"] || !serviceLaneReads["doctor"] {
+		t.Error("doctor is not both guarded and a lane read, so it would check an ordinary account's own bastion")
 	}
-	for _, goos := range []string{"linux", "darwin"} {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
 		if err := serviceGuard(goos, "doctor", true, false); err != nil {
 			t.Errorf("%s: doctor beside the service is a lane read: %v", goos, err)
 		}
@@ -488,9 +488,9 @@ func TestAnAgentsFolderNeverReachesTheTerminalRaw(t *testing.T) {
 	}
 }
 
-// On Windows, where nothing goes over the socket, the slice-3 reads from an
-// ordinary account beside the service are refused as status is; on Linux and
-// macOS they ask the machine's bastion. The rest of backup is not guarded.
+// The slice-3 reads from an ordinary account beside the service ask the
+// machine's bastion over its lane on every system (the ask pipe on Windows),
+// so the guard lets them by. The rest of backup is not guarded.
 func TestTheSliceThreeReadsAreGuardedBesideAWindowsService(t *testing.T) {
 	for _, line := range [][]string{
 		{"privatae-bastion", "ops", "--json"},
@@ -500,10 +500,10 @@ func TestTheSliceThreeReadsAreGuardedBesideAWindowsService(t *testing.T) {
 		{"privatae-bastion", "backup", "key", "show"},
 	} {
 		key := serviceGuardKey(line[1], line)
-		if err := serviceGuard("windows", key, true, false); err == nil {
-			t.Errorf("windows: %v from an ordinary account beside the service was let through", line[1:])
+		if !serviceGuardedCommands[key] || !serviceLaneReads[key] {
+			t.Errorf("%v is not both guarded and a lane read", line[1:])
 		}
-		for _, goos := range []string{"linux", "darwin"} {
+		for _, goos := range []string{"linux", "darwin", "windows"} {
 			if err := serviceGuard(goos, key, true, false); err != nil {
 				t.Errorf("%s: %v was refused before it could ask the machine's bastion: %v", goos, line[1:], err)
 			}

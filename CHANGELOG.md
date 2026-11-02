@@ -22,6 +22,38 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.62.0
+
+Windows, with the bastion installed for the whole machine (the
+`PrivataeBastion` service), from the account that owns the machine:
+
+- **`privatae-bastion ui` opens the console from your own account,** with no
+  Administrator terminal, as it does on Linux and macOS. It asks the service
+  over a new pipe, which knows your account from Windows and serves only the
+  account recorded as the machine's owner. Before this it signed in with a
+  key of your account's own, which the service's console refused with a bare
+  401.
+- **Your agents and you reach the machine's bastion as on Linux and macOS:**
+  an agent asks to stop another (`stop`, `request`), reads the machine
+  (`agents`, `activity`, `status`, `doctor`, the `--json` reads), and you
+  answer from your own account (`approvals`, `approve`, `deny`, `switch`, the
+  drops). These were refused beside the service.
+- **Moving to the service keeps the machine's pairings.** When an install
+  moves the bastion from your account to the service, the service takes over
+  your account's bastion state (pairings, keys, grants, audit) before it first
+  starts, and the copy in your profile is removed. Every Host it served goes
+  on being served, and nothing is paired again. The service started empty
+  before, and the machine went silent to its Hosts.
+- **No dead ends.** A console page opened with no session names the command
+  that opens it on this machine. A second start says which bastion is already
+  running (its process, its program, how it was started) and how to open,
+  check or restart it. It no longer suggests ending the running one in Task
+  Manager.
+- **An update never leaves a sign-in task's bastion stopped.** After a
+  self-update, the new copy waits for the old one to exit before it takes the
+  machine's run lock. It could find the lock still held, refuse as a second
+  copy, and leave nothing running.
+
 ## 0.61.2
 
 - **A machine a Host holds stops dialling it.** When a Host's owner

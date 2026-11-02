@@ -1,7 +1,8 @@
 package main
 
 // consolelane.go — the machine owner's own account opens the console of the
-// bastion installed for the whole machine, without sudo (Linux and macOS).
+// bastion installed for the whole machine, without sudo on Linux and macOS
+// and without an Administrator terminal on Windows.
 //
 // THE PROBLEM. Installed for the whole machine, the bastion runs as root and
 // its console signs in with root's ui.secret. `privatae-bastion ui` run by the
@@ -9,7 +10,8 @@ package main
 // account's key, so the person reached their own machine's console only
 // through sudo, and a browser started by sudo is root's, not theirs.
 //
-// THE LANE. ask.sock (agentask.go) already tells the daemon, from the kernel,
+// THE LANE. ask.sock (agentask.go), and on Windows the service's ask pipe
+// (asklane_windows.go), already tells the daemon, from the operating system,
 // which account connected. Asked for "console" by the account recorded as the
 // machine's owner (owner_account.go), the daemon mints a one-use ticket of a
 // LIMITED kind and answers with the link; `ui` opens it in the person's own
@@ -21,17 +23,18 @@ package main
 // read on this install. It is refused what widens access with no code today:
 // pairing a Host, setting up or rotating the owner's code, choosing the Host
 // in charge, proposing a folder, and the approval device's approvals. Those
-// stay with the administrator (`sudo -H privatae-bastion ui`). Codes typed for
+// stay with the administrator (`sudo -H privatae-bastion ui`, or `ui` from an
+// Administrator terminal on Windows). Codes typed for
 // a Host's requests in a limited session are throttled as the owner's are
 // (machineCodeSpend), because guessing is the only attack left there.
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime"
-	"strconv"
 	"sync/atomic"
 )
 
@@ -45,21 +48,27 @@ var consoleLaneServer atomic.Pointer[uiServer]
 // consoleLaneRefusal says why account uid may not open the console through
 // the lane, or "" when it may.
 func consoleLaneRefusal(uid uint32, who string) string {
-	owner, ownerName, present, err := ownerAccountLoad()
+	return consoleLaneRefusalFor(askPeer{UID: uid, Name: who})
+}
+
+// consoleLaneRefusalFor is consoleLaneRefusal for a peer of either platform.
+func consoleLaneRefusalFor(p askPeer) string {
+	admin := adminCommandFor(p.windows(), "ui")
+	match, ownerName, present, err := laneOwnerMatch(p)
 	switch {
 	case err != nil:
 		return "this machine's owner account cannot be read (" + err.Error() + "); the administrator opens " +
-			"the console with: sudo -H privatae-bastion ui"
+			"the console with: " + admin
 	case !present:
 		return "no account is recorded as this machine's owner, so the console opens only for the administrator: " +
-			"sudo -H privatae-bastion ui. To open it from your own account, the administrator records it once: " +
-			"sudo -H privatae-bastion approvals-owner --account " + accountForHint(who)
-	case owner != uid:
-		name := ownerName
-		if name == "" {
-			name = "uid " + strconv.FormatUint(uint64(owner), 10)
+			admin + ". To open it from your own account, the administrator records it once: " + ownerRecordCommand(p)
+	case !match:
+		without := "without sudo"
+		if p.windows() {
+			without = "without an Administrator terminal"
 		}
-		return "this machine's console opens without sudo only for its owner's account (" + name + "), not " + who
+		return "this machine's console opens " + without + " only for its owner's account (" + ownerName + "), not " +
+			p.Name + ". The administrator opens it with: " + admin
 	}
 	return ""
 }
@@ -74,7 +83,11 @@ func accountForHint(who string) string {
 // consoleLaneEntry is what the daemon answers an owner's "console" ask with:
 // the link that redeems a fresh limited ticket.
 func consoleLaneEntry(uid uint32, who string) (string, error) {
-	if why := consoleLaneRefusal(uid, who); why != "" {
+	return consoleLaneEntryFor(askPeer{UID: uid, Name: who})
+}
+
+func consoleLaneEntryFor(p askPeer) (string, error) {
+	if why := consoleLaneRefusalFor(p); why != "" {
 		return "", errors.New(why)
 	}
 	u := consoleLaneServer.Load()
@@ -104,8 +117,9 @@ func (u *uiServer) signedIn(r *http.Request) bool {
 	return u.sessions.valid(tok) || (u.limitedSessions != nil && u.limitedSessions.valid(tok))
 }
 
-const consoleLaneAdminOnly = "From your own account the console does not do this: it widens what reaches this machine " +
-	"with no code, or reads beyond your own account. The machine's administrator does it: sudo -H privatae-bastion ui"
+var consoleLaneAdminOnly = "From your own account the console does not do this: it widens what reaches this machine " +
+	"with no code, or reads beyond your own account. The machine's administrator does it: " +
+	adminCommandFor(runtime.GOOS == "windows", "ui")
 
 // adminOnly wraps a route a limited session may not use.
 func (u *uiServer) adminOnly(h http.HandlerFunc) http.HandlerFunc {
@@ -120,30 +134,52 @@ func (u *uiServer) adminOnly(h http.HandlerFunc) http.HandlerFunc {
 
 // consoleEntryForThisAccount is the link `ui` opens. An account with a
 // bastion of its own signs in with its own key (localUIEntryURL). An ordinary
-// account beside the machine's root bastion asks the lane, and is told why
-// not when it is not the owner's.
+// account beside the machine's bastion asks the lane, and is told why not
+// when it is not the owner's.
 func consoleEntryForThisAccount() (entry, addr string, err error) {
-	if runtime.GOOS != "windows" && os.Geteuid() != 0 && !uiDaemonListening() {
+	if runtime.GOOS == "windows" {
+		if systemService.installed && !machineAuthorityHeld() {
+			return consoleEntryThroughLane()
+		}
+		return localUIEntryURL()
+	}
+	if os.Geteuid() != 0 && !uiDaemonListening() {
 		p := askSockPath()
 		if why := contextSockDialable(p); why != "" {
 			return "", "", errors.New(why)
 		}
 		if _, statErr := os.Stat(p); statErr == nil {
-			r, err := askViaSock(agentAskRequest{Op: "console"})
-			if err != nil {
-				return "", "", errors.New("could not reach this machine's bastion at " + p + ": " + err.Error())
-			}
-			if !r.OK {
-				return "", "", errors.New(r.Why)
-			}
-			u, err := url.Parse(r.URL)
-			if err != nil || u.Scheme != "http" || !uiLoopbackHost(u.Host, u.Port()) {
-				return "", "", errors.New("this machine's bastion answered with a link that is not its own console")
-			}
-			return r.URL, u.Host, nil
+			return consoleEntryThroughLane()
 		}
 	}
 	return localUIEntryURL()
+}
+
+// consoleEntryThroughLane asks the machine's bastion for the owner's link.
+func consoleEntryThroughLane() (entry, addr string, err error) {
+	p := askLaneAddr(askSockPath())
+	r, err := askViaSock(agentAskRequest{Op: "console"})
+	if err != nil {
+		if runtime.GOOS == "windows" {
+			// The service is there (systemService.installed) but its pipe is
+			// not: a service older than this command, or one not running.
+			return "", "", fmt.Errorf("this machine's bastion runs as the %s service, and it did not answer your "+
+				"account's request for its console on %s (%v).\n"+
+				"  If the service is not running, start it:  %s\n"+
+				"  If it is older than this command, update it by running the installer again.\n"+
+				"  Either way the administrator can open the console now:  %s",
+				winServiceName, p, err, serviceRunHintFor("windows"), adminCommandFor(true, "ui"))
+		}
+		return "", "", errors.New("could not reach this machine's bastion at " + p + ": " + err.Error())
+	}
+	if !r.OK {
+		return "", "", errors.New(r.Why)
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil || u.Scheme != "http" || !uiLoopbackHost(u.Host, u.Port()) {
+		return "", "", errors.New("this machine's bastion answered with a link that is not its own console")
+	}
+	return r.URL, u.Host, nil
 }
 
 // uiLimitedWriter marks a response as drawn for a limited session, so a page

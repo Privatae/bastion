@@ -58,7 +58,7 @@
     </form>
     {{if $.Limited}}
     <p class="approval-line">Approving signs with this device's key, which is the administrator's:
-      <code>sudo -H privatae-bastion ui</code></p>
+      <code>{{$.Admin "ui"}}</code></p>
     {{else}}
     <form hx-post="/device/approve" hx-target="#approvals" hx-swap="innerHTML">
       <input type="hidden" name="id" value="{{.ID}}">

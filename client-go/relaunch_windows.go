@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 
 	"golang.org/x/sys/windows"
 )
@@ -53,6 +54,10 @@ func relaunchAfterUpdate() {
 		return
 	}
 	cmd := exec.Command(self, os.Args[1:]...)
+	// The new bastion waits for this one to exit before it takes the run
+	// lock (runholder.go takeRunLock); without this it could find the lock
+	// still held, refuse as a second copy, and leave the machine with none.
+	cmd.Env = append(os.Environ(), relaunchOfEnv+"="+strconv.Itoa(os.Getpid()))
 	cmd.SysProcAttr = &windows.SysProcAttr{
 		CreationFlags: windows.DETACHED_PROCESS | windows.CREATE_NEW_PROCESS_GROUP,
 	}

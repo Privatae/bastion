@@ -28,9 +28,11 @@ package main
 //     installed and the caller administers the machine, the process points
 //     that one variable at the service's own before anything reads state.
 //   - NO SECOND BASTION FROM AN ORDINARY ACCOUNT. With the service installed,
-//     `pair`, `run` and `status` from an account that does not administer the
-//     machine would act on an empty bastion of that account's own, beside the
-//     machine's. They are refused with a sentence saying what to do instead. As
+//     `pair` and `run` from an account that does not administer the machine
+//     would act on an empty bastion of that account's own, beside the
+//     machine's. They are refused with a sentence saying what to do instead.
+//     The reads and the owner's acts (`status` among them) ask the machine's
+//     bastion over its lane instead (serviceLaneReads). As
 //     with the machine marker (singleton.go), this binds a cooperating binary
 //     only; an older copy will not refuse. What stops the person from removing
 //     the service is that they do not administer the machine.
@@ -45,6 +47,11 @@ import (
 	"strings"
 	"time"
 )
+
+// serviceCarryFromSID is the account `service install --from-account` names:
+// the bastion state carried into the service is that account's
+// (servicecarry.go). "" carries the state of the account running the install.
+var serviceCarryFromSID string
 
 const (
 	launchdLabel     = "ai.privatae.bastion"
@@ -110,14 +117,14 @@ var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status"
 	// account each read that account's own, empty approvals, grants or asks.
 	"approvals drop": true, "grants": true, "device-deny": true, "device-approve": true,
 	// The machine's approvals: read, approved and denied through the owner's
-	// socket on Linux and macOS (reads.go, owneracts.go); on Windows the tray
-	// answers them over its own pipe, and these would read the account's own.
+	// lane (reads.go, owneracts.go): ask.sock on Linux and macOS, the ask pipe
+	// on Windows. Run directly, these would read the account's own.
 	"approvals": true, "approve": true, "deny": true}
 
-// serviceLaneReads are the guarded commands that, on Linux and macOS, read
-// the machine's bastion itself over its socket (reads.go) rather than a
-// bastion of the caller's own: not refused here, and refused there for any
-// account but the owner's.
+// serviceLaneReads are the guarded commands that read the machine's bastion
+// itself over its lane (reads.go: ask.sock on Linux and macOS, the ask pipe on
+// Windows) rather than a bastion of the caller's own: not refused here, and
+// refused there for any account but the owner's.
 var serviceLaneReads = map[string]bool{"status": true, "switch --list": true, "activity": true, "report": true,
 	"doctor": true, "ops": true, "device-approvals": true, "backup read": true,
 	// Not reads: the owner's account switches, and takes reach back (`ops
@@ -138,7 +145,7 @@ func serviceGuard(goos, cmd string, installed, authority bool) error {
 	if !installed || authority || !serviceGuardedCommands[cmd] {
 		return nil
 	}
-	if serviceLaneReads[cmd] && goos != "windows" {
+	if serviceLaneReads[cmd] {
 		return nil
 	}
 	return fmt.Errorf("this machine's bastion runs as a system service, and it belongs to whoever administers the machine.\n"+
@@ -355,6 +362,10 @@ var systemService struct {
 	installed bool
 	authority bool
 	err       error
+	// callerAppData is APPDATA as this process was started with, before an
+	// administrator's command is pointed at the service's: where a bastion of
+	// this account's own keeps its state (servicecarry.go).
+	callerAppData string
 }
 
 // adoptSystemServiceState runs before any command. It records whether the
@@ -372,6 +383,7 @@ var systemService struct {
 // authority only after an installed service left root on Linux looking like
 // an ordinary account, and enrolServiceStateRefusal refused it.
 func adoptSystemServiceState() {
+	systemService.callerAppData = os.Getenv("APPDATA")
 	installed, err := systemServiceInstalled()
 	systemService.err = err
 	systemService.installed = installed || err != nil
@@ -428,8 +440,16 @@ func serviceGuardKey(cmd string, args []string) string {
 
 // cmdService is `privatae-bastion service install|uninstall|status`.
 func cmdService(args []string) error {
+	const usage = "usage: privatae-bastion service install [--from-account <SID>] | uninstall | status"
+	if len(args) == 3 && args[0] == "install" && args[1] == "--from-account" {
+		if !approvalsOwnerSIDOK(args[2]) {
+			return fmt.Errorf("%q is not the SID of a person's account (S-1-5-21-… or S-1-12-1-…) — nothing was installed", args[2])
+		}
+		serviceCarryFromSID = args[2]
+		args = args[:1]
+	}
 	if len(args) != 1 {
-		return errors.New("usage: privatae-bastion service install|uninstall|status")
+		return errors.New(usage)
 	}
 	switch args[0] {
 	case "install":

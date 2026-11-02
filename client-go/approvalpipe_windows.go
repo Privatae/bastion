@@ -157,10 +157,11 @@ func (c *pipeConn) readLine(max int, timeout time.Duration) ([]byte, error) {
 // approvalPipeServer tracks how many of our instances are open, so an instance
 // created while none is open asks for the name to be ours alone.
 type approvalPipeServer struct {
-	mu   sync.Mutex
-	open int
-	sa   *windows.SecurityAttributes
-	name *uint16
+	mu    sync.Mutex
+	open  int
+	sa    *windows.SecurityAttributes
+	name  *uint16
+	label string // the pipe's name, for a message
 	// stopEv is set when the service stops; it ends a connect that is waiting.
 	stopEv windows.Handle
 }
@@ -190,7 +191,7 @@ func (s *approvalPipeServer) create() (*pipeConn, error) {
 		windows.PIPE_UNLIMITED_INSTANCES, 64<<10, 64<<10, 0, s.sa)
 	if err != nil {
 		if s.open == 0 {
-			return nil, fmt.Errorf("cannot create %s; if another program holds that name the tray stays off: %w", approvalPipeName, err)
+			return nil, fmt.Errorf("cannot create %s; if another program holds that name, this lane stays off: %w", s.label, err)
 		}
 		return nil, err
 	}
@@ -230,11 +231,17 @@ func startApprovalPipe(stop <-chan struct{}) {
 }
 
 func serveApprovalPipe(stop <-chan struct{}, ready func()) error {
-	sd, err := windows.SecurityDescriptorFromString(approvalPipeSDDL)
+	return servePipe(stop, ready, approvalPipeName, approvalPipeSDDL, servePipeConn)
+}
+
+// servePipe serves one of the service's pipes, name with the ACL sddl, until
+// stop is closed, handing each connection to serve.
+func servePipe(stop <-chan struct{}, ready func(), pipeName, sddl string, serve func(*pipeConn)) error {
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("cannot build the pipe's permissions: %w", err)
 	}
-	name, err := windows.UTF16PtrFromString(approvalPipeName)
+	name, err := windows.UTF16PtrFromString(pipeName)
 	if err != nil {
 		return err
 	}
@@ -249,11 +256,12 @@ func serveApprovalPipe(stop <-chan struct{}, ready func()) error {
 	s := &approvalPipeServer{
 		sa:     &windows.SecurityAttributes{Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})), SecurityDescriptor: sd},
 		name:   name,
+		label:  pipeName,
 		stopEv: stopEv,
 	}
 	// The loop and its no-gap rule are in approvalpipe.go, where the suite runs them.
 	return pipeAcceptLoop[*pipeConn](s, stop, pipeMaxClients, time.Second,
-		func(f string, a ...any) { fmt.Printf(f, a...) }, ready, servePipeConn)
+		func(f string, a ...any) { fmt.Printf(f, a...) }, ready, serve)
 }
 
 // servePipeConn answers one request and waits, briefly, for the client to
@@ -291,7 +299,12 @@ func servePipeConn(c *pipeConn) {
 // (GetNamedPipeClientProcessId), its user and session from that process's
 // token, and the person signed in to that session from the session's own token
 // (WTSQueryUserToken, which LocalSystem may call).
+//
+// The process is found by its id, after it connected. An id that was freed
+// and given to a new process in between would name the wrong one, so a
+// process created after the connection is refused (pipeClientNewer).
 func pipeClientOf(h windows.Handle) (pipeClient, error) {
+	connected := time.Now()
 	var c pipeClient
 	if err := windows.GetNamedPipeClientProcessId(h, &c.PID); err != nil {
 		return c, fmt.Errorf("cannot tell which process connected: %w", err)
@@ -301,6 +314,13 @@ func pipeClientOf(h windows.Handle) (pipeClient, error) {
 		return c, fmt.Errorf("cannot open the connecting process (pid %d): %w", c.PID, err)
 	}
 	defer windows.CloseHandle(p)
+	var created, exited, kernel, user windows.Filetime
+	if err := windows.GetProcessTimes(p, &created, &exited, &kernel, &user); err != nil {
+		return c, fmt.Errorf("cannot read when the connecting process started (pid %d): %w", c.PID, err)
+	}
+	if pipeClientNewer(time.Unix(0, created.Nanoseconds()), connected) {
+		return c, fmt.Errorf("process %d started after the connection was made, so it is not the process that connected", c.PID)
+	}
 	var tok windows.Token
 	if err := windows.OpenProcessToken(p, windows.TOKEN_QUERY, &tok); err != nil {
 		return c, fmt.Errorf("cannot read the connecting process's account (pid %d): %w", c.PID, err)
@@ -381,7 +401,12 @@ func pipeCall(req pipeRequest) (pipeResponse, error) {
 // (read, write data, synchronize; never FILE_APPEND_DATA, which GENERIC_WRITE
 // would ask for), and lets the server identify this process but not act as it.
 func dialApprovalPipe() (*pipeConn, error) {
-	name, err := windows.UTF16PtrFromString(approvalPipeName)
+	return dialServicePipe(approvalPipeName)
+}
+
+// dialServicePipe opens one of the service's pipes (dialApprovalPipe).
+func dialServicePipe(pipeName string) (*pipeConn, error) {
+	name, err := windows.UTF16PtrFromString(pipeName)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +426,7 @@ func dialApprovalPipe() (*pipeConn, error) {
 			continue
 		}
 		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
-			return nil, errors.New("the bastion service is not running, or is older than this tray")
+			return nil, errors.New("the bastion service is not running, or is older than this program")
 		}
 		return nil, fmt.Errorf("cannot reach the bastion service: %w", err)
 	}
@@ -413,14 +438,14 @@ func dialApprovalPipe() (*pipeConn, error) {
 func pipeServerIsService(h windows.Handle) error {
 	var pid uint32
 	if err := windows.GetNamedPipeServerProcessId(h, &pid); err != nil {
-		return fmt.Errorf("cannot tell which process serves the approvals pipe: %w", err)
+		return fmt.Errorf("cannot tell which process serves the pipe: %w", err)
 	}
 	svcPID, err := bastionServicePID()
 	if err != nil {
 		return err
 	}
 	if svcPID == 0 || pid != svcPID {
-		return fmt.Errorf("the approvals pipe is served by process %d, not by the %s service; nothing was sent", pid, winServiceName)
+		return fmt.Errorf("the pipe is served by process %d, not by the %s service; nothing was sent", pid, winServiceName)
 	}
 	return nil
 }

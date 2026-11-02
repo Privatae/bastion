@@ -130,6 +130,10 @@ const uiEventRecentFor = 7 * 24 * time.Hour
 // line of the page where the day is the point.
 const uiEventTime = "2 Jan 2006, 15:04"
 
+// Admin is `privatae-bastion <cmd>` as this machine's administrator types it,
+// for what a page tells a limited session to ask of them.
+func (uiStatus) Admin(cmd string) string { return adminCommandFor(runtime.GOOS == "windows", cmd) }
+
 type uiStatus struct {
 	// Limited: drawn for the owner's lane (consolelane.go), which may not
 	// answer the approval device's requests.
@@ -499,8 +503,7 @@ func (u *uiServer) guarded(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !u.signedIn(r) {
-			http.Error(w, "not signed in — open this page from `privatae-bastion "+u.verb()+"`",
-				http.StatusUnauthorized)
+			http.Error(w, notSignedIn(u.verb(), runtime.GOOS, consoleIsTheMachines()), http.StatusUnauthorized)
 			return
 		}
 		if u.limitedSession(r) {
@@ -508,6 +511,31 @@ func (u *uiServer) guarded(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
+}
+
+// notSignedIn is what a page says to a browser with no session: the command
+// that opens it on this machine. The console of a bastion installed for the
+// whole machine opens from its owner's own account through the lane
+// (consolelane.go), and from the administrator's; telling either one only
+// "privatae-bastion ui" sent the person back to the command that, from the
+// wrong account, could not open it.
+func notSignedIn(verb, goos string, machines bool) string {
+	cmd := "privatae-bastion " + verb
+	switch {
+	case !machines:
+		return "not signed in — open this page with `" + cmd + "`"
+	case goos == "windows":
+		return "not signed in. This bastion runs for the whole machine. Open this page with `" + cmd +
+			"` from the account that owns this machine, or with `" + cmd + "` in an Administrator terminal"
+	}
+	return "not signed in. This bastion runs for the whole machine. Open this page with `" + cmd +
+		"` from the account that owns this machine, or with `sudo -H " + cmd + "`"
+}
+
+// consoleIsTheMachines: this console is the bastion installed for the whole
+// machine (the Windows service, or root's on Linux and macOS).
+func consoleIsTheMachines() bool {
+	return runningAsService || (runtime.GOOS != "windows" && os.Geteuid() == 0)
 }
 
 // root serves the page, and is also where a ticket is redeemed.
@@ -548,8 +576,7 @@ func (u *uiServer) root(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !u.signedIn(r) {
-		http.Error(w, "not signed in — open this page from `privatae-bastion "+u.verb()+"`",
-			http.StatusUnauthorized)
+		http.Error(w, notSignedIn(u.verb(), runtime.GOOS, consoleIsTheMachines()), http.StatusUnauthorized)
 		return
 	}
 	if u.contextUI {
@@ -937,9 +964,7 @@ func localUIEntryURLTo(to string) (entry, addr string, err error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", addr, fmt.Errorf("the local UI refused this machine's own key (%s) — "+
-			"if the bastion was reinstalled, restart it so it and this command agree",
-			resp.Status)
+		return "", addr, uiKeyRefused(addr, resp.Status, runtime.GOOS, systemService.installed, machineAuthorityHeld())
 	}
 	var out struct {
 		Ticket string `json:"ticket"`
@@ -952,6 +977,25 @@ func localUIEntryURLTo(to string) (entry, addr string, err error) {
 		entry += "&to=" + url.QueryEscape(to)
 	}
 	return entry, addr, nil
+}
+
+// uiKeyRefused is the console refusing this account's own key: the console
+// on that port belongs to another bastion than this account's.
+func uiKeyRefused(addr, status, goos string, service, admin bool) error {
+	switch {
+	case goos == "windows" && service && !admin:
+		return fmt.Errorf("the console at %s did not take this account's key (%s): it belongs to the %s service, "+
+			"which this account opens through the service, not with a key of its own. Update the bastion "+
+			"(run the installer again), or open the console from an Administrator terminal: privatae-bastion ui",
+			addr, status, winServiceName)
+	case goos == "windows":
+		return fmt.Errorf("the console at %s did not take this account's key (%s): another bastion holds that "+
+			"port. Get-Process privatae-bastion | Format-List Id, Path, StartTime shows which; `privatae-bastion "+
+			"status` says whether this account's own is running", addr, status)
+	}
+	return fmt.Errorf("the console at %s did not take this account's key (%s): another bastion holds that port, "+
+		"most likely the one installed for the whole machine. Open it from the account that owns this machine "+
+		"with `privatae-bastion ui`, or with `sudo -H privatae-bastion ui`", addr, status)
 }
 
 // cmdUI opens the local UI in a browser. It does NOT start a server: the UI
