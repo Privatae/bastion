@@ -377,6 +377,10 @@ exit 0
 		"id":     `case "$1" in -u) echo 1000 ;; -un) echo tester ;; *) echo "uid=1000(tester)" ;; esac`,
 		"curl":   `for a; do o=$a; done; case "$2" in */version.json) cp "$STAND/version.json" "$o" ;; *) cp "$STAND/bastion.bin" "$o" ;; esac`,
 		"printf": `exec /usr/bin/printf "$@"`,
+		// No openssl that does Ed25519 here, so the release signature is
+		// noted as not checked (install_sig_sh_test.go tests the check): this
+		// stand-in manifest is signed by no release key.
+		"openssl": `exit 1`,
 	}
 	for name, body := range stand {
 		s.write(t, filepath.Join(s.path, name), "#!/bin/sh\n"+record+body+"\n")

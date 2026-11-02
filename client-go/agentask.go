@@ -39,7 +39,7 @@ const (
 )
 
 type agentAskRequest struct {
-	Op      string `json:"op"` // "stop", "status" (askstatus.go), "console" (consolelane.go) or "read" (reads.go)
+	Op      string `json:"op"` // "stop", "status" (askstatus.go), "console" (consolelane.go), "read" (reads.go) or "act" (owneracts.go)
 	PID     int    `json:"pid"`
 	Request string `json:"request,omitempty"` // "status": the id `stop` printed
 	// "read": which one, and its flags (readOpts).
@@ -48,6 +48,12 @@ type agentAskRequest struct {
 	Prompts bool   `json:"prompts,omitempty"`
 	Host    string `json:"host,omitempty"`
 	Machine bool   `json:"machine,omitempty"`
+	// "act": approve, deny or switch (owneracts.go), and what it acts on.
+	Act    string `json:"act,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Code   string `json:"code,omitempty"`
+	Family string `json:"family,omitempty"`
+	Off    bool   `json:"off,omitempty"`
 }
 
 type agentAskReply struct {
@@ -143,6 +149,11 @@ func askSockServe(c net.Conn) {
 	if req.Op == "read" {
 		_ = c.SetDeadline(time.Now().Add(readDeadline))
 		_ = json.NewEncoder(c).Encode(serveRead(uid, user, req))
+		return
+	}
+	if req.Op == "act" {
+		_ = c.SetDeadline(time.Now().Add(30 * time.Second))
+		_ = json.NewEncoder(c).Encode(serveAct(uid, user, req))
 		return
 	}
 	_ = json.NewEncoder(c).Encode(fileAsk(req, user, askPeerPIDFn(c)))

@@ -111,7 +111,10 @@ var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status"
 // bastion of the caller's own: not refused here, and refused there for any
 // account but the owner's.
 var serviceLaneReads = map[string]bool{"status": true, "switch --list": true, "activity": true, "report": true,
-	"doctor": true, "ops": true, "device-approvals": true, "backup read": true}
+	"doctor": true, "ops": true, "device-approvals": true, "backup read": true,
+	// Not a read: the owner's account switches through the same socket, with
+	// the console's rules (owneracts.go), and any other account is refused there.
+	"switch": true}
 
 // serviceGuard refuses a guarded command from an account that does not
 // administer a machine whose bastion is a system service.

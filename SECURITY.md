@@ -74,9 +74,22 @@ it was reinstalled by hand.
 
 **The first install.** `curl … | sudo sh` and `irm … | iex` run a script from
 our website before any bastion exists to check anything. The installer checks
-the binary's digest against the manifest, but the installer and the manifest
-come from the same place. To avoid trusting that one download, build from
-source (see the README) or run `deploy/verify-release.sh` before installing.
+the binary's digest against the manifest. `install.sh` also checks the
+manifest's signature against the two pinned release keys, the ones a bastion
+checks its updates with, where the machine's openssl can check Ed25519
+(OpenSSL 3: most Linux, or `openssl@3` from Homebrew on a Mac); where it
+cannot, it says so and keeps the digest check alone, and it refuses a
+signature that does not verify. A script piped from our website is still our
+website's, so what the signature adds is for a copy of `install.sh` you read
+first, from this repository, and run as root (`sudo sh install.sh`) or for
+your account alone (`sh install.sh --just-me`): that copy installs only a
+release we signed, whatever the download host serves, though an older release
+we signed passes as well as the newest. Run without sudo and without
+`--just-me`, it installs for the whole machine through a root step that
+fetches the installer from our website again and runs that one, not the copy
+you read. `install.ps1` does not check the signature
+yet. To avoid trusting any download, build from source (see the README) or
+run `deploy/verify-release.sh` before installing.
 
 **Bastion updates.** A bastion never replaces itself on its own. Your host has
 to ask, and what it can ask for is limited to what we signed: the update goes

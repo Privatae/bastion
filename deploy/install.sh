@@ -466,11 +466,11 @@ if [ "$networked" = 1 ] && [ "$root" != 1 ]; then
 fi
 
 key="$os-$arch"
-tmp=$(mktemp); man=$(mktemp)
+tmp=$(mktemp); man=$(mktemp); vdir=$(mktemp -d)
 # Any exit before the final mv must leave nothing behind and install nothing:
 # this script is piped to `sudo sh`, so a partial run is a root-privileged
 # partial install.
-trap 'rm -f "$tmp" "$man"' EXIT INT TERM
+trap 'rm -f "$tmp" "$man"; rm -rf "$vdir"' EXIT INT TERM
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -485,8 +485,91 @@ else die "no sha256sum or shasum on this system — cannot verify the download, 
 fi
 sha_of() { $SHACMD "$1" | cut -d' ' -f1; }
 
+# ── the release signature ──────────────────────────────────────────────────
+#
+# The manifest names each binary's digest, and the download is checked against
+# it. The manifest itself is signed with a release key whose public half is
+# pinned here, the same keys a running bastion checks every update with
+# (client-go/release_sign.go productionReleaseKeys; install_sig_sh_test.go
+# holds the two to each other). So a copy of this script read on GitHub and run
+# from there as root, or with --just-me, installs only a release we signed
+# (possibly an older one), whatever the download host serves. Run without
+# sudo, the copy does not install for the whole machine itself: its root step
+# fetches this installer from the website again (whole_machine_script) and
+# runs that. The signature is over one statement, as verifyReleaseSignature
+# builds it: privatae-release-signature-v1, the kind, the version, and the
+# manifest's sha256, a line each; it sits beside the manifest at
+# version.json.<the first 16 hex of that sha256>.sig, in base64.
+#
+# Checked with an openssl that does Ed25519 (OpenSSL 3, on most Linux; the
+# openssl@3 Homebrew installs on a Mac). A probe signature made for this tells
+# "this openssl cannot check" from "the signature is wrong": the first prints a
+# note and keeps the digest check alone, which is what the script did before;
+# the second refuses to install.
+RELEASE_KEYS='MCowBQYDK2VwAyEAtWOyZm38DwTwbawSnvExQG/CQsVJBKYWc46arCBZj9E= MCowBQYDK2VwAyEACKL+J0VSdqrfY4AmxChvylJ1ha4e8GvcrYF2o17Ah+g='
+SIG_PROBE_KEY='MCowBQYDK2VwAyEA1TRy5NeI2n7tieFf6cHe5VE69SV0XL7Vx4k6EwFlFFk='
+SIG_PROBE_SIG='Do3fnwjyv8QgR+9sJcc0A3Sr0XzSKqBW8DK8kzaJL29tS8KxuStc2tp+HheJvoGwXmrH2kg7YN+yDLKVDnDqDQ=='
+
+# release_signature_check <manifest> <empty scratch dir>: returns when the
+# manifest's signature verifies, or when no openssl here can check one (said);
+# exits when it does not verify.
+release_signature_check() {
+  rs_man=$1 rs_dir=$2
+  rs_pem() { printf -- '-----BEGIN PUBLIC KEY-----\n%s\n-----END PUBLIC KEY-----\n' "$1" > "$2"; }
+  rs_ssl=""
+  rs_pem "$SIG_PROBE_KEY" "$rs_dir/probe.pem"
+  printf 'privatae-installer-probe-v1\n' > "$rs_dir/probe.msg"
+  printf 'privatae-installer-probe-v0\n' > "$rs_dir/probe.other"
+  # The probe signature must verify over its message and not over another: an
+  # openssl that passes every signature is no check, and is set aside like one
+  # that cannot check, never taken for one.
+  for c in openssl /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    printf '%s' "$SIG_PROBE_SIG" | "$c" base64 -d -A -out "$rs_dir/probe.sig" 2>/dev/null || continue
+    if "$c" pkeyutl -verify -pubin -inkey "$rs_dir/probe.pem" -rawin -in "$rs_dir/probe.msg" \
+        -sigfile "$rs_dir/probe.sig" >/dev/null 2>&1 &&
+      ! "$c" pkeyutl -verify -pubin -inkey "$rs_dir/probe.pem" -rawin -in "$rs_dir/probe.other" \
+        -sigfile "$rs_dir/probe.sig" >/dev/null 2>&1; then
+      rs_ssl=$c; break
+    fi
+  done
+  if [ -z "$rs_ssl" ]; then
+    echo "NOTE: no openssl here can check an Ed25519 signature, so the release's signature is not checked;"
+    echo "      the download is still checked against the manifest's digest, fetched over HTTPS."
+    if [ "$os" = darwin ]; then
+      echo "      To check the signature too, install OpenSSL 3 (brew install openssl@3) and run this again."
+    else
+      echo "      To check the signature too, install OpenSSL 3 from your distribution and run this again."
+    fi
+    return 0
+  fi
+  rs_sum=$(sha_of "$rs_man")
+  case "$rs_sum" in *[!0-9a-f]* | "") die "cannot take the manifest's digest — refusing to install unverified" ;; esac
+  rs_ver=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$rs_man" | head -n 1)
+  case "$rs_ver" in
+    "" | *[!0-9A-Za-z.+-]*) die "the manifest names no usable version — refusing to install unverified" ;;
+  esac
+  rs_short=$(printf '%s' "$rs_sum" | cut -c1-16)
+  curl -fsSL --max-filesize 4096 "$base/version.json.$rs_short.sig" -o "$rs_dir/sig.b64" \
+    || die "cannot fetch the release's signature ($base/version.json.$rs_short.sig) — refusing to install unverified"
+  tr -d ' \r\n' < "$rs_dir/sig.b64" | "$rs_ssl" base64 -d -A -out "$rs_dir/sig" 2>/dev/null \
+    || die "the release's signature is malformed — refusing to install"
+  [ "$(wc -c < "$rs_dir/sig" | tr -d ' ')" = 64 ] || die "the release's signature is malformed — refusing to install"
+  printf 'privatae-release-signature-v1\nbastion\n%s\n%s\n' "$rs_ver" "$rs_sum" > "$rs_dir/statement"
+  for k in $RELEASE_KEYS; do
+    rs_pem "$k" "$rs_dir/key.pem"
+    if "$rs_ssl" pkeyutl -verify -pubin -inkey "$rs_dir/key.pem" -rawin -in "$rs_dir/statement" \
+        -sigfile "$rs_dir/sig" >/dev/null 2>&1; then
+      echo "Release signature verified (version $rs_ver)."
+      return 0
+    fi
+  done
+  die "the release's signature does not verify against the pinned release keys — refusing to install"
+}
+
 echo "Fetching manifest..."
 curl -fsSL "$base/version.json" -o "$man" || die "cannot fetch $base/version.json — refusing to install unverified"
+release_signature_check "$man" "$vdir"
 
 # Pull this platform's expected digest out of version.json without needing jq or
 # python (neither is guaranteed on a clean macOS or a minimal container): find the

@@ -309,8 +309,9 @@ Each point in full: [docs/security-model.md](docs/security-model.md); the link a
   never read or moved. ([DCN stores](docs/context.md#distributed-context-network-dcn-stores))
 - **Verified releases.** The self-updater checks the manifest's signature and
   the binary's SHA-256 before swapping; the release key never reaches the
-  build machine. The installer checks the SHA-256 ([SECURITY.md](SECURITY.md)
-  says what that proves). ([self-update](docs/updates.md))
+  build machine. The installer checks the SHA-256, and `install.sh` checks the
+  manifest's signature where the machine's openssl can (OpenSSL 3)
+  ([SECURITY.md](SECURITY.md) says what each proves). ([self-update](docs/updates.md))
 - **No secrets cached for git.** The credential helper fetches a token on
   every auth and stores nothing; which other helpers are kept out depends on
   the git version. ([git lane](docs/lanes.md#git-lane))

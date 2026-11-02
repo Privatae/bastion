@@ -111,10 +111,12 @@ Usage:
                                anchor anywhere.
   privatae-bastion approvals [--host <host> | --machine] [--json]
                                show what your host is asking to do on this machine, in plain words
-  privatae-bastion approve [--host <host>] <id>
+  privatae-bastion approve [--host <host> | --machine] <id>
                                approve one request with a code from the authenticator enrolled here
-  privatae-bastion deny [--host <host>] <id>
-                               refuse one request
+  privatae-bastion deny [--host <host> | --machine] <id>
+                               refuse one request. From the machine's owner account, beside the
+                               bastion installed for the whole machine, both act on that bastion,
+                               and so does switch (off with nothing, on with the owner's code)
   privatae-bastion approvals drop [--host <host>] <id>
                                take back an approval this machine issued and has not used yet
   privatae-bastion grants drop <store id> [--host <host>]

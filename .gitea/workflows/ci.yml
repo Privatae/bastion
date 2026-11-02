@@ -40,11 +40,13 @@ jobs:
         # The backup tests check this code against the age command itself: a
         # pinned age release, its archive checked against the SHA-256 below,
         # and PRIVATAE_REQUIRE_AGE makes those tests fail rather than skip if
-        # it is missing.
+        # it is missing. openssl is what install.sh checks a release's
+        # signature with; PRIVATAE_REQUIRE_OPENSSL makes install_sig_sh_test.go
+        # fail rather than skip without one that does Ed25519.
         run: |
           docker run --rm --cpus 6 -e GOMAXPROCS=6 -v "$PWD":/src -w /src/client-go \
-            -e GOTOOLCHAIN=local -e CGO_ENABLED=0 -e PRIVATAE_REQUIRE_AGE=1 "$GO_IMAGE" sh -euc '
-            apk add -q --no-cache poppler-utils python3 setpriv curl git git-daemon
+            -e GOTOOLCHAIN=local -e CGO_ENABLED=0 -e PRIVATAE_REQUIRE_AGE=1 -e PRIVATAE_REQUIRE_OPENSSL=1 "$GO_IMAGE" sh -euc '
+            apk add -q --no-cache poppler-utils python3 setpriv curl git git-daemon openssl
             case "$(uname -m)" in
               x86_64)  a=amd64; sum=cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10 ;;
               aarch64) a=arm64; sum=6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4 ;;

@@ -77,6 +77,25 @@ func cmdSwitch(args []string) error {
 	default:
 		return fmt.Errorf("the last word is on or off, not %q\n%s", args[2], switchUsage)
 	}
+	if readsGoThroughLane() {
+		// The owner's account, beside the machine's bastion: the console's
+		// rule, through its ask socket (owneracts.go). Off takes reach away and
+		// needs nothing; on takes the owner's code.
+		req := agentAskRequest{Act: "switch", Host: args[0], Family: args[1], Off: off}
+		if !off {
+			code, ok := promptOwnerCode("Switch " + args[0] + " " + args[1] + " back on? Enter the code from your authenticator (or leave empty to cancel): ")
+			if !ok {
+				return nil
+			}
+			req.Code = code
+		}
+		done, err := actViaSock(req)
+		if err != nil {
+			return laneRefusalError("switch "+strings.Join(args, " "), err)
+		}
+		fmt.Println(done)
+		return nil
+	}
 	if err := requireMachineAuthority("switch"); err != nil {
 		return err
 	}
@@ -88,11 +107,7 @@ func cmdSwitch(args []string) error {
 	if err := localDenySet(host, family, off); err != nil {
 		return err
 	}
-	if off {
-		fmt.Printf("%s %s off: this machine now refuses it, and tells the host why. Its grant is untouched.\n", host, family)
-	} else {
-		fmt.Printf("%s %s on: the refusal is cleared, up to whatever its signed grant already allowed.\n", host, family)
-	}
+	fmt.Println(switchDoneText(host, family, off))
 	return nil
 }
 

@@ -1388,6 +1388,9 @@ func findRequest(m map[string]stepupRequest, prefix string) (string, error) {
 
 // privatae-bastion approve [--host <host> | --machine] <request id>
 func cmdStepupApprove(host string, machine bool, prefix string) error {
+	if readsGoThroughLane() {
+		return ownerApproveViaLane(host, machine, prefix)
+	}
 	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
 		return err
@@ -1425,6 +1428,14 @@ func cmdStepupApprove(host string, machine bool, prefix string) error {
 
 // privatae-bastion deny [--host <host> | --machine] <request id>
 func cmdStepupDeny(host string, machine bool, prefix string) error {
+	if readsGoThroughLane() {
+		done, err := actViaSock(agentAskRequest{Act: "deny", Host: host, Machine: machine, ID: prefix})
+		if err != nil {
+			return laneRefusalError(stepupCommand("deny", host, machine, prefix), err)
+		}
+		fmt.Println(done)
+		return nil
+	}
 	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
 		return err

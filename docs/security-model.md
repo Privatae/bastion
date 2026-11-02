@@ -257,8 +257,10 @@
   agent download is checked the same way, and an installed agent is never
   replaced with an older one. The release key never reaches the machine that
   builds and publishes: each release waits until the key holder signs it on
-  their own computer. The installer checks the SHA-256; see
-  [SECURITY.md](../SECURITY.md) for what that does and does not prove.
+  their own computer. The installer checks the SHA-256, and `install.sh`
+  also checks the manifest's signature against the same pinned keys where the
+  machine's openssl can check Ed25519; see [SECURITY.md](../SECURITY.md) for
+  what each does and does not prove.
 - **No secrets cached for git.** The credential helper fetches a token from
   the host on every auth and stores nothing itself, and `git-setup` resets
   the forge's helper chain before adding it. With git 2.46 or later, git's
