@@ -606,7 +606,13 @@ func runPairing(ctx context.Context, cfg *Config) error {
 	//    (posture). The device fingerprint is NOT sent here: it is bound at
 	//    pairing from the operator CSR; the reverse lanes are admitted on the bearer's
 	//    binding to that cert, which the host enforces. Authed by the bearer.
+	//    Each beat's request carries the run's context, and a stopped run waits
+	//    for the heartbeat before it returns, so no beat of this run records a
+	//    time, reconciles grants into its folder or acts on a directive after
+	//    the pairing has stopped (an unpair or revoke removes those next).
+	beatDone := make(chan struct{})
 	go func() {
+		defer close(beatDone)
 		hbURL := fmt.Sprintf("https://%s:8443/api/network/bastions/heartbeat", cfg.HostName)
 		hostname, _ := os.Hostname()
 		wgPub := ""
@@ -616,8 +622,11 @@ func runPairing(ctx context.Context, cfg *Config) error {
 			}
 		}
 		beat := func() {
+			if ctx.Err() != nil {
+				return
+			}
 			payload := heartbeatPayload(cfg, dev, hostname, wgPub)
-			req, err := http.NewRequest(http.MethodPost, hbURL, strings.NewReader(payload))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, hbURL, strings.NewReader(payload))
 			if err != nil {
 				return
 			}
@@ -628,6 +637,9 @@ func runPairing(ctx context.Context, cfg *Config) error {
 				resp.Body.Close()
 				if !ok {
 					return // a reply past its bound is no answer (lane_bounds.go)
+				}
+				if ctx.Err() != nil {
+					return // the pairing stopped while this beat was out
 				}
 				if resp.StatusCode < 300 {
 					// last_ok per pairing (anchor.go): the anchor rotation's
@@ -694,6 +706,7 @@ func runPairing(ctx context.Context, cfg *Config) error {
 	select {
 	case <-ctx.Done():
 		_ = srv.Close()
+		<-beatDone
 		return nil
 	case err := <-errc:
 		return err
@@ -842,8 +855,10 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 
 	// The heartbeat: the same body (no WireGuard device, so no allowed IPs
 	// and no endpoint) and every directive its reply carries except the two
-	// that move a tunnel.
+	// that move a tunnel. A stopped run waits for it, as runPairing's does.
+	beatDone := make(chan struct{})
 	go func() {
+		defer close(beatDone)
 		hbURL := fmt.Sprintf("https://%s:8443/api/network/bastions/heartbeat", cfg.HostName)
 		hostname, _ := os.Hostname()
 		wgPub := ""
@@ -853,7 +868,10 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 			}
 		}
 		beat := func() {
-			req, err := http.NewRequest(http.MethodPost, hbURL, strings.NewReader(heartbeatPayload(cfg, nil, hostname, wgPub)))
+			if ctx.Err() != nil {
+				return
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, hbURL, strings.NewReader(heartbeatPayload(cfg, nil, hostname, wgPub)))
 			if err != nil {
 				return
 			}
@@ -867,6 +885,9 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 			resp.Body.Close()
 			if !ok {
 				return // a reply past its bound is no answer (lane_bounds.go)
+			}
+			if ctx.Err() != nil {
+				return // the pairing stopped while this beat was out
 			}
 			if resp.StatusCode < 300 {
 				recordPairingOK(cfg.HostName)
@@ -899,6 +920,7 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 	select {
 	case <-ctx.Done():
 		_ = srv.Close()
+		<-beatDone
 		return nil
 	case err := <-errc:
 		return err

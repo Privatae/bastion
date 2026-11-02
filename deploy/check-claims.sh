@@ -24,8 +24,49 @@
 # reads a `go test -json` run instead and names every cited test that
 # skipped in it, with the reason it gave. It exits non-zero if any did: a CI job
 # that runs a claim's test where it cannot run proves nothing about the claim.
+#
+#   deploy/check-claims.sh --failed <go test -json output>
+#
+# names every test that failed in such a run, with the last lines it printed,
+# and the package's own lines when the package failed outside any test (a
+# panic, a build error, a timeout), so a failed CI job says why. It exits
+# non-zero if anything failed.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+if [ "${1:-}" = "--failed" ]; then
+  python3 - "${2:?usage: deploy/check-claims.sh --failed <go test -json output>}" <<'PY'
+import json, sys
+
+out, failed, pkg_out, pkg_failed = {}, [], [], False
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        pkg_out.append(line.rstrip("\n"))  # what go itself printed: a build error
+        continue
+    t, a = e.get("Test"), e.get("Action")
+    if a == "output":
+        (out.setdefault(t, []) if t else pkg_out).append(e.get("Output", "").rstrip("\n"))
+    elif a == "fail":
+        if t:
+            failed.append(t)
+        else:
+            pkg_failed = True
+for t in failed[:40]:
+    print("FAILED " + t)
+    for l in out.get(t, [])[-60:]:
+        print("    " + l)
+if len(failed) > 40:
+    print("... and %d more failed tests" % (len(failed) - 40))
+if pkg_failed and not failed:
+    print("the package failed outside any test:")
+    for l in pkg_out[-80:]:
+        print("    " + l)
+print("%d tests failed" % len(failed))
+sys.exit(1 if failed or pkg_failed else 0)
+PY
+  exit $?
+fi
 if [ "${1:-}" = "--skipped" ]; then
   RUN="$(cd "$(dirname "${2:?usage: deploy/check-claims.sh --skipped <go test -json output> [repo root]}")" && pwd)/$(basename "$2")"
   ROOT="${3:-$HERE}"

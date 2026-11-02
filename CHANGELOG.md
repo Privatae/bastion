@@ -22,6 +22,47 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.61.0
+
+- **An agent on the machine reads the rest of it.** `agents show <pid|session>`
+  is one agent in full (its command line in `--json` only, since arguments can
+  carry a key). `switch --list`, `ops`, `device-approvals`, `backup key show`,
+  `backup requests` and `backup shares` print as one value with `--json`.
+  Beside a whole-machine install, the owner's account reads them from the
+  machine's bastion over its ask socket, as `agents` and `activity` already
+  were; no other account is answered.
+- **`doctor [--json]` says what is wrong with the install**, each problem with
+  its fix: whether the bastion runs, whether a newer version is published, the
+  owner account, the machine's second factor, accounts whose asks are held,
+  each Host pairing, the switch list and the ops sandbox. Exit status 1 on a
+  problem.
+- **The machine's owner answers from their own account.** `approve`, `deny`
+  and `switch` act on the machine's bastion over its ask socket instead of on
+  an empty bastion of the account's own. `approve` shows the request and takes
+  the owner's code at the terminal; `switch … on` takes the code; `deny` and
+  `switch … off` take nothing, since they only take reach away. Each act is a
+  line in the machine's audit log naming the account.
+- **And takes reach back the same way:** `approvals drop`, `grants drop`,
+  `ops drop` and `device-deny`. Another account is refused each of them with
+  the command the administrator would type.
+- **The installer checks the release's signature.** `install.sh` verifies the
+  manifest's signature against the release keys it carries before it downloads
+  the program, and refuses a signature that does not verify. Where no openssl can
+  check an Ed25519 signature it says so and keeps the digest check alone, as
+  before. `install.ps1` still checks the digest only.
+- **One Host's folder is never answered for another's store.** On a machine
+  paired with two Hosts that each hold a store with the same id, one local agent
+  served both, so the second Host's searches and reads reached the first
+  Host's folder. Each pairing's stores now have their own agents, and each
+  Host's heartbeat reports only its own.
+- **A stopped pairing's last heartbeat acts on nothing.** A beat out when its
+  pairing stopped (an unpair, a revoke) came back afterwards and could still
+  act on the reply, writing into the pairing's folder after an unpair had
+  removed it. A stopped pairing now waits for its heartbeat, whose request ends
+  with it.
+- On Windows the owner's reads and acts are refused beside the bastion's
+  service with the administrator's command: there is no ask pipe there yet.
+
 ## 0.60.0
 
 - **An agent can follow its own stop request to the end.** `request <id>

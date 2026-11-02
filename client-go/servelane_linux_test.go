@@ -40,12 +40,15 @@ import (
 // serveHost is a Host's lane port as the serve lane meets it: the lane
 // port's mutual TLS, every worker route kept parked, each beat recorded
 // whole, and each /bastion-serve worker handed to the test once it has sent
-// its hello.
+// its hello. With beatRelease set, each beat's reply waits for it to close,
+// and the first beat to arrive says so on beatArrived.
 type serveHost struct {
-	mu      sync.Mutex
-	beats   []map[string]any
-	hellos  []string
-	workers chan *websocket.Conn
+	mu          sync.Mutex
+	beats       []map[string]any
+	hellos      []string
+	workers     chan *websocket.Conn
+	beatArrived chan struct{}
+	beatRelease chan struct{}
 }
 
 func startServeHost(t *testing.T, raw net.Listener, cert tls.Certificate, clientCA *testCA) *serveHost {
@@ -62,7 +65,15 @@ func startServeHost(t *testing.T, raw net.Listener, cert tls.Certificate, client
 		_ = json.NewDecoder(r.Body).Decode(&m)
 		h.mu.Lock()
 		h.beats = append(h.beats, m)
+		arrived, release := h.beatArrived, h.beatRelease
 		h.mu.Unlock()
+		if release != nil {
+			select {
+			case arrived <- struct{}{}:
+			default:
+			}
+			<-release
+		}
 		_, _ = w.Write([]byte("{}"))
 	})
 	mux.HandleFunc("/bastion-serve", func(w http.ResponseWriter, r *http.Request) {

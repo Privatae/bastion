@@ -19,7 +19,10 @@ it shares with Linux is tested there, but it has not run on that system yet.
 | MCP tool servers and their problems | tested | built | built |
 | Changes since your baseline | tested | built | built |
 | Stop an agent with your code, from the console or `stop` | run | built | built |
-| An agent in another account asks (Waiting for you) | tested, with two accounts | built | not built (the ask socket is Unix only) |
+| An agent on the machine asks to stop another, and follows the answer | run ([gate](verification/m1-gate-linux-2026-11-02.md)) | built | not built (the ask socket is Unix only) |
+| An agent reads the machine: `agents`, `agents show`, `activity`, `doctor`, the `--json` reads | run | built | not built (no ask pipe) |
+| The owner answers from their own account: `approve`, `deny`, `switch`, the drops | run | built | not built (no ask pipe) |
+| The installer checks the release's signature | tested | built | not built (`install.ps1` checks the digest only) |
 | The console from the owner's own account, no sudo | run | built | the tray's approvals window only |
 | Activity, report | run | built | built |
 | `uninstall`, keeping the audit log | run | built | built |
@@ -46,7 +49,9 @@ a relay image for one behind a home router.
 
 - The bastion agent (folder search, a separate program) keeps the plain text it
   extracts from a shared folder's files in `<folder>/.agent`, inside the shared
-  folder, where a sync client can copy it. The bastion never serves that
-  folder. The fix moves it under the bastion's own state.
+  folder, where a sync client can copy it, and two grants over the same
+  folder (from two Hosts, say) share that one `.agent`. The bastion never
+  serves that folder. The fix moves it under the bastion's own state, per
+  pairing and store.
 - There is no MCP endpoint on the bastion, on purpose. An agent on the machine
   uses the command line ([for agents](skills/bastion.md)).

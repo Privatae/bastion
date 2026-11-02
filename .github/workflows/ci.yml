@@ -243,6 +243,6 @@ jobs:
           sudo env PATH="/opt/go-pinned/bin:$PATH" HOME="$HOME" AGE_BIN="$AGE_BIN" PRIVATAE_REQUIRE_AGE=1 GOTOOLCHAIN=local CGO_ENABLED=0 \
             GOFLAGS=-mod=readonly GOMODCACHE="$HOME/go/pkg/mod" GOCACHE="$HOME/.cache/go-build" \
             go test -count=1 -json -run "^($tests)\$" . > "$RUNNER_TEMP/claims.json" || {
-              grep -h '"Action":"fail"' "$RUNNER_TEMP/claims.json" | head -40; exit 1; }
+              bash ../deploy/check-claims.sh --failed "$RUNNER_TEMP/claims.json"; exit 1; }
       - name: none of them skipped
         run: bash deploy/check-claims.sh --skipped "$RUNNER_TEMP/claims.json"
