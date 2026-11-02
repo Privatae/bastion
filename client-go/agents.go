@@ -528,10 +528,13 @@ type beatLanes struct {
 	// noCoders: a tcp pairing, whose coder runs have no control plane to use
 	// (pair_tcp.go coderTransportRefusal), so it is never offered one.
 	noCoders bool
+	// dcnDir: the pairing's DCN state, whose managed agents this beat probes
+	// and reports (faManagedProbe, faManagedStatus); "" reports none.
+	dcnDir string
 }
 
 func beatLanesFor(cfg *Config) beatLanes {
-	return beatLanes{local: cfg.localTransport(), noCoders: cfg.tcpTransport()}
+	return beatLanes{local: cfg.localTransport(), noCoders: cfg.tcpTransport(), dcnDir: cfg.dcnDir()}
 }
 
 // buildHeartbeatBodyOn is buildHeartbeatBody for a pairing whose lanes are lanes.
@@ -658,7 +661,7 @@ func buildHeartbeatBodyOn(lanes beatLanes, self, hostname, platform, version, wg
 	faAdvertised, faOK := freeagentProbe()
 	// managed instances (freeagent_managed.go) count the same way: any
 	// serving instance advertises the capability; all must serve for ok
-	if mAdv, mOK := faManagedProbe(); mAdv {
+	if mAdv, mOK := faManagedProbe(lanes.dcnDir); mAdv {
 		if !faAdvertised {
 			faAdvertised, faOK = true, mOK
 		} else {
@@ -1067,7 +1070,7 @@ func buildHeartbeatBodyOn(lanes beatLanes, self, hostname, platform, version, wg
 	}
 	if faAdvertised {
 		body["freeagent_ok"] = faOK
-		if st := faManagedStatus(); len(st) > 0 {
+		if st := faManagedStatus(lanes.dcnDir); len(st) > 0 {
 			body["freeagent_stores"] = st
 		}
 	}

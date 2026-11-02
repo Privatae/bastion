@@ -199,7 +199,8 @@ func TestServiceGuardRefusesAUserspaceBastionBesideTheService(t *testing.T) {
 			}
 		}
 		// Commands that do not start or show a bastion of the caller's own pass.
-		for _, cmd := range []string{"context", "version", "approvals", "ui", "service"} {
+		// (approvals did: TestTheMachinesApprovalsBesideTheServiceGoThroughTheLaneOrAreRefused.)
+		for _, cmd := range []string{"context", "version", "ui", "service"} {
 			if err := serviceGuard(goos, cmd, true, false); err != nil {
 				t.Errorf("%s: `%s` was refused but does not fork the bastion: %v", goos, cmd, err)
 			}
@@ -441,5 +442,77 @@ func TestKeepOneLogAsideEmptiesInPlaceAndKeepsTheLastOne(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(p); string(b) != "next" {
 		t.Fatalf("the open writer's next line went elsewhere: the log holds %q", b)
+	}
+}
+
+// The narrowing acts beside a system service: on Linux and macOS they go
+// through the owner's lane (owneracts.go), so the guard lets them by; on
+// Windows there is no lane, and the ordinary account's own profile is a
+// separate, empty bastion, so they are refused with the administrator's way,
+// as `ops` (and so `ops drop`) already was. device-approve is the
+// administrator's on every system: the console keeps it adminOnly, and from
+// an ordinary account it read that account's own, empty asks.
+//
+// MUTATION: take "device-deny" out of serviceGuardedCommands. RESULT: red on
+// windows. Take "device-approve" out. RESULT: red on every system.
+func TestTheNarrowingActsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing.T) {
+	lines := map[string][]string{
+		"approvals drop": {"privatae-bastion", "approvals", "--host", "box-one.example", "drop", "abcd1234"},
+		"grants":         {"privatae-bastion", "grants", "drop", "7"},
+		"device-deny":    {"privatae-bastion", "device-deny", "abcd1234"},
+		"ops":            {"privatae-bastion", "ops", "drop", "--all"},
+	}
+	for want, args := range lines {
+		if got := serviceGuardKey(args[1], args); got != want {
+			t.Errorf("%v is guarded as %q, want %q", args[1:], got, want)
+		}
+	}
+	if got := serviceGuardKey("approvals", []string{"privatae-bastion", "approvals", "--machine"}); got != "approvals" {
+		t.Errorf("the approvals read is guarded as %q", got)
+	}
+	approve := serviceGuardKey("device-approve", []string{"privatae-bastion", "device-approve", "all"})
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		for key := range lines {
+			err := serviceGuard(goos, key, true, false)
+			if goos == "windows" && err == nil {
+				t.Errorf("windows: `%s` from an ordinary account acted on its own empty bastion", key)
+			}
+			if goos != "windows" && err != nil {
+				t.Errorf("%s: `%s` was refused before it could ask the machine's bastion: %v", goos, key, err)
+			}
+			if err := serviceGuard(goos, key, true, true); err != nil {
+				t.Errorf("%s: the administrator's `%s` was refused: %v", goos, key, err)
+			}
+		}
+		err := serviceGuard(goos, approve, true, false)
+		if err == nil || !strings.Contains(err.Error(), "`device-approve`") {
+			t.Errorf("%s: device-approve from an ordinary account beside the service: %v", goos, err)
+		}
+		if err := serviceGuard(goos, approve, true, true); err != nil {
+			t.Errorf("%s: the administrator's device-approve was refused: %v", goos, err)
+		}
+		if err := serviceGuard(goos, approve, false, false); err != nil {
+			t.Errorf("%s: device-approve on a machine with no system service was refused: %v", goos, err)
+		}
+	}
+}
+
+// The machine's approvals beside a system service: through the owner's
+// socket on Linux and macOS, refused on Windows (the tray answers them there).
+func TestTheMachinesApprovalsBesideTheServiceGoThroughTheLaneOrAreRefused(t *testing.T) {
+	for _, line := range [][]string{
+		{"privatae-bastion", "approvals", "--machine"},
+		{"privatae-bastion", "approve", "--machine", "abcd1234"},
+		{"privatae-bastion", "deny", "abcd1234"},
+	} {
+		key := serviceGuardKey(line[1], line)
+		if err := serviceGuard("windows", key, true, false); err == nil {
+			t.Errorf("windows: %v from an ordinary account beside the service was let through", line[1:])
+		}
+		for _, goos := range []string{"linux", "darwin"} {
+			if err := serviceGuard(goos, key, true, false); err != nil {
+				t.Errorf("%s: %v was refused before it could ask the machine's bastion: %v", goos, line[1:], err)
+			}
+		}
 	}
 }

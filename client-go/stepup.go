@@ -1341,7 +1341,7 @@ func readApprovals(o readOpts) (approvalsRead, error) {
 func cmdStepupApprovals(host string, machine, asJSON bool) error {
 	r, err := readMachine("approvals", readOpts{Host: host, Machine: machine}, readApprovals)
 	if err != nil {
-		return laneRefusalError("approvals", err)
+		return laneRefusalError(strings.TrimSpace(stepupCommand("approvals", host, machine, "")), err)
 	}
 	if asJSON {
 		return printJSON(os.Stdout, r)

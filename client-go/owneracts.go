@@ -49,8 +49,7 @@ var actNow = time.Now
 func serveAct(uid uint32, user string, req agentAskRequest) (r agentActReply) {
 	r.User = user
 	if why := readLaneRefusal(uid, user); why != "" {
-		// The reads' refusal, said of an act.
-		r.Why = strings.Replace(why, "answers reads only for", "acts only for", 1)
+		r.Why = actWording(why)
 		return r
 	}
 	defer func() {
@@ -143,6 +142,29 @@ func runOwnerAct(req agentAskRequest) (done, what string, err error) {
 			state = "off"
 		}
 		return switchDoneText(host, family, req.Off), "switch " + cleanText(host, 80) + " " + cleanText(family, 40) + " " + state, nil
+	case "approvals-drop", "grants-drop", "ops-drop", "device-deny":
+		// Narrowing acts: each only takes reach away, so no code, and each
+		// is the command's own core, run where the machine's state is.
+		var run func() (string, error)
+		switch req.Act {
+		case "approvals-drop":
+			run = func() (string, error) { return stepupDropText(req.Host, req.Machine, req.ID) }
+		case "grants-drop":
+			run = func() (string, error) { return grantsDropText(req.Host, req.ID) }
+		case "ops-drop":
+			run = func() (string, error) { return opsDropText(req.Host, req.ID) }
+		default:
+			run = func() (string, error) { return deviceDenyText(req.ID) }
+		}
+		done, err := run()
+		if err != nil {
+			return "", "", err
+		}
+		what = req.Act + " " + cleanText(req.ID, 40)
+		if req.Host != "" {
+			what += " for " + cleanText(req.Host, 80)
+		}
+		return done, what, nil
 	}
 	return "", "", fmt.Errorf("this bastion has no act called %q", cleanText(req.Act, 40))
 }
@@ -214,6 +236,11 @@ func actViaSock(req agentAskRequest) (string, error) {
 func ownerApproveViaLane(host string, machine bool, prefix string) error {
 	v, err := readMachine("approvals", readOpts{Host: host, Machine: machine}, readApprovals)
 	if err != nil {
+		// Refused, the read is refused as the approve it was read for.
+		var le *laneError
+		if errors.As(err, &le) && !le.down {
+			err = &laneError{why: actWording(le.why)}
+		}
 		return laneRefusalError(stepupCommand("approve", host, machine, prefix), err)
 	}
 	if !v.CodeSetUp {
@@ -252,6 +279,11 @@ func ownerApproveViaLane(host string, machine bool, prefix string) error {
 	}
 	fmt.Println(done)
 	return nil
+}
+
+// actWording is the reads' refusal said of an act.
+func actWording(why string) string {
+	return strings.Replace(why, "answers reads only for", "acts only for", 1)
 }
 
 // stepupCommand is approve or deny as the administrator would type it here.

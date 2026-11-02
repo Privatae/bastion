@@ -117,7 +117,7 @@ func buildEnforcingReport(dir string, allowed []string) map[string]any {
 				b, _ := strconv.ParseInt(ids[j], 10, 64)
 				return a < b
 			})
-			status := faManagedStatus()
+			status := faManagedStatus(dir)
 			for _, k := range ids {
 				id, err := strconv.ParseInt(k, 10, 64)
 				if err != nil {

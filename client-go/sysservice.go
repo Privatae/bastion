@@ -104,7 +104,15 @@ func serviceStateEnv(goos string, installed, authority bool, systemRoot string) 
 // or check its own empty bastion, as though they were the machine's).
 var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status": true, "switch": true,
 	"switch --list": true, "activity": true, "report": true, "doctor": true, "ops": true,
-	"device-approvals": true, "backup read": true}
+	"device-approvals": true, "backup read": true,
+	// The narrowing acts (owneracts.go), and device-approve, which stays the
+	// administrator's (the console keeps it adminOnly): from an ordinary
+	// account each read that account's own, empty approvals, grants or asks.
+	"approvals drop": true, "grants": true, "device-deny": true, "device-approve": true,
+	// The machine's approvals: read, approved and denied through the owner's
+	// socket on Linux and macOS (reads.go, owneracts.go); on Windows the tray
+	// answers them over its own pipe, and these would read the account's own.
+	"approvals": true, "approve": true, "deny": true}
 
 // serviceLaneReads are the guarded commands that, on Linux and macOS, read
 // the machine's bastion itself over its socket (reads.go) rather than a
@@ -112,9 +120,11 @@ var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status"
 // account but the owner's.
 var serviceLaneReads = map[string]bool{"status": true, "switch --list": true, "activity": true, "report": true,
 	"doctor": true, "ops": true, "device-approvals": true, "backup read": true,
-	// Not a read: the owner's account switches through the same socket, with
-	// the console's rules (owneracts.go), and any other account is refused there.
-	"switch": true}
+	// Not reads: the owner's account switches, and takes reach back (`ops
+	// drop` is guarded as "ops"), through the same socket, with the console's
+	// rules (owneracts.go), and any other account is refused there.
+	"switch": true, "approvals drop": true, "grants": true, "device-deny": true,
+	"approvals": true, "approve": true, "deny": true}
 
 // serviceGuard refuses a guarded command from an account that does not
 // administer a machine whose bastion is a system service.
@@ -405,6 +415,13 @@ func serviceGuardKey(cmd string, args []string) string {
 		// The backup reads; the rest of backup works offline (reseal,
 		// restore-plan) or is not yet asked of the machine's bastion.
 		return "backup read"
+	case cmd == "approvals" && len(args) > 2:
+		// `approvals drop` is an act, the rest of approvals a read; the
+		// flags may come first, as main takes them (takeHostFlag).
+		_, rest := takeHostFlag(args[2:])
+		if _, rest = takeMachineFlag(rest); len(rest) > 0 && rest[0] == "drop" {
+			return "approvals drop"
+		}
 	}
 	return cmd
 }

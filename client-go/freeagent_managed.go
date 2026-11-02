@@ -123,20 +123,29 @@ type faInstance struct {
 }
 
 // faSnapshot copies the fields a reader needs, under the lock.
-func faSnapshot(storeID int64) (faInstance, bool) {
+func faSnapshot(dcnDir string, storeID int64) (faInstance, bool) {
 	faMgr.Lock()
 	defer faMgr.Unlock()
-	inst, ok := faMgr.inst[storeID]
+	inst, ok := faMgr.inst[faKey{dcnDir, storeID}]
 	if !ok {
 		return faInstance{}, false
 	}
 	return *inst, true
 }
 
+// faKey is one pairing's store: store ids are each Host's own, so the same id
+// from two Hosts is two stores. Keyed by store id alone, a machine paired with
+// two Hosts ran one agent for both, and a search from one Host for its store
+// was answered by the agent over the other Host's folder.
+type faKey struct {
+	Dir string // the pairing's DCN state dir (Config.dcnDir)
+	ID  int64
+}
+
 var faMgr = struct {
 	sync.Mutex
-	inst map[int64]*faInstance
-}{inst: map[int64]*faInstance{}}
+	inst map[faKey]*faInstance
+}{inst: map[faKey]*faInstance{}}
 
 // ── locations ───────────────────────────────────────────────────────────────
 
@@ -664,8 +673,8 @@ func faRecipientOf(inst *faInstance) string {
 
 // faManagedConfig is the client config for a store's managed instance, or
 // false when none is running (port file absent).
-func faManagedConfig(storeID int64) (freeagentConfig, bool) {
-	inst, ok := faSnapshot(storeID)
+func faManagedConfig(dcnDir string, storeID int64) (freeagentConfig, bool) {
+	inst, ok := faSnapshot(dcnDir, storeID)
 	if !ok {
 		return freeagentConfig{}, false
 	}
@@ -697,10 +706,11 @@ func faEnsureStore(dcnDir string, storeID int64, terms *dcnTerms, sweep, recipie
 	}
 	cn := "store-" + strconv.FormatInt(storeID, 10)
 	faMgr.Lock()
-	inst, ok := faMgr.inst[storeID]
+	key := faKey{dcnDir, storeID}
+	inst, ok := faMgr.inst[key]
 	if !ok {
 		inst = &faInstance{StoreID: storeID, Dir: dir, PrivDir: priv, PubDir: pub, CN: cn, State: "installing"}
-		faMgr.inst[storeID] = inst
+		faMgr.inst[key] = inst
 	} else if inst.State == "installing" || inst.ensuring {
 		faMgr.Unlock()
 		return // one ensure at a time per store — see faInstance.ensuring
@@ -993,22 +1003,27 @@ func sweepFromCanonical(termsB64 string) string {
 	return ""
 }
 
-// faManagedProbe reports (anyManaged, allServing) and refreshes each
-// instance's Serving flag by probing its /health over mTLS.
-func faManagedProbe() (bool, bool) {
+// faManagedProbe reports (anyManaged, allServing) for ONE pairing's instances
+// and refreshes their Serving flags by probing each /health over mTLS. Another
+// pairing's agents are never counted: its health is not this Host's to hear,
+// and this Host reads the capability as "my stores here are served" when its
+// own freeagent_stores is empty (faManagedStatus). "" probes none.
+func faManagedProbe(dcnDir string) (bool, bool) {
 	faMgr.Lock()
-	ids := make([]int64, 0, len(faMgr.inst))
-	for id := range faMgr.inst {
-		ids = append(ids, id)
+	keys := make([]faKey, 0, len(faMgr.inst))
+	for k := range faMgr.inst {
+		if dcnDir != "" && k.Dir == dcnDir {
+			keys = append(keys, k)
+		}
 	}
 	faMgr.Unlock()
-	if len(ids) == 0 {
+	if len(keys) == 0 {
 		return false, false
 	}
 	all := true
-	for _, id := range ids {
+	for _, k := range keys {
 		serving := false
-		if c, ok := faManagedConfig(id); ok {
+		if c, ok := faManagedConfig(k.Dir, k.ID); ok {
 			status, body, err := freeagentCallTimeout(c, http.MethodGet, "/health", nil, freeagentProbeTimeout)
 			if err == nil && status == http.StatusOK {
 				var h struct {
@@ -1019,7 +1034,7 @@ func faManagedProbe() (bool, bool) {
 			}
 		}
 		faMgr.Lock()
-		if inst, ok := faMgr.inst[id]; ok {
+		if inst, ok := faMgr.inst[k]; ok {
 			inst.Serving = serving
 		}
 		faMgr.Unlock()
@@ -1030,13 +1045,20 @@ func faManagedProbe() (bool, bool) {
 	return true, all
 }
 
-// faManagedStatus is the heartbeat's per-store detail.
-func faManagedStatus() map[string]any {
+// faManagedStatus is one pairing's per-store detail for its heartbeat: only
+// its own stores, never another Host's.
+func faManagedStatus(dcnDir string) map[string]any {
 	faMgr.Lock()
 	defer faMgr.Unlock()
 	out := map[string]any{}
-	for id, inst := range faMgr.inst {
-		out[strconv.FormatInt(id, 10)] = map[string]any{
+	if dcnDir == "" {
+		return out
+	}
+	for k, inst := range faMgr.inst {
+		if k.Dir != dcnDir {
+			continue
+		}
+		out[strconv.FormatInt(k.ID, 10)] = map[string]any{
 			"state": inst.State, "serving": inst.Serving, "version": inst.Version, "detail": inst.Detail,
 		}
 	}
@@ -1045,14 +1067,15 @@ func faManagedStatus() map[string]any {
 
 // faStop tears down a store's managed instance (grant revoked / re-synced
 // without search).
-func faStop(storeID int64) {
+func faStop(dcnDir string, storeID int64) {
 	faMgr.Lock()
 	defer faMgr.Unlock()
-	if inst, ok := faMgr.inst[storeID]; ok {
+	key := faKey{dcnDir, storeID}
+	if inst, ok := faMgr.inst[key]; ok {
 		if inst.cancel != nil {
 			inst.cancel()
 		}
-		delete(faMgr.inst, storeID)
+		delete(faMgr.inst, key)
 	}
 }
 

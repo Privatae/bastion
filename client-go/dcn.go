@@ -680,7 +680,7 @@ func handleDcnGrantSync(ws *websocket.Conn, dir string, args []string) {
 	if dcnHasMask(terms, "search") {
 		faEnsureStore(dir, payload.StoreID, terms, sweepFromCanonical(rec.TermsCanonical), rec.SealRecipient)
 	} else {
-		faStop(payload.StoreID)
+		faStop(dir, payload.StoreID)
 	}
 	dcnResult(ws, dir, "grant_sync", payload.StoreID, "", map[string]any{
 		"state": "ok", "root": terms.Root, "mask": terms.Mask,
@@ -708,14 +708,16 @@ func dcnDropStoreLocked(dir string, storeID int64, why string) (bool, error) {
 	}
 	key := strconv.FormatInt(storeID, 10)
 	if _, ok := f.Stores[key]; !ok {
-		faStop(storeID) // nothing on disk, but never leave an orphan instance running
+		// Nothing on disk, but never leave an orphan instance running: this
+		// pairing's own (faKey), never another Host's for the same store id.
+		faStop(dir, storeID)
 		return false, nil
 	}
 	delete(f.Stores, key)
 	if err := dcnSaveFile(dir, f); err != nil {
 		return true, err
 	}
-	faStop(storeID)
+	faStop(dir, storeID)
 	dcnAudit(dir, "grant_drop", storeID, "", why)
 	return true, nil
 }

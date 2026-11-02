@@ -131,6 +131,7 @@ func TestAnotherAccountIsRefusedEveryAct(t *testing.T) {
 	captureStdout(t)
 	stubCode(t, codeFor(t, machineTestSecret))
 	for name, run := range map[string]func() error{
+		"approve":    func() error { return cmdStepupApprove("", true, r.Request) },
 		"deny":       func() error { return cmdStepupDeny("", true, r.Request) },
 		"switch off": func() error { return cmdSwitch([]string{"box-one.example", "ops", "off"}) },
 	} {
@@ -138,9 +139,15 @@ func TestAnotherAccountIsRefusedEveryAct(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "acts only for its owner's account") || !strings.Contains(err.Error(), "sudo -H") {
 			t.Errorf("%s from another account: %v", name, err)
 		}
-		if name == "deny" && !strings.Contains(err.Error(), "sudo -H privatae-bastion deny --machine "+r.Request) {
+		if (name == "approve" || name == "deny") && !strings.Contains(err.Error(), "sudo -H privatae-bastion "+name+" --machine "+r.Request) {
 			t.Errorf("the administrator's command does not name the request: %v", err)
 		}
+	}
+	// The list, refused, is given back as the administrator types it for the
+	// same requests: the machine's own, not a Host's.
+	if err := cmdStepupApprovals("", true, false); err == nil || !strings.Contains(err.Error(), "answers reads only for its owner's account") ||
+		!strings.HasSuffix(err.Error(), "sudo -H privatae-bastion approvals --machine") {
+		t.Errorf("approvals --machine from another account: %v", err)
 	}
 	if got := requestsLoad(d)[fullRequestID(t, d, r.Request)].State; got != "pending" {
 		t.Errorf("another account's deny left the request %q", got)
@@ -316,5 +323,182 @@ func TestAPanickingActLeavesTheRequestLockFree(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the request lock was left held by the panicking act")
+	}
+}
+
+// The narrowing acts go through the lane from the owner's account with no
+// code: an unused approval is dropped, a device ask denied, a store grant
+// dropped, every op grant dropped.
+func TestTheOwnerTakesReachBackThroughTheLane(t *testing.T) {
+	d := askFlowWorld(t)
+	const host = "box-one.example"
+	dcn := givenPairing(t, host, pairingActive)
+	givenStoreGrants(t, dcn, map[string]map[string]any{"7": givenMachineStore("/srv/data", nil, nil, "")})
+	approval, err := stepupIssueApproval(d, codeFor(t, machineTestSecret), "local_stop|101|aider")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := deviceInit(); err != nil {
+		t.Fatal(err)
+	}
+	ask, err := deviceNewRequest(map[string]any{"kind": "mgmt_op", "op": "ctx_del", "server": "box-7", "args": []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laneOwner(t, laneTestUID)
+	laneSock(t)
+	out := captureStdout(t)
+	asked := stubCode(t, "")
+
+	if err := cmdStepupDrop("", true, approval[:8]); err != nil {
+		t.Fatalf("approvals drop: %v", err)
+	}
+	if !approvalsLoad(d)[approval].Used {
+		t.Error("the machine's approval is still usable after the owner dropped it")
+	}
+	if err := cmdDeviceDeny(ask[:8]); err != nil {
+		t.Fatalf("device-deny: %v", err)
+	}
+	deviceMu.Lock()
+	state := deviceRequestsLoad()[ask].State
+	deviceMu.Unlock()
+	if state != "denied" {
+		t.Errorf("the device ask is %q after the owner denied it", state)
+	}
+	if err := cmdGrantsDrop(host, "7"); err != nil {
+		t.Fatalf("grants drop: %v", err)
+	}
+	if err := cmdOpsDrop(host, "--all"); err != nil {
+		t.Fatalf("ops drop --all: %v", err)
+	}
+	got := printedSince(out, 0, "op grant(s) dropped")
+	for _, want := range []string{"dropped approval " + approval[:8], "denied " + ask, "store 7 dropped for " + host,
+		"0 op grant(s) dropped"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("printed no %q:\n%s", want, got)
+		}
+	}
+	if *asked != 0 {
+		t.Errorf("a narrowing act asked for a code %d times", *asked)
+	}
+	// MUTATION: route grants-drop to the account's own state. RESULT: red,
+	// a second drop through the lane still finds the store.
+	if err := cmdGrantsDrop(host, "7"); err != nil || !strings.Contains(printedSince(out, len(got), "not held"), "was not held here") {
+		t.Errorf("a second drop of the same store: %v", err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(d, "audit.jsonl"))
+	for _, act := range []string{"approvals-drop", "device-deny", "grants-drop 7 for " + host, "ops-drop --all for " + host} {
+		if !strings.Contains(string(raw), act) {
+			t.Errorf("no audit row for %s", act)
+		}
+	}
+}
+
+// Any other account is refused the narrowing acts too, with the
+// administrator's command.
+func TestAnotherAccountIsRefusedTheNarrowingActs(t *testing.T) {
+	askFlowWorld(t)
+	givenPairing(t, "box-one.example", pairingActive)
+	laneOwner(t, laneTestUID+1)
+	laneSock(t)
+	captureStdout(t)
+	for name, run := range map[string]func() error{
+		"approvals drop": func() error { return cmdStepupDrop("", true, "abcd1234") },
+		"device-deny":    func() error { return cmdDeviceDeny("abcd1234") },
+		"grants drop":    func() error { return cmdGrantsDrop("box-one.example", "7") },
+		"ops drop":       func() error { return cmdOpsDrop("box-one.example", "--all") },
+	} {
+		err := run()
+		if err == nil || !strings.Contains(err.Error(), "acts only for its owner's account") ||
+			!strings.Contains(err.Error(), "sudo -H privatae-bastion ") {
+			t.Errorf("%s from another account: %v", name, err)
+		}
+	}
+}
+
+// `ops drop ""` (an unset variable in a script, say) names no grant: it is
+// refused, as an empty id is for approvals drop and device-deny, and the one
+// grant held is kept. It used to match every nonce, so with one grant held
+// it dropped that one.
+//
+// MUTATION: take the empty-id refusal out of opsDropText. RESULT: red, the
+// held grant is dropped.
+func TestAnEmptyOpGrantIDDropsNothing(t *testing.T) {
+	askFlowWorld(t)
+	const host = "box-one.example"
+	dcn := givenPairing(t, host, pairingActive)
+	const nonce = "0123456789abcdef0123"
+	f := opsLoad(dcn)
+	f.Grants[nonce] = opGrantRec{UsesLeft: 1}
+	if err := opsSave(dcn, f); err != nil {
+		t.Fatal(err)
+	}
+	laneOwner(t, laneTestUID)
+	laneSock(t)
+	captureStdout(t)
+	for _, id := range []string{"", "   "} {
+		err := cmdOpsDrop(host, id)
+		if err == nil || !strings.Contains(err.Error(), "which op grant") {
+			t.Errorf("ops drop %q: %v", id, err)
+		}
+	}
+	if rec := opsLoad(dcn).Grants[nonce]; rec.Dropped != "" || rec.UsesLeft != 1 {
+		t.Errorf("an empty id dropped the one grant held: %+v", rec)
+	}
+}
+
+// Store ids are each Host's own: two Hosts' store 7 are two stores, with two
+// agents. Kept by store id alone, a machine paired with both ran one agent,
+// so a search from one Host for its store 7 was answered by the agent over the
+// other Host's folder, and dropping one Host's store stopped the other's.
+func TestTwoHostsWithTheSameStoreIDGetTheirOwnAgents(t *testing.T) {
+	uiTestConfigDir(t)
+	dcnA := givenPairing(t, "box-a.example", pairingActive)
+	dcnB := givenPairing(t, "box-b.example", pairingActive)
+	givenStoreGrants(t, dcnB, map[string]map[string]any{"7": givenMachineStore("/srv/b", nil, nil, "")})
+	dirA, dirB := t.TempDir(), t.TempDir()
+	for _, d := range []string{dirA, dirB} {
+		if err := os.WriteFile(filepath.Join(d, "port"), []byte(map[string]string{dirA: "41001", dirB: "41002"}[d]), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stopped := map[string]int{}
+	faMgr.Lock()
+	faMgr.inst[faKey{dcnA, 7}] = &faInstance{StoreID: 7, Dir: dirA, Cert: "a", Key: "a", cancel: func() { stopped["a"]++ }}
+	faMgr.inst[faKey{dcnB, 7}] = &faInstance{StoreID: 7, Dir: dirB, Cert: "b", Key: "b", cancel: func() { stopped["b"]++ }}
+	faMgr.inst[faKey{dcnB, 9}] = &faInstance{StoreID: 9, Dir: dirB, State: "running"}
+	faMgr.Unlock()
+	t.Cleanup(func() {
+		faMgr.Lock()
+		delete(faMgr.inst, faKey{dcnA, 7})
+		delete(faMgr.inst, faKey{dcnB, 7})
+		delete(faMgr.inst, faKey{dcnB, 9})
+		faMgr.Unlock()
+	})
+	// A search on each pairing's lane goes to that pairing's own agent.
+	if c, ok := faConfigFor(dcnA, 7); !ok || c.Addr != "127.0.0.1:41001" {
+		t.Errorf("Host A's store 7 resolves to %+v", c)
+	}
+	if c, ok := faConfigFor(dcnB, 7); !ok || c.Addr != "127.0.0.1:41002" {
+		t.Errorf("Host B's store 7 resolves to %+v", c)
+	}
+	// Each beat reports its own pairing's stores only: B's store 9 is not
+	// A's to hear about.
+	// MUTATION: drop the k.Dir filter in faManagedStatus. RESULT: red.
+	if st := faManagedStatus(dcnA); len(st) != 1 || st["9"] != nil {
+		t.Errorf("Host A's beat reports %v", st)
+	}
+	if st := faManagedStatus(dcnB); len(st) != 2 {
+		t.Errorf("Host B's beat reports %v", st)
+	}
+	if st := faManagedStatus(""); len(st) != 0 {
+		t.Errorf("a beat with no DCN state reports %d stores", len(st))
+	}
+	// A's drop of a store it does not hold stops A's own orphan, never B's.
+	if present, err := dcnDropStore(dcnA, 7, "test"); err != nil || present || stopped["a"] != 1 || stopped["b"] != 0 {
+		t.Fatalf("A's drop: present %v err %v, stopped %v", present, err, stopped)
+	}
+	if present, err := dcnDropStore(dcnB, 7, "test"); err != nil || !present || stopped["b"] != 1 {
+		t.Fatalf("B's drop of its own store: present %v err %v, stopped %v", present, err, stopped)
 	}
 }

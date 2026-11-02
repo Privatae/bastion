@@ -17,15 +17,23 @@ import (
 )
 
 // cmdStepupDrop revokes one unused approval this box issued for a pairing.
+// From the owner's account beside the machine's bastion it asks that
+// bastion (owneracts.go): dropping only takes reach away, so no code.
 func cmdStepupDrop(host string, machine bool, prefix string) error {
+	return printOrAct(agentAskRequest{Act: "approvals-drop", Host: host, Machine: machine, ID: prefix},
+		stepupCommand("approvals drop", host, machine, prefix),
+		func() (string, error) { return stepupDropText(host, machine, prefix) })
+}
+
+func stepupDropText(host string, machine bool, prefix string) (string, error) {
 	t, err := resolveStepupTarget(host, machine)
 	if err != nil {
-		return err
+		return "", err
 	}
 	dir := t.dir
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
-		return errors.New("which approval? (the id `approve` printed)")
+		return "", errors.New("which approval? (the id `approve` printed)")
 	}
 	stepupMu.Lock()
 	defer stepupMu.Unlock()
@@ -38,42 +46,45 @@ func cmdStepupDrop(host string, machine bool, prefix string) error {
 	}
 	switch len(hits) {
 	case 0:
-		return fmt.Errorf("no unused approval starts with %q %s", prefix, t.forWhom())
+		return "", fmt.Errorf("no unused approval starts with %q %s", prefix, t.forWhom())
 	case 1:
 	default:
-		return fmt.Errorf("%d approvals start with %q — give more of the id", len(hits), prefix)
+		return "", fmt.Errorf("%d approvals start with %q — give more of the id", len(hits), prefix)
 	}
 	a := m[hits[0]]
 	a.Used = true // burned without ever having run: the same end state a use reaches
 	m[hits[0]] = a
 	if err := approvalsSave(dir, m); err != nil {
-		return err
+		return "", err
 	}
-	fmt.Printf("dropped approval %s (%s) — nothing can run on it now\n", hits[0][:8], a.Purpose)
-	return nil
+	return fmt.Sprintf("dropped approval %s (%s) — nothing can run on it now", hits[0][:8], a.Purpose), nil
 }
 
-// cmdGrantsDrop removes a held store grant from this box.
+// cmdGrantsDrop removes a held store grant from this box (through the
+// owner's lane beside the machine's bastion, as cmdStepupDrop).
 func cmdGrantsDrop(host, store string) error {
+	return printOrAct(agentAskRequest{Act: "grants-drop", Host: host, ID: store},
+		"grants drop "+store+hostFlagWords(host), func() (string, error) { return grantsDropText(host, store) })
+}
+
+func grantsDropText(host, store string) (string, error) {
 	cfg, err := stepupPairing(host)
 	if err != nil {
-		return err
+		return "", err
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(store), 10, 64)
 	if err != nil {
-		return errors.New("store id must be a number (the id on the host's store card)")
+		return "", errors.New("store id must be a number (the id on the host's store card)")
 	}
 	dir := cfg.dcnDir()
 	present, err := dcnDropStore(dir, id, "dropped at this machine's console")
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !present {
-		fmt.Printf("store %d was not held here for %s\n", id, cfg.HostName)
-		return nil
+		return fmt.Sprintf("store %d was not held here for %s", id, cfg.HostName), nil
 	}
-	fmt.Printf("store %d dropped for %s — the host's reads of it stop now and it learns on the next check-in\n", id, cfg.HostName)
-	return nil
+	return fmt.Sprintf("store %d dropped for %s — the host's reads of it stop now and it learns on the next check-in", id, cfg.HostName), nil
 }
 
 // cmdQuarantineClear lifts this box's hold on a pairing's write lanes.
@@ -204,19 +215,28 @@ func printOps(w io.Writer, v opsRead) {
 
 // cmdOpsDrop takes a held op grant back at the console.
 func cmdOpsDrop(host, prefix string) error {
+	return printOrAct(agentAskRequest{Act: "ops-drop", Host: host, ID: prefix},
+		"ops drop "+prefix+hostFlagWords(host), func() (string, error) { return opsDropText(host, prefix) })
+}
+
+func opsDropText(host, prefix string) (string, error) {
 	cfg, err := stepupPairing(host)
 	if err != nil {
-		return err
+		return "", err
 	}
 	dir := cfg.dcnDir()
 	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		// Every nonce starts with "": with one grant held, an empty id
+		// would drop it unnamed.
+		return "", errors.New("which op grant? (the id `privatae-bastion ops` lists, or --all)")
+	}
 	if prefix == "--all" {
 		dropped, err := opsDropWhere(dir, "dropped at this machine's console", func(string, *opGrantRec) bool { return true })
 		if err != nil {
-			return err
+			return "", err
 		}
-		fmt.Printf("%d op grant(s) dropped — the host cannot run under any of them again\n", len(dropped))
-		return nil
+		return fmt.Sprintf("%d op grant(s) dropped — the host cannot run under any of them again", len(dropped)), nil
 	}
 	var hits []string
 	for nonce, rec := range opsLoad(dir).Grants {
@@ -226,14 +246,38 @@ func cmdOpsDrop(host, prefix string) error {
 	}
 	switch len(hits) {
 	case 0:
-		return fmt.Errorf("no held op grant starts with %q", prefix)
+		return "", fmt.Errorf("no held op grant starts with %q", prefix)
 	case 1:
 	default:
-		return fmt.Errorf("%d grants start with %q — give more of the id", len(hits), prefix)
+		return "", fmt.Errorf("%d grants start with %q — give more of the id", len(hits), prefix)
 	}
 	if _, err := opsDropGrant(dir, hits[0], "dropped at this machine's console"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("op grant %s dropped — the host cannot run under it again", hits[0][:8]), nil
+}
+
+// printOrAct runs a narrowing act: through the owner's lane beside the
+// machine's bastion (owneracts.go), else here, printing what it did either way.
+func printOrAct(req agentAskRequest, adminCmd string, here func() (string, error)) error {
+	var done string
+	var err error
+	if readsGoThroughLane() {
+		done, err = actViaSock(req)
+		if err != nil {
+			return laneRefusalError(adminCmd, err)
+		}
+	} else if done, err = here(); err != nil {
 		return err
 	}
-	fmt.Printf("op grant %s dropped — the host cannot run under it again\n", hits[0][:8])
+	fmt.Println(done)
 	return nil
+}
+
+// hostFlagWords is " --host <host>" when one was named.
+func hostFlagWords(host string) string {
+	if host == "" {
+		return ""
+	}
+	return " --host " + host
 }

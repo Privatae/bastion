@@ -116,7 +116,8 @@ Usage:
   privatae-bastion deny [--host <host> | --machine] <id>
                                refuse one request. From the machine's owner account, beside the
                                bastion installed for the whole machine, both act on that bastion,
-                               and so does switch (off with nothing, on with the owner's code)
+                               and so do switch (off with nothing, on with the owner's code) and,
+                               with nothing, approvals drop, grants drop, ops drop and device-deny
   privatae-bastion approvals drop [--host <host>] <id>
                                take back an approval this machine issued and has not used yet
   privatae-bastion grants drop <store id> [--host <host>]

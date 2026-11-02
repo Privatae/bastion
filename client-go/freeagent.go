@@ -223,8 +223,8 @@ func freeagentDo(c freeagentConfig, method, path string, body any, d time.Durati
 // faConfigFor is the client config for a store: the MANAGED instance the
 // bastion runs for it (freeagent_managed.go) when there is one, else the
 // operator's PRIVATAE_BASTION_AGENT_* env for a hand-run agent.
-func faConfigFor(storeID int64) (freeagentConfig, bool) {
-	if c, ok := faManagedConfig(storeID); ok {
+func faConfigFor(dcnDir string, storeID int64) (freeagentConfig, bool) {
+	if c, ok := faManagedConfig(dcnDir, storeID); ok {
 		return c, true
 	}
 	return freeagentEnv()
@@ -232,8 +232,8 @@ func faConfigFor(storeID int64) (freeagentConfig, bool) {
 
 // faAbsentReason says WHY there is no local agent to ask, in the words the
 // host should relay: a missing Python is the member's one manual step.
-func faAbsentReason(storeID int64) string {
-	inst, ok := faSnapshot(storeID)
+func faAbsentReason(dcnDir string, storeID int64) string {
+	inst, ok := faSnapshot(dcnDir, storeID)
 	if ok {
 		switch inst.State {
 		case "missing-python":
@@ -358,9 +358,9 @@ func handleDcnSearch(ws *websocket.Conn, dir string, args []string) {
 	if terms == nil {
 		return
 	}
-	c, on := faConfigFor(storeID)
+	c, on := faConfigFor(dir, storeID)
 	if !on {
-		dcnRefuse(ws, dir, "search", storeID, "", faAbsentReason(storeID))
+		dcnRefuse(ws, dir, "search", storeID, "", faAbsentReason(dir, storeID))
 		return
 	}
 	q := strings.TrimSpace(a.Query)
@@ -419,9 +419,9 @@ func handleDcnCatalog(ws *websocket.Conn, dir string, args []string) {
 			"catalog needs the 'index' mask on this grant (re-approve the store with index)")
 		return
 	}
-	c, on := faConfigFor(storeID)
+	c, on := faConfigFor(dir, storeID)
 	if !on {
-		dcnRefuse(ws, dir, "catalog", storeID, "kind:"+kind, faAbsentReason(storeID))
+		dcnRefuse(ws, dir, "catalog", storeID, "kind:"+kind, faAbsentReason(dir, storeID))
 		return
 	}
 	path := "/catalog"
@@ -471,9 +471,9 @@ func handleDcnReadRangeDoc(ws *websocket.Conn, dir string, storeID int64, a *dcn
 	if terms == nil {
 		return
 	}
-	c, on := faConfigFor(storeID)
+	c, on := faConfigFor(dir, storeID)
 	if !on {
-		dcnRefuse(ws, dir, "read_range", storeID, "doc:"+a.Doc, faAbsentReason(storeID))
+		dcnRefuse(ws, dir, "read_range", storeID, "doc:"+a.Doc, faAbsentReason(dir, storeID))
 		return
 	}
 	start := a.StartByte

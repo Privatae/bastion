@@ -999,19 +999,25 @@ func cmdDeviceApproveCode(prefix, code string) error {
 	return nil
 }
 
+// cmdDeviceDeny refuses one ask waiting on this approval device (through the
+// owner's lane beside the machine's bastion: denying takes nothing).
 func cmdDeviceDeny(prefix string) error {
+	return printOrAct(agentAskRequest{Act: "device-deny", ID: prefix}, "device-deny "+prefix,
+		func() (string, error) { return deviceDenyText(prefix) })
+}
+
+func deviceDenyText(prefix string) (string, error) {
 	deviceMu.Lock()
 	m := deviceRequestsLoad()
 	deviceMu.Unlock()
 	id, err := findDeviceRequest(m, prefix)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := deviceDeny(id); err != nil {
-		return err
+		return "", err
 	}
-	fmt.Printf("denied %s\n", id)
-	return nil
+	return "denied " + id, nil
 }
 
 func findDeviceRequest(m map[string]deviceRequest, prefix string) (string, error) {

@@ -182,26 +182,61 @@ func TestFaManifestText(t *testing.T) {
 func TestFaManagedConfigFromPortFile(t *testing.T) {
 	dir := t.TempDir()
 	faMgr.Lock()
-	faMgr.inst[4242] = &faInstance{StoreID: 4242, Dir: dir, Cert: "c", Key: "k"}
+	faMgr.inst[faKey{"dcn-test", 4242}] = &faInstance{StoreID: 4242, Dir: dir, Cert: "c", Key: "k"}
 	faMgr.Unlock()
-	t.Cleanup(func() { faStop(4242) })
-	if _, ok := faManagedConfig(4242); ok {
+	t.Cleanup(func() { faStop("dcn-test", 4242) })
+	if _, ok := faManagedConfig("dcn-test", 4242); ok {
 		t.Fatal("no port file → not configured")
 	}
 	os.WriteFile(filepath.Join(dir, "port"), []byte("18473\n"), 0o600)
-	c, ok := faManagedConfig(4242)
+	c, ok := faManagedConfig("dcn-test", 4242)
 	if !ok || c.Addr != "127.0.0.1:18473" || c.CA != "c" {
 		t.Fatalf("port file → config, got %+v %v", c, ok)
 	}
-	if _, ok := faConfigFor(4242); !ok {
+	if _, ok := faConfigFor("dcn-test", 4242); !ok {
 		t.Fatal("faConfigFor must prefer the managed instance")
 	}
 	t.Setenv("PRIVATAE_BASTION_AGENT_ADDR", "")
-	if _, ok := faConfigFor(1); ok {
+	if _, ok := faConfigFor("dcn-test", 1); ok {
 		t.Fatal("unknown store with no env → absent")
 	}
-	if !strings.Contains(faAbsentReason(1), "no local agent") {
+	if !strings.Contains(faAbsentReason("dcn-test", 1), "no local agent") {
 		t.Fatal("absent reason for an unknown store")
+	}
+}
+
+// A beat's freeagent capability and freeagent_ok are its own pairing's agents
+// only. Probed across every pairing, Host B's beat carried Host A's agent's
+// health, and with B's freeagent_stores now empty the Host reads the
+// capability alone (the Host's store-card check: `"freeagent"
+// in caps and not stores`), so A's serving agent marked every one of B's
+// stores on this machine as served.
+func TestHeartbeatProbesOnlyItsOwnPairingsAgents(t *testing.T) {
+	t.Setenv("PRIVATAE_BASTION_AGENT_ADDR", "") // no hand-run agent
+	dcnA, dcnB := t.TempDir(), t.TempDir()
+	faMgr.Lock()
+	// no port file: A's agent is managed and not serving
+	faMgr.inst[faKey{dcnA, 7}] = &faInstance{StoreID: 7, Dir: t.TempDir(), Cert: "a", Key: "a"}
+	faMgr.Unlock()
+	t.Cleanup(func() { faStop(dcnA, 7) })
+	beat := func(dir string) map[string]any {
+		var body map[string]any
+		raw := buildHeartbeatBodyOn(beatLanes{dcnDir: dir}, "", "box", "linux", "test", "pub", "fp", "", "", false, nil, nil, nil)
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	// MUTATION: probe every pairing's instances (no k.Dir filter in
+	// faManagedProbe). RESULT: red, B's beat carries freeagent_ok false.
+	if b, ok := beat(dcnB)["freeagent_ok"]; ok {
+		t.Errorf("Host B holds no agent here, yet its beat says freeagent_ok %v", b)
+	}
+	if b, ok := beat(dcnA)["freeagent_ok"]; !ok || b != false {
+		t.Errorf("Host A's beat must carry its own agent's health: %v %v", b, ok)
+	}
+	if b, ok := beat("")["freeagent_ok"]; ok {
+		t.Errorf("a beat with no DCN state probes no managed agent: %v", b)
 	}
 }
 
@@ -264,7 +299,7 @@ func TestFaManagedEndToEnd(t *testing.T) {
 	}
 
 	faReconcile(dcnDir) // what the daemon does at start
-	t.Cleanup(func() { faStop(1) })
+	t.Cleanup(func() { faStop(dcnDir, 1) })
 	stateDir, err := faStoreDir(dcnDir, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -274,7 +309,7 @@ func TestFaManagedEndToEnd(t *testing.T) {
 	var c freeagentConfig
 	for time.Now().Before(deadline) {
 		faMgr.Lock()
-		inst := faMgr.inst[1]
+		inst := faMgr.inst[faKey{dcnDir, 1}]
 		state, detail := "", ""
 		if inst != nil {
 			state, detail = inst.State, inst.Detail
@@ -283,7 +318,7 @@ func TestFaManagedEndToEnd(t *testing.T) {
 		if state == "failed" || state == "missing-python" {
 			t.Fatalf("managed install %s: %s", state, detail)
 		}
-		if cfg, ok := faManagedConfig(1); ok {
+		if cfg, ok := faManagedConfig(dcnDir, 1); ok {
 			c = cfg
 			break
 		}
@@ -395,11 +430,11 @@ func TestFaManagedEndToEnd(t *testing.T) {
 		}
 	}
 	// heartbeat sees it
-	adv, allOK := faManagedProbe()
+	adv, allOK := faManagedProbe(dcnDir)
 	if !adv || !allOK {
 		t.Fatalf("managed probe: %v %v", adv, allOK)
 	}
-	st := faManagedStatus()["1"].(map[string]any)
+	st := faManagedStatus(dcnDir)["1"].(map[string]any)
 	if st["state"] != "running" || st["serving"] != true || st["version"] != "9.9.9" {
 		t.Fatalf("status: %v", st)
 	}
@@ -417,7 +452,7 @@ func TestFaManagedEndToEnd(t *testing.T) {
 
 	// a re-approved grant with narrower terms restarts
 	// the instance under the new manifest (new excludes, new serve port)
-	before, _ := faSnapshot(1)
+	before, _ := faSnapshot(dcnDir, 1)
 	terms2 := map[string]any{}
 	for k, v := range terms {
 		terms2[k] = v
@@ -432,9 +467,9 @@ func TestFaManagedEndToEnd(t *testing.T) {
 	deadline = time.Now().Add(60 * time.Second)
 	var after faInstance
 	for time.Now().Before(deadline) {
-		after, _ = faSnapshot(1)
+		after, _ = faSnapshot(dcnDir, 1)
 		if after.State == "running" && after.Text != before.Text {
-			if c2, ok := faManagedConfig(1); ok && c2.Addr != c.Addr {
+			if c2, ok := faManagedConfig(dcnDir, 1); ok && c2.Addr != c.Addr {
 				break
 			}
 		}
@@ -448,10 +483,10 @@ func TestFaManagedEndToEnd(t *testing.T) {
 		t.Fatal("re-rendered manifest must carry the new excludes and be re-signed")
 	}
 	// unchanged terms on the next reconcile: no restart (same port)
-	c3, _ := faManagedConfig(1)
+	c3, _ := faManagedConfig(dcnDir, 1)
 	faReconcile(dcnDir)
 	time.Sleep(time.Second)
-	c4, _ := faManagedConfig(1)
+	c4, _ := faManagedConfig(dcnDir, 1)
 	if c3.Addr != c4.Addr {
 		t.Fatal("identical terms must not restart the instance")
 	}
@@ -459,7 +494,7 @@ func TestFaManagedEndToEnd(t *testing.T) {
 	// A fresh identity with a surviving manifest (new layout, wiped base, a
 	// re-pair): the manifest must be re-signed under the new cert, or the
 	// gate refuses it and serve answers 503 forever.
-	faStop(1)
+	faStop(dcnDir, 1)
 	_, privDir, _, _ := faStoreDirs(dcnDir, 1)
 	if err := os.RemoveAll(filepath.Join(privDir, "host.key")); err != nil {
 		t.Fatal(err)
@@ -470,15 +505,15 @@ func TestFaManagedEndToEnd(t *testing.T) {
 	deadline = time.Now().Add(60 * time.Second)
 	var c9 freeagentConfig
 	for time.Now().Before(deadline) {
-		if cfg, ok := faManagedConfig(1); ok && cfg.Addr != "" {
-			if st, _ := faSnapshot(1); st.State == "running" && st.Cert != "" {
+		if cfg, ok := faManagedConfig(dcnDir, 1); ok && cfg.Addr != "" {
+			if st, _ := faSnapshot(dcnDir, 1); st.State == "running" && st.Cert != "" {
 				if _, body, err := freeagentCall(cfg, http.MethodGet, "/health", nil); err == nil && strings.Contains(string(body), `"serving": true`) {
 					c9 = cfg
 					break
 				}
 			}
 		}
-		if st, _ := faSnapshot(1); st.State == "failed" {
+		if st, _ := faSnapshot(dcnDir, 1); st.State == "failed" {
 			t.Fatalf("re-identity: %s", st.Detail)
 		}
 		time.Sleep(500 * time.Millisecond)
