@@ -98,17 +98,20 @@ func serviceStateEnv(goos string, installed, authority bool, systemRoot string) 
 }
 
 // serviceGuardedCommands would each act on a bastion in the caller's own
-// profile. Beside a system service that is a second bastion (pair, run) or a
-// view of an empty one (status, `switch --list`, activity and report, which
-// would print the caller's own records as though they were the machine's).
+// profile. Beside a system service that is a second bastion (pair, run), a
+// switch of its own, or a view of an empty one (status, `switch --list`,
+// activity, report and doctor, which would print the caller's own records,
+// or check its own empty bastion, as though they were the machine's).
 var serviceGuardedCommands = map[string]bool{"pair": true, "run": true, "status": true, "switch": true,
-	"activity": true, "report": true}
+	"switch --list": true, "activity": true, "report": true, "doctor": true, "ops": true,
+	"device-approvals": true, "backup read": true}
 
 // serviceLaneReads are the guarded commands that, on Linux and macOS, read
 // the machine's bastion itself over its socket (reads.go) rather than a
 // bastion of the caller's own: not refused here, and refused there for any
 // account but the owner's.
-var serviceLaneReads = map[string]bool{"status": true, "activity": true, "report": true}
+var serviceLaneReads = map[string]bool{"status": true, "switch --list": true, "activity": true, "report": true,
+	"doctor": true, "ops": true, "device-approvals": true, "backup read": true}
 
 // serviceGuard refuses a guarded command from an account that does not
 // administer a machine whose bastion is a system service.
@@ -372,13 +375,35 @@ func adoptSystemServiceState() {
 	}
 }
 
-// guardServiceFork is serviceGuard for this process.
+// guardServiceFork is serviceGuard for this process. `switch --list` is a
+// read and `switch` a change, and the backup reads are not the rest of
+// backup, so each is guarded apart.
 func guardServiceFork(cmd string) error {
+	cmd = serviceGuardKey(cmd, os.Args)
 	installed := systemService.installed
 	if runtime.GOOS == "linux" {
 		installed = linuxSystemUnitPresent()
 	}
 	return serviceGuard(runtime.GOOS, cmd, installed, systemService.authority)
+}
+
+// serviceGuardKey is the name the guard knows a command line by.
+func serviceGuardKey(cmd string, args []string) string {
+	arg := func(i int) string {
+		if len(args) > i {
+			return args[i]
+		}
+		return ""
+	}
+	switch {
+	case cmd == "switch" && arg(2) == "--list":
+		return "switch --list"
+	case cmd == "backup" && (arg(2) == "requests" || arg(2) == "shares" || (arg(2) == "key" && arg(3) == "show")):
+		// The backup reads; the rest of backup works offline (reseal,
+		// restore-plan) or is not yet asked of the machine's bastion.
+		return "backup read"
+	}
+	return cmd
 }
 
 // cmdService is `privatae-bastion service install|uninstall|status`.

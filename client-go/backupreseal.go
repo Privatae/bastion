@@ -45,6 +45,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -579,28 +580,46 @@ func describeReseal(r *resealRequest) string {
 
 // ── the person's side, on this machine ──────────────────────────────────────
 
-func cmdBackupRequests(host string) error {
-	cfg, err := stepupPairing(host)
+// backupRequestView is one restore request as a read shows it: the armored
+// key the host sent, and the one resealed for it, are left out (the digest of
+// the one the host sent stays); both are sealed, and a read has no use for
+// them.
+type backupRequestView struct {
+	ID         string `json:"id"`
+	State      string `json:"state"`
+	Stamp      string `json:"stamp"`
+	Pairing    string `json:"pairing"`
+	HostNumber int64  `json:"host_number"`
+	HostLabel  string `json:"host_label"`
+	To         string `json:"to"`
+	ToFP       string `json:"to_fp"`
+	SidecarSHA string `json:"sidecar_sha256"`
+	At         string `json:"at"`
+	DecidedAt  string `json:"decided_at,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Words      string `json:"words"`
+}
+
+type backupRequestsRead struct {
+	Host     string              `json:"host"`
+	Requests []backupRequestView `json:"requests"`
+	// SetAside are request files found unreadable and kept, not read.
+	SetAside []string `json:"set_aside,omitempty"`
+}
+
+func readBackupRequests(o readOpts) (backupRequestsRead, error) {
+	cfg, err := stepupPairing(o.Host)
 	if err != nil {
-		return err
+		return backupRequestsRead{}, err
 	}
 	dir := cfg.dcnDir()
+	v := backupRequestsRead{Host: cfg.HostName, Requests: []backupRequestView{}}
 	// Request files set aside as unreadable (resealLoad) are named here, so
 	// the person learns of them whichever process found them.
-	if aside, _ := filepath.Glob(resealPath(dir) + resealAsideSuffix + "*"); len(aside) > 0 {
-		fmt.Println("set aside as unreadable (kept, not read):")
-		for _, a := range aside {
-			fmt.Println("  " + a)
-		}
-		fmt.Println()
-	}
+	v.SetAside, _ = filepath.Glob(resealPath(dir) + resealAsideSuffix + "*")
 	m, err := resealRead(dir)
 	if err != nil {
-		return err
-	}
-	if len(m) == 0 {
-		fmt.Println("no backup requests from", cfg.HostName)
-		return nil
+		return v, err
 	}
 	ids := make([]string, 0, len(m))
 	for id := range m {
@@ -608,10 +627,42 @@ func cmdBackupRequests(host string) error {
 	}
 	sort.Slice(ids, func(i, j int) bool { return m[ids[i]].At < m[ids[j]].At })
 	for _, id := range ids {
-		fmt.Println(describeReseal(m[id]))
-		fmt.Println()
+		r := m[id]
+		v.Requests = append(v.Requests, backupRequestView{ID: r.ID, State: r.State, Stamp: r.Stamp,
+			Pairing: r.Pairing, HostNumber: r.HostNumber, HostLabel: r.HostLabel, To: r.To, ToFP: r.ToFP,
+			SidecarSHA: r.SidecarSH, At: r.At, DecidedAt: r.DecidedAt, Error: r.Error, Words: describeReseal(r)})
 	}
+	return v, nil
+}
+
+func cmdBackupRequests(host string, asJSON bool) error {
+	v, err := readMachine("backup-requests", readOpts{Host: host}, readBackupRequests)
+	if err != nil {
+		return laneRefusalError("backup requests", err)
+	}
+	if asJSON {
+		return printJSON(os.Stdout, v)
+	}
+	printBackupRequests(os.Stdout, v)
 	return nil
+}
+
+func printBackupRequests(w io.Writer, v backupRequestsRead) {
+	if len(v.SetAside) > 0 {
+		fmt.Fprintln(w, "set aside as unreadable (kept, not read):")
+		for _, a := range v.SetAside {
+			fmt.Fprintln(w, "  "+a)
+		}
+		fmt.Fprintln(w)
+	}
+	if len(v.Requests) == 0 {
+		fmt.Fprintln(w, "no backup requests from", v.Host)
+		return
+	}
+	for _, r := range v.Requests {
+		fmt.Fprintln(w, r.Words)
+		fmt.Fprintln(w)
+	}
 }
 
 func cmdBackupDecide(host, prefix string, approve bool) error {

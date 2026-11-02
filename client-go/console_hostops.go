@@ -8,7 +8,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -90,48 +92,114 @@ func cmdQuarantineClear(host string) error {
 }
 
 // cmdOpsList prints the ops and op grants a pairing holds here (ops.go).
-func cmdOpsList(host string) error {
-	cfg, err := stepupPairing(host)
+// opRow is one op a Host holds here, verified against its signature or not.
+type opRow struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Version     string `json:"version,omitempty"`
+	Privilege   string `json:"privilege,omitempty"`
+	Summary     string `json:"summary,omitempty"`
+	NotVerified string `json:"not_verified,omitempty"`
+}
+
+// opGrantRow is one op grant this machine holds and has not dropped.
+type opGrantRow struct {
+	ID          string `json:"id"`
+	Op          string `json:"op,omitempty"`
+	Version     string `json:"version,omitempty"`
+	RunsLeft    int    `json:"runs_left"`
+	Until       string `json:"until,omitempty"`
+	Within      string `json:"within,omitempty"`
+	NotVerified string `json:"not_verified,omitempty"`
+}
+
+// opsRead is what ops and op grants one pairing holds on this machine.
+type opsRead struct {
+	Host               string       `json:"host"`
+	Sandbox            bool         `json:"sandbox"`
+	SandboxUnavailable string       `json:"sandbox_unavailable,omitempty"`
+	Ops                []opRow      `json:"ops"`
+	Grants             []opGrantRow `json:"grants"`
+}
+
+func readOps(o readOpts) (opsRead, error) {
+	cfg, err := stepupPairing(o.Host)
 	if err != nil {
-		return err
+		return opsRead{}, err
 	}
 	dir := cfg.dcnDir()
-	ok, why := opSandboxAvailable()
-	if ok {
-		fmt.Println("sandbox: available")
-	} else {
-		fmt.Println("sandbox: NOT available —", why)
-	}
-	n := 0
+	v := opsRead{Host: cfg.HostName, Ops: []opRow{}, Grants: []opGrantRow{}}
+	v.Sandbox, v.SandboxUnavailable = opSandboxAvailable()
 	if entries, err := os.ReadDir(opsDir(dir)); err == nil {
 		for _, e := range entries {
 			if !e.IsDir() || e.Name() == opsRunsDirName || strings.HasSuffix(e.Name(), ".tmp") {
 				continue
 			}
-			n++
+			r := opRow{ID: e.Name()[:12]}
 			if m, err := opLoad(dir, e.Name()); err == nil {
-				fmt.Printf("op  %s %s  as %s  [%s]\n    %s\n", m.Name, m.Version, m.Privilege, e.Name()[:12], m.Summary)
+				r.Name, r.Version, r.Privilege, r.Summary = m.Name, m.Version, m.Privilege, m.Summary
 			} else {
-				fmt.Printf("op  [%s]  NOT VERIFIED: %v\n", e.Name()[:12], err)
+				r.NotVerified = err.Error()
 			}
+			v.Ops = append(v.Ops, r)
 		}
 	}
 	f := opsLoad(dir)
+	nonces := make([]string, 0, len(f.Grants))
 	for nonce, rec := range f.Grants {
-		if rec.Dropped != "" {
-			continue
+		if rec.Dropped == "" {
+			nonces = append(nonces, nonce)
 		}
-		t, err := verifyOpTerms(dir, rec.TermsCanonical, rec.Signature, opKindGrant)
-		if err != nil {
-			fmt.Printf("grant [%s]  NOT VERIFIED: %v\n", nonce[:8], err)
-			continue
+	}
+	sort.Strings(nonces)
+	for _, nonce := range nonces {
+		rec := f.Grants[nonce]
+		r := opGrantRow{ID: nonce[:8], RunsLeft: rec.UsesLeft}
+		if t, err := verifyOpTerms(dir, rec.TermsCanonical, rec.Signature, opKindGrant); err != nil {
+			r.NotVerified = err.Error()
+		} else {
+			r.Op, r.Version, r.Until, r.Within = t.Op, t.Version, t.Expires, t.Bounds
 		}
-		fmt.Printf("grant [%s]  %s %s  %d run(s) left, until %s\n    within: %s\n", nonce[:8], t.Op, t.Version, rec.UsesLeft, t.Expires, t.Bounds)
+		v.Grants = append(v.Grants, r)
 	}
-	if n == 0 && len(f.Grants) == 0 {
-		fmt.Println("no ops held for", cfg.HostName)
+	return v, nil
+}
+
+func cmdOpsList(host string, asJSON bool) error {
+	v, err := readMachine("ops", readOpts{Host: host}, readOps)
+	if err != nil {
+		return laneRefusalError("ops", err)
 	}
+	if asJSON {
+		return printJSON(os.Stdout, v)
+	}
+	printOps(os.Stdout, v)
 	return nil
+}
+
+func printOps(w io.Writer, v opsRead) {
+	if v.Sandbox {
+		fmt.Fprintln(w, "sandbox: available")
+	} else {
+		fmt.Fprintln(w, "sandbox: NOT available —", v.SandboxUnavailable)
+	}
+	for _, r := range v.Ops {
+		if r.NotVerified != "" {
+			fmt.Fprintf(w, "op  [%s]  NOT VERIFIED: %s\n", r.ID, r.NotVerified)
+			continue
+		}
+		fmt.Fprintf(w, "op  %s %s  as %s  [%s]\n    %s\n", r.Name, r.Version, r.Privilege, r.ID, r.Summary)
+	}
+	for _, r := range v.Grants {
+		if r.NotVerified != "" {
+			fmt.Fprintf(w, "grant [%s]  NOT VERIFIED: %s\n", r.ID, r.NotVerified)
+			continue
+		}
+		fmt.Fprintf(w, "grant [%s]  %s %s  %d run(s) left, until %s\n    within: %s\n", r.ID, r.Op, r.Version, r.RunsLeft, r.Until, r.Within)
+	}
+	if len(v.Ops) == 0 && len(v.Grants) == 0 {
+		fmt.Fprintln(w, "no ops held for", v.Host)
+	}
 }
 
 // cmdOpsDrop takes a held op grant back at the console.

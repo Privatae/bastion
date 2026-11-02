@@ -134,6 +134,26 @@ func TestEveryReadPrintsTheSameAfterTheLane(t *testing.T) {
 		func(w *bytes.Buffer, v any) { _ = printDelta(w, v.(deltaReport)) })
 	rep := buildReport(now, now.Add(-7*24*time.Hour))
 	add("report", rep, func(w *bytes.Buffer, v any) { renderReportMarkdown(w, v.(machineReport)) })
+	add("switches", switchesRead{Switches: []switchRow{{Host: "home", Family: "ops", Off: true, Since: "2026-11-01T00:00:00Z"},
+		{Host: "home", Family: "observe"}}, Unreadable: "the list cannot be read"},
+		func(w *bytes.Buffer, v any) { printSwitches(w, v.(switchesRead)) })
+	add("ops", opsRead{Host: "home", SandboxUnavailable: "the kernel offers no overlay filesystem",
+		Ops:    []opRow{{ID: "0123456789ab", Name: "restart-web", Version: "1", Privilege: "root", Summary: "restart nginx"}, {ID: "ba9876543210", NotVerified: "bad signature"}},
+		Grants: []opGrantRow{{ID: "abcd1234", Op: "restart-web", Version: "1", RunsLeft: 2, Until: "2026-11-02", Within: "nginx only"}}},
+		func(w *bytes.Buffer, v any) { printOps(w, v.(opsRead)) })
+	add("device-approvals", deviceApprovalsRead{Asks: []deviceAsk{{ID: "0123456789abcdef", Server: "web-1", At: "2026-11-01", Words: "Restart nginx."}}},
+		func(w *bytes.Buffer, v any) { printDeviceApprovals(w, v.(deviceApprovalsRead), true) })
+	add("backup-keys", backupKeysRead{Keys: []*backupKeyFile{{Recipient: "age1pub", PubB64: "cHVi", Fingerprint: "fp1",
+		CreatedAt: "2026-10-01", Path: "/x/key"}, {Fingerprint: "fp0"}}, Current: "fp1"},
+		func(w *bytes.Buffer, v any) { printBackupKeys(w, v.(backupKeysRead)) })
+	add("backup-requests", backupRequestsRead{Host: "home", SetAside: []string{"/x/reseal.json.aside-1"},
+		Requests: []backupRequestView{{ID: "r1", State: "pending", Words: "r1  [pending]\n  Sent by the pairing home."}}},
+		func(w *bytes.Buffer, v any) { printBackupRequests(w, v.(backupRequestsRead)) })
+	add("backup-shares", backupSharesRead{With: "new-home", Shares: []backupShare{{Slug: "old", Dir: "/srv/backups/old", Added: "2026-10-01"}}},
+		func(w *bytes.Buffer, v any) { printBackupShares(w, v.(backupSharesRead)) })
+	add("doctor", doctorRead{Version: "9.9.9", Checks: []doctorCheck{{Name: "running", OK: true, Detail: "Running on its own."},
+		{Name: "second factor", Problem: "No second factor.", Fix: "privatae-bastion stepup-enroll --machine"}}},
+		func(w *bytes.Buffer, v any) { printDoctor(w, v.(doctorRead)) })
 
 	for name := range machineReads {
 		if name == "baseline" {
@@ -222,6 +242,27 @@ func zeroLike(v any) decoded {
 		return decoded{&x, func() any { return x }}
 	case machineReport:
 		var x machineReport
+		return decoded{&x, func() any { return x }}
+	case switchesRead:
+		var x switchesRead
+		return decoded{&x, func() any { return x }}
+	case opsRead:
+		var x opsRead
+		return decoded{&x, func() any { return x }}
+	case deviceApprovalsRead:
+		var x deviceApprovalsRead
+		return decoded{&x, func() any { return x }}
+	case backupKeysRead:
+		var x backupKeysRead
+		return decoded{&x, func() any { return x }}
+	case backupRequestsRead:
+		var x backupRequestsRead
+		return decoded{&x, func() any { return x }}
+	case backupSharesRead:
+		var x backupSharesRead
+		return decoded{&x, func() any { return x }}
+	case doctorRead:
+		var x doctorRead
 		return decoded{&x, func() any { return x }}
 	}
 	panic("no case")

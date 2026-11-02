@@ -3,7 +3,7 @@ package main
 // switch_cli.go — the local switch (localdeny.go) from a terminal.
 //
 //	privatae-bastion switch <host> <family> on|off
-//	privatae-bastion switch --list
+//	privatae-bastion switch --list [--json]
 //
 // The console page has had this switch since localdeny.go was written; a
 // machine with no browser and no person at it (a server the bastion guards
@@ -14,10 +14,11 @@ package main
 // MACHINE AUTHORITY, for both directions. On a machine that serves a Host it
 // does not belong to the person using that Host, the switch is part of how
 // the machine was set up, and the one who stands behind that is whoever
-// administers the box. --list only reads, and needs no authority of its own;
-// beside a system service on macOS or Windows an ordinary account is refused
-// it (serviceGuard, sysservice.go), because it would read that account's own
-// state rather than the machine's.
+// administers the box. --list only reads, and needs no authority of its own:
+// beside a system service on Linux or macOS the owner's account reads the
+// machine's list through the lane (reads.go); on Windows an ordinary account
+// is refused it (serviceGuard, sysservice.go), because it would read that
+// account's own state rather than the machine's.
 
 import (
 	"errors"
@@ -29,14 +30,26 @@ import (
 )
 
 const switchUsage = "usage: sudo -H privatae-bastion switch <host> <family> on|off\n" +
-	"       privatae-bastion switch --list\n" +
+	"       privatae-bastion switch --list [--json]\n" +
 	"       sudo -H privatae-bastion switch --reset   (only when the list cannot be read)"
 
 // cmdSwitch parses the arguments and runs one switch, the listing, or the
 // reset of an unreadable list.
 func cmdSwitch(args []string) error {
-	if len(args) == 1 && args[0] == "--list" {
-		return switchList(os.Stdout)
+	if len(args) >= 1 && args[0] == "--list" {
+		asJSON, err := jsonOnly(switchUsage, args[1:])
+		if err != nil {
+			return err
+		}
+		v, err := readMachine("switches", readOpts{}, readSwitches)
+		if err != nil {
+			return laneRefusalError("switch --list", err)
+		}
+		if asJSON {
+			return printJSON(os.Stdout, v)
+		}
+		printSwitches(os.Stdout, v)
+		return nil
 	}
 	if len(args) == 1 && args[0] == "--reset" {
 		// The same authority as switching anything back on: a reset leaves
@@ -106,56 +119,97 @@ func switchResolveHost(key string) (string, error) {
 	return c.HostName, nil
 }
 
-// switchList prints one line per paired host and family:
-//
-//	<host> <family> on|off [since <time>]
-//
-// Plain columns so a setup script can read it as well as a person.
-func switchList(w io.Writer) error {
+// switchRow is one family of one paired host: off (refused here) or on.
+type switchRow struct {
+	Host   string `json:"host"`
+	Family string `json:"family"`
+	Off    bool   `json:"off"`
+	Since  string `json:"since,omitempty"`
+}
+
+// switchesRead is the local switch as it stands. Unreadable: the list cannot
+// be read, so the gate refuses everything (localDenied) and every row is off.
+type switchesRead struct {
+	Switches   []switchRow `json:"switches"`
+	Unreadable string      `json:"unreadable,omitempty"`
+	// StateDir is the bastion state that was read, named when nothing is
+	// paired in it: an ordinary account's own state is not the machine's.
+	StateDir string `json:"state_dir,omitempty"`
+}
+
+func readSwitches(readOpts) (switchesRead, error) {
+	v := switchesRead{Switches: []switchRow{}}
 	cfgs, err := loadPairings()
 	if err != nil {
-		return err
+		return v, err
 	}
 	if len(cfgs) == 0 {
-		// Name the state that was read. On Linux the root service keeps its
-		// state under /root, and an ordinary account's --list reads its own,
-		// so "no host is paired with this machine" would be untrue there.
-		dir, _ := configDirPath()
-		fmt.Fprintf(w, "no host is paired in this account's bastion state (%s); "+
-			"the machine's bastion may keep its state under another account (%s)\n", dir, adminHowTo())
-		return nil
+		v.StateDir, _ = configDirPath()
+		return v, nil
 	}
 	localDenyMu.Lock()
 	f, readErr := localDenyLoad()
 	localDenyMu.Unlock()
 	if readErr != nil {
-		// The gate refuses everything while the list cannot be read
-		// (localDenied), so every line says off, and the warning says why.
-		fmt.Fprintf(w, "warning: %s\n", localDenyUnreadableText(readErr))
+		v.Unreadable = localDenyUnreadableText(readErr)
 	}
 	names := hostNames(cfgs)
 	sort.Strings(names)
 	fams := localSwitchFamilies()
 	for _, host := range names {
 		off := map[string]bool{}
-		for _, fam := range f.Off[host] {
-			off[fam] = true
+		if readErr == nil {
+			for _, fam := range f.Off[host] {
+				off[fam] = true
+			}
 		}
 		for _, fam := range fams {
-			if readErr != nil {
-				fmt.Fprintln(w, host+" "+fam+" off")
-				continue
+			r := switchRow{Host: host, Family: fam, Off: readErr != nil || off[fam]}
+			if readErr == nil && off[fam] {
+				r.Since = f.At[host+"/"+fam]
 			}
-			if off[fam] {
-				line := host + " " + fam + " off"
-				if at := f.At[host+"/"+fam]; at != "" {
-					line += " since " + at
-				}
-				fmt.Fprintln(w, line)
-				continue
-			}
-			fmt.Fprintln(w, host+" "+fam+" on")
+			v.Switches = append(v.Switches, r)
 		}
 	}
+	return v, nil
+}
+
+// switchList is the listing of this process's own state, in words.
+func switchList(w io.Writer) error {
+	v, err := readSwitches(readOpts{})
+	if err != nil {
+		return err
+	}
+	printSwitches(w, v)
 	return nil
+}
+
+// printSwitches prints one line per paired host and family:
+//
+//	<host> <family> on|off [since <time>]
+//
+// Plain columns so a setup script can read it as well as a person.
+func printSwitches(w io.Writer, v switchesRead) {
+	if len(v.Switches) == 0 {
+		// Name the state that was read: an ordinary account's own is not
+		// the machine's, so "nothing is paired with this machine" could be
+		// untrue.
+		fmt.Fprintf(w, "no host is paired in the bastion state at %s\n", v.StateDir)
+		return
+	}
+	if v.Unreadable != "" {
+		// The gate refuses everything while the list cannot be read
+		// (localDenied), so every line says off, and the warning says why.
+		fmt.Fprintf(w, "warning: %s\n", v.Unreadable)
+	}
+	for _, r := range v.Switches {
+		line := r.Host + " " + r.Family + " on"
+		if r.Off {
+			line = r.Host + " " + r.Family + " off"
+			if r.Since != "" {
+				line += " since " + r.Since
+			}
+		}
+		fmt.Fprintln(w, line)
+	}
 }

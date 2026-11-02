@@ -380,7 +380,7 @@ func gitBranchOf(dir string) string {
 				return cleanText(b, 80)
 			}
 			if len(h) >= 12 {
-				return "detached at " + h[:12]
+				return "detached at " + cleanText(h[:12], 12)
 			}
 			return ""
 		}

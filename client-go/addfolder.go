@@ -33,7 +33,7 @@ func cmdAddFolder(host, path, name string) error {
 		return err
 	}
 	if len(cfgs) == 0 {
-		return fmt.Errorf("not paired yet — run `privatae-bastion pair <token>` first")
+		return fmt.Errorf("not paired yet — connect a Host first: %s", asAdmin("pair <token>"))
 	}
 	// Multi-homed boxes must NAME the host (0.10.0): guessing here is how a folder
 	// ends up proposed to the wrong entity. One pairing needs no flag.

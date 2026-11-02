@@ -121,12 +121,12 @@ Usage:
                                remove a folder grant held on this machine; the host is told
   privatae-bastion device-init    make THIS machine your approval device: from then on a write a
                                host asks of any machine you govern is approved with a tap here
-  privatae-bastion device-approvals   what your machines are asking you to approve, in their words
+  privatae-bastion device-approvals [--json]   what your machines are asking you to approve, in their words
   privatae-bastion device-approve <id>|all / device-deny <id>
   sudo -H privatae-bastion pin-device <key>
                                on a machine you govern: accept approvals signed by your device
                                (the key device-init printed). unpin-device <key> withdraws it
-  privatae-bastion ops [--host <host>]  the ops your host wrote that this machine holds, and the
+  privatae-bastion ops [--host <host>] [--json]  the ops your host wrote that this machine holds, and the
                                standing op grants; ops drop <grant> takes one back
   sudo -H privatae-bastion root-exec grant [--host <host>] --for <30d>
                                let the anchor host run commands AS ROOT here, one at a time,
@@ -145,11 +145,18 @@ Usage:
                                switch one capability family off for a host on this machine,
                                or clear that refusal (the console page's switch). Off only
                                removes reach; on grants nothing past the host's signed grant
-  privatae-bastion switch --list  every paired host's families, on or off, one per line
+  privatae-bastion switch --list [--json]
+                               every paired host's families, on or off, one per line
   privatae-bastion agents [--json] [--prompts]
                                every AI agent on this machine and what it is doing: its
                                session name and title, whether it waits for you, its folder
                                and branch, what it is running now (--prompts: its last prompt)
+  privatae-bastion agents show <pid or session> [--json] [--prompts]
+                               one agent with everything known about it: what it is, the file
+                               it runs, how it was recognised, what it says about itself
+  privatae-bastion doctor [--json]
+                               what is wrong with this install, and the fix for each one.
+                               Exit 1 when something is
   privatae-bastion report [--since 7d] [--json] [--out FILE | --out -]
                                write what this bastion knows as one Markdown file: agents,
                                scheduled agents, MCP tool-server problems, the baseline, activity.
@@ -173,8 +180,10 @@ Usage:
                                denied. Exit 0 stopped (or asked), 1 not, 3 still waiting
                                From the machine's owner account, beside the bastion installed for
                                the whole machine, the reads (status, agents, schedules,
-                               tool-servers, posture, baseline, activity, report, approvals)
-                               ask that bastion and show the whole machine
+                               tool-servers, posture, baseline, activity, report, approvals,
+                               switch --list, ops, device-approvals, backup key show,
+                               backup requests, backup shares, doctor) ask that bastion and
+                               show the whole machine
   privatae-bastion help        this text
   privatae-bastion coders set [--max N] [--mem MB] [--cpus F] [--engines a,b|all] [--allow-lan h[:p],...]
                           [--image-prefix <registry/path/>|default]
@@ -613,7 +622,7 @@ func main() {
 	case "device-init":
 		err = cmdDeviceInit()
 	case "device-approvals":
-		err = cmdDeviceApprovals()
+		err = cmdDeviceApprovals(os.Args[2:])
 	case "device-approve", "device-deny":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: privatae-bastion "+os.Args[1]+" <request id> [--code <code>]")
@@ -685,7 +694,7 @@ func main() {
 		}
 		os.Exit(opActionChildMain(os.Args[2]))
 	case "ops":
-		// ops [--host <host>]            what ops and op grants this machine holds
+		// ops [--host <host>] [--json]   what ops and op grants this machine holds
 		// ops drop <grant> [--host <host>]  take back a held op grant (the host is told)
 		// ops drop --all [--host <host>]    take back every op grant the host holds here
 		host, args := takeHostFlag(os.Args[2:])
@@ -693,7 +702,12 @@ func main() {
 			err = cmdOpsDrop(host, args[1])
 			break
 		}
-		err = cmdOpsList(host)
+		asJSON, jerr := jsonOnly("usage: privatae-bastion ops [--host <host>] [--json]   |   ops drop <grant>|--all [--host <host>]", args)
+		if jerr != nil {
+			fmt.Fprintln(os.Stderr, jerr)
+			os.Exit(2)
+		}
+		err = cmdOpsList(host, asJSON)
 	case "root-exec":
 		// root-exec [--host <host>] [grant --for <d> | revoke] (rootexec.go): the
 		// standing grant for the anchor host's root commands, given and taken
@@ -752,6 +766,10 @@ func main() {
 		// baseline show|diff [--json], baseline record [--force]
 		// (machine_cli.go): observe:baseline* under the words people use.
 		err = cmdBaseline(os.Args[2:])
+	case "doctor":
+		// doctor [--json] (doctor.go): what is wrong with this install, and
+		// the fix for each one.
+		err = cmdDoctor(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 	case "switch":

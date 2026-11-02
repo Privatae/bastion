@@ -915,7 +915,7 @@ func TestDeviceApproveAllSignsOnlyWhatWasShown(t *testing.T) {
 	if err := cmdDeviceApprove("all"); err == nil {
 		t.Fatal("nothing shown yet: all must refuse")
 	}
-	if err := cmdDeviceApprovals(); err != nil {
+	if err := cmdDeviceApprovals(nil); err != nil {
 		t.Fatal(err)
 	}
 	b := file("harness:run") // filed AFTER the person looked

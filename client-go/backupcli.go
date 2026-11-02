@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,13 +23,13 @@ const backupUsage = `usage:
       make this bastion's backup key here and print what to register on your
       host (Settings > Backup > keys: kind, label, public key). --replace makes
       a new one and keeps the old one, which still opens the backups made with it
-  privatae-bastion backup key show
+  privatae-bastion backup key show [--json]
       the key this bastion holds, its fingerprint, and any older keys it keeps
   privatae-bastion backup reseal --sidecar <file> --to <host key> [--stamp <stamp>]
                                  [--out <file>] [--identity <key file>]
       seal one backup's key to a host's own key (age1... or base64), so that
       host, and only it, can open that one backup
-  privatae-bastion backup requests [--host <host>]
+  privatae-bastion backup requests [--host <host>] [--json]
       restore requests your host sent this machine
   privatae-bastion backup approve [--host <host>] <id> | deny [--host <host>] <id>
       answer one
@@ -39,7 +40,7 @@ const backupUsage = `usage:
       let the host paired as <host> list and send the backups in another
       host's backup folder here (or any folder) — how a host that replaces a
       lost one reaches the copies the lost one kept on this machine
-  privatae-bastion backup shares --with <host> / unshare --with <host> <name>
+  privatae-bastion backup shares --with <host> [--json] / unshare --with <host> <name>
       the folders shared with a host, and taking one back`
 
 func cmdBackup(args []string) error {
@@ -65,7 +66,11 @@ func cmdBackup(args []string) error {
 			return cmdBackupKeyInit(replace, flags["--label"])
 		}
 		if len(args) >= 2 && args[1] == "show" {
-			return cmdBackupKeyShow()
+			asJSON, err := jsonOnly(backupUsage, args[2:])
+			if err != nil {
+				return err
+			}
+			return cmdBackupKeyShow(asJSON)
 		}
 	case "reseal":
 		flags, rest := backupFlags(args[1:], "--sidecar", "--to", "--stamp", "--out", "--identity")
@@ -75,10 +80,11 @@ func cmdBackup(args []string) error {
 		return cmdBackupReseal(flags["--sidecar"], flags["--to"], flags["--stamp"], flags["--out"], flags["--identity"])
 	case "requests":
 		host, rest := takeHostFlag(args[1:])
-		if len(rest) != 0 {
-			return errors.New(backupUsage)
+		asJSON, err := jsonOnly(backupUsage, rest)
+		if err != nil {
+			return err
 		}
-		return cmdBackupRequests(host)
+		return cmdBackupRequests(host, asJSON)
 	case "approve", "deny":
 		host, rest := takeHostFlag(args[1:])
 		if len(rest) != 1 {
@@ -93,10 +99,11 @@ func cmdBackup(args []string) error {
 		return cmdBackupShare(flags["--with"], flags["--from"], flags["--dir"])
 	case "shares":
 		flags, rest := backupFlags(args[1:], "--with")
-		if len(rest) != 0 || flags["--with"] == "" {
+		asJSON, err := jsonOnly(backupUsage, rest)
+		if err != nil || flags["--with"] == "" {
 			return errors.New(backupUsage)
 		}
-		return cmdBackupShares(flags["--with"])
+		return cmdBackupShares(flags["--with"], asJSON)
 	case "unshare":
 		flags, rest := backupFlags(args[1:], "--with")
 		if len(rest) != 1 || flags["--with"] == "" {
@@ -163,24 +170,53 @@ func cmdBackupKeyInit(replace bool, label string) error {
 	return nil
 }
 
-func cmdBackupKeyShow() error {
+// backupKeysRead is every backup key this bastion holds, the current one
+// marked. The secret half never leaves its file (backupKeyFile.Identity).
+type backupKeysRead struct {
+	Keys    []*backupKeyFile `json:"keys"`
+	Current string           `json:"current,omitempty"` // its fingerprint
+}
+
+func readBackupKeys(readOpts) (backupKeysRead, error) {
 	active, all, err := backupKeysLoad()
 	if err != nil {
-		return err
+		return backupKeysRead{}, err
 	}
-	if len(all) == 0 {
-		fmt.Println("no backup key on this machine — make one with `privatae-bastion backup key init`")
-		return nil
+	v := backupKeysRead{Keys: all}
+	if v.Keys == nil {
+		v.Keys = []*backupKeyFile{}
 	}
-	for _, k := range all {
+	if active != nil {
+		v.Current = active.Fingerprint
+	}
+	return v, nil
+}
+
+func cmdBackupKeyShow(asJSON bool) error {
+	v, err := readMachine("backup-keys", readOpts{}, readBackupKeys)
+	if err != nil {
+		return laneRefusalError("backup key show", err)
+	}
+	if asJSON {
+		return printJSON(os.Stdout, v)
+	}
+	printBackupKeys(os.Stdout, v)
+	return nil
+}
+
+func printBackupKeys(w io.Writer, v backupKeysRead) {
+	if len(v.Keys) == 0 {
+		fmt.Fprintln(w, "no backup key on this machine — make one with `privatae-bastion backup key init`")
+		return
+	}
+	for _, k := range v.Keys {
 		state := "older key (still opens the backups made with it)"
-		if active != nil && k.Fingerprint == active.Fingerprint {
+		if k.Fingerprint == v.Current {
 			state = "current key"
 		}
-		fmt.Printf("%s  %s\n  public key:    %s\n  age recipient: %s\n  made:          %s\n  key file:      %s\n\n",
+		fmt.Fprintf(w, "%s  %s\n  public key:    %s\n  age recipient: %s\n  made:          %s\n  key file:      %s\n\n",
 			k.Fingerprint, state, k.PubB64, k.Recipient, k.CreatedAt, k.Path)
 	}
-	return nil
 }
 
 func backupIDs(identityFile string) ([]age.Identity, error) {
@@ -339,6 +375,9 @@ func pairingByName(name string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg == nil && len(cfgs) == 0 {
+		return nil, fmt.Errorf("no host is paired with this bastion, so none is named '%s'", name)
+	}
 	if cfg == nil {
 		return nil, fmt.Errorf("no pairing matches '%s' — paired hosts:\n  %s", name, strings.Join(hostNames(cfgs), "\n  "))
 	}
@@ -379,20 +418,44 @@ func cmdBackupShare(with, from, dir string) error {
 	return nil
 }
 
-func cmdBackupShares(with string) error {
-	reader, err := pairingByName(with)
+// backupSharesRead is the folders shared with one pairing.
+type backupSharesRead struct {
+	With   string        `json:"with"`
+	Shares []backupShare `json:"shares"`
+}
+
+func readBackupShares(o readOpts) (backupSharesRead, error) {
+	reader, err := pairingByName(o.Host)
 	if err != nil {
-		return err
+		return backupSharesRead{}, err
 	}
-	list := sharesFor(reader.HostName)
-	if len(list) == 0 {
-		fmt.Println("no folders are shared with", reader.HostName)
-		return nil
+	v := backupSharesRead{With: reader.HostName, Shares: sharesFor(reader.HostName)}
+	if v.Shares == nil {
+		v.Shares = []backupShare{}
 	}
-	for _, s := range list {
-		fmt.Printf("shared/%s  %s  (shared %s)\n", s.Slug, s.Dir, s.Added)
+	return v, nil
+}
+
+func cmdBackupShares(with string, asJSON bool) error {
+	v, err := readMachine("backup-shares", readOpts{Host: with}, readBackupShares)
+	if err != nil {
+		return laneRefusalError("backup shares --with "+with, err)
 	}
+	if asJSON {
+		return printJSON(os.Stdout, v)
+	}
+	printBackupShares(os.Stdout, v)
 	return nil
+}
+
+func printBackupShares(w io.Writer, v backupSharesRead) {
+	if len(v.Shares) == 0 {
+		fmt.Fprintln(w, "no folders are shared with", v.With)
+		return
+	}
+	for _, s := range v.Shares {
+		fmt.Fprintf(w, "shared/%s  %s  (shared %s)\n", s.Slug, s.Dir, s.Added)
+	}
 }
 
 func cmdBackupUnshare(with, slug string) error {

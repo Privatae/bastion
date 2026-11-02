@@ -18,11 +18,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
-const agentsUsage = "usage: privatae-bastion agents [--json] [--prompts]"
+const agentsUsage = "usage: privatae-bastion agents [--json] [--prompts]\n" +
+	"       privatae-bastion agents show <pid|session> [--json] [--prompts]"
 
 var familyLabels = map[string]string{
 	"claude-code": "Claude Code", "aider": "aider", "goose": "goose", "cline": "Cline",
@@ -75,6 +78,13 @@ func readAgents(o readOpts) (agentsRead, error) {
 }
 
 func cmdAgents(args []string) error {
+	show := ""
+	if len(args) >= 1 && args[0] == "show" {
+		if len(args) < 2 || strings.HasPrefix(args[1], "--") {
+			return errors.New(agentsUsage)
+		}
+		show, args = args[1], args[2:]
+	}
 	asJSON, prompts := false, false
 	for _, a := range args {
 		switch a {
@@ -90,11 +100,120 @@ func cmdAgents(args []string) error {
 	if err != nil {
 		return err
 	}
+	if show != "" {
+		a, err := pickAgentView(v.Agents, show)
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			return printJSON(os.Stdout, a)
+		}
+		printAgentDetail(os.Stdout, a, sessionNowFn())
+		return nil
+	}
 	if asJSON {
 		return printJSON(os.Stdout, v)
 	}
 	printAgents(os.Stdout, v.Agents, sessionNowFn())
 	return nil
+}
+
+// pickAgentView is the agent `agents show` means: a pid, or a session's
+// name as `agents` shows it, which must match exactly one (the rule `stop`
+// keeps, resolveStopTarget).
+func pickAgentView(views []agentView, key string) (agentView, error) {
+	if pid, err := strconv.Atoi(key); err == nil {
+		for _, v := range views {
+			if v.PID == pid {
+				return v, nil
+			}
+		}
+		return agentView{}, fmt.Errorf("no AI agent here has pid %d; `privatae-bastion agents` lists them", pid)
+	}
+	var hits []agentView
+	for _, v := range views {
+		if v.Self != nil && v.Self.Name == key {
+			hits = append(hits, v)
+		}
+	}
+	switch len(hits) {
+	case 0:
+		return agentView{}, fmt.Errorf("no running session is named %q; `privatae-bastion agents` lists them", key)
+	case 1:
+		return hits[0], nil
+	}
+	return agentView{}, fmt.Errorf("%d sessions are named %q; give the pid instead", len(hits), key)
+}
+
+// printAgentDetail is one agent with everything a read holds about it: the
+// lines `agents` prints, then what it is, how it was recognised, and what it
+// says about itself. Its command line is in --json only: arguments can carry
+// a key, and words are what gets pasted.
+func printAgentDetail(w io.Writer, v agentView, now time.Time) {
+	if v.Role == "service" {
+		fmt.Fprintf(w, "background service (pid %d): starts background sessions; not a session itself\n", v.PID)
+	} else {
+		l := agentLinesOf(v, now)
+		fmt.Fprintln(w, l.Head)
+		if l.State != "" {
+			fmt.Fprintln(w, "  "+l.State)
+		}
+		if l.Where != "" {
+			fmt.Fprintln(w, "  "+l.Where)
+		}
+	}
+	row := func(k, val string) {
+		if val != "" {
+			fmt.Fprintf(w, "  %-15s %s\n", k+":", val)
+		}
+	}
+	row("agent", familyLabel(v.Signature))
+	row("kind", v.Kind)
+	row("pid", strconv.Itoa(v.PID))
+	if v.PPID > 0 {
+		row("parent pid", strconv.Itoa(v.PPID))
+	}
+	// The kernel names the file, but whoever placed it chose its path.
+	row("program", shownPath(v.Exe))
+	if v.Exe == "" {
+		row("program", "unknown (the system did not say which file it runs)")
+	}
+	row("account", v.User)
+	if len(v.RunningNow) > 0 {
+		row("running now", strings.Join(v.RunningNow, "; "))
+	}
+	if len(v.ToolServers) > 0 {
+		row("tool servers", strings.Join(v.ToolServers, ", "))
+	}
+	if s := v.Self; s != nil {
+		src := s.Source
+		if s.Verified {
+			src += " (names this process)"
+		} else {
+			src += " (does not name this process)"
+		}
+		row("self-reported", src)
+		row("session id", s.SessionID)
+		row("last asked", quoteIf(s.LastPrompt))
+	}
+	fmt.Fprintln(w, "Names, titles and statuses are what the agent says about itself.")
+}
+
+// shownPath is a path the agent chose (its folder) or placed (the file it
+// runs), as printed: quoted when it holds control characters, so an escape
+// sequence in a name never reaches the terminal or the page.
+func shownPath(p string) string {
+	if strings.ContainsFunc(p, unicode.IsControl) {
+		return strconv.Quote(p)
+	}
+	return p
+}
+
+func quoteIf(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "\"" + s + "\""
 }
 
 // printAgents writes the views grouped by agent, sessions waiting for the
@@ -228,7 +347,7 @@ func agentLinesOf(v agentView, now time.Time) agentLines {
 		// No session record: name it by what it is and where it works.
 		l.Head = familyLabel(v.Signature)
 		if v.Folder != "" {
-			l.Head += " in " + filepath.Base(v.Folder)
+			l.Head += " in " + shownPath(filepath.Base(v.Folder))
 		}
 	}
 	if v.Kind == kindApp {
@@ -255,7 +374,7 @@ func agentLinesOf(v agentView, now time.Time) agentLines {
 	l.State = strings.Join(state, " · ")
 	var where []string
 	if v.Folder != "" {
-		f := "in " + v.Folder
+		f := "in " + shownPath(v.Folder)
 		if v.GitBranch != "" {
 			f += " (" + v.GitBranch + ")"
 		}

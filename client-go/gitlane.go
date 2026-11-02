@@ -149,7 +149,7 @@ func cmdGitCredential(host string, action string) error {
 	case len(cfgs) == 1:
 		cfg = cfgs[0]
 	case len(cfgs) == 0:
-		return fmt.Errorf("not paired yet — run `privatae-bastion pair <token>` first")
+		return fmt.Errorf("not paired yet — connect a Host first: %s", asAdmin("pair <token>"))
 	default:
 		return fmt.Errorf("%d hosts are paired — configure the helper with --host: "+
 			"credential.https://git.privatae.ai.helper \"!privatae-bastion git-credential --host <host>\"", len(cfgs))

@@ -165,9 +165,9 @@ func TestWindowsSystemAppDataIsLocalSystemsProfile(t *testing.T) {
 
 func TestServiceGuardRefusesAUserspaceBastionBesideTheService(t *testing.T) {
 	for _, goos := range []string{"darwin", "windows", "linux"} {
-		for _, cmd := range []string{"pair", "run", "status", "switch", "activity", "report"} {
+		for _, cmd := range []string{"pair", "run", "status", "switch", "switch --list", "activity", "report"} {
 			err := serviceGuard(goos, cmd, true, false)
-			if (cmd == "status" || cmd == "activity" || cmd == "report") && goos != "windows" {
+			if (cmd == "status" || cmd == "switch --list" || cmd == "activity" || cmd == "report") && goos != "windows" {
 				// These read the machine's bastion over its socket (reads.go),
 				// which answers the owner's account and refuses any other.
 				if err != nil {

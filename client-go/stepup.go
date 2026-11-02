@@ -1162,7 +1162,7 @@ func stepupPairing(host string) (*Config, error) {
 		return nil, err
 	}
 	if len(cfgs) == 0 {
-		return nil, fmt.Errorf("not paired yet — run `privatae-bastion pair <token>` first")
+		return nil, fmt.Errorf("not paired yet — connect a Host first: %s", asAdmin("pair <token>"))
 	}
 	switch {
 	case host != "":

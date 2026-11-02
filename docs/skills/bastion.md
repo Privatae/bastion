@@ -30,7 +30,9 @@ their phone. It has no MCP endpoint. You use its command line,
 Run `privatae-bastion agents --json`. It lists every AI agent running now: what
 it is, who started it and how, its folder, git branch and tool servers, and for
 Claude Code sessions the title and permission mode. Add `--prompts` only if the
-person asked for the last prompts.
+person asked for the last prompts. `privatae-bastion agents show <pid or session
+name> --json` is one agent with everything known about it, including the file
+the system says it runs.
 
 ### See what is set up here
 
@@ -44,6 +46,10 @@ person asked for the last prompts.
   waiting security updates, disk and load.
 - `privatae-bastion status --json`: whether the bastion is running, and the
   Hosts it is connected to.
+- `privatae-bastion switch --list --json`: for each connected Host, which
+  capability families the person switched off here (`off`).
+- `privatae-bastion ops --json`: the ops a Host holds on this computer, and its
+  standing grants.
 - `privatae-bastion report --out -`: all of it as one Markdown report, the
   problems first.
 
@@ -61,6 +67,13 @@ person asked for the last prompts.
    0 for stopped, 1 for not, and 3 when it is still waiting after `--wait`.
 
 You can pass `--wait` to `stop` itself to ask and follow in one command.
+
+### Check the install
+
+`privatae-bastion doctor --json` checks the bastion itself. Each check has `ok`;
+one that is not has a `problem` and a `fix`. The exit status is 1 when any
+check finds a problem. Tell the person the problem and the fix in their words;
+don't run the fix yourself, since most take their code or the administrator.
 
 ### What happened here
 
@@ -106,6 +119,8 @@ account, so you see the whole machine and not only the person's own files.
   for them, rather than polling without end.
 - `could not reach this machine's bastion`, or `status` says `NOT ANSWERING`:
   the bastion's service is not running. Tell the person; don't start it.
+- `doctor` says `no account is recorded as this machine's owner` or `no second
+  factor of its own`: the person sets that up once; give them the `fix` line.
 - `answers reads only for its owner's account (...)`: you run as an account
   that is not the machine's owner. `agents`, `schedules`, `tool-servers` and
   `posture` then show only what your account can read, and say so; tell the

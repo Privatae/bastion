@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -847,29 +848,80 @@ func deviceShownPath() (string, error) {
 	return filepath.Join(d, "device_shown.json"), nil
 }
 
-func cmdDeviceApprovals() error {
+// deviceAsk is one ask waiting on this approval device.
+type deviceAsk struct {
+	ID     string `json:"id"`
+	Server string `json:"server"`
+	At     string `json:"at"`
+	Words  string `json:"words"`
+}
+
+type deviceApprovalsRead struct {
+	Asks []deviceAsk `json:"asks"`
+}
+
+func readDeviceApprovals(readOpts) (deviceApprovalsRead, error) {
 	deviceMu.Lock()
 	m := deviceRequestsLoad()
 	deviceMu.Unlock()
-	shown := []string{}
+	v := deviceApprovalsRead{Asks: []deviceAsk{}}
 	for _, id := range sortedDeviceRequests(m) {
 		r := m[id]
 		if r.State != "pending" {
 			continue
 		}
-		shown = append(shown, id)
-		fmt.Printf("[%s]  on %s, asked %s\n%s\n\n", id[:8], r.Server, r.At, r.Words)
+		v.Asks = append(v.Asks, deviceAsk{ID: id, Server: r.Server, At: r.At, Words: r.Words})
 	}
-	if p, err := deviceShownPath(); err == nil {
-		raw, _ := json.Marshal(shown)
-		_ = atomicWrite(p, raw)
+	return v, nil
+}
+
+// cmdDeviceApprovals lists the asks waiting here. Read in words by this
+// process, it records them as shown, which is all `device-approve all` will
+// sign. --json is for a program, not a person, and records nothing; nor does
+// a list read through the lane, which `device-approve` from this account
+// would not find.
+func cmdDeviceApprovals(args []string) error {
+	asJSON, err := jsonOnly("usage: privatae-bastion device-approvals [--json]", args)
+	if err != nil {
+		return err
 	}
-	if len(shown) == 0 {
-		fmt.Println("nothing is waiting for your approval")
-		return nil
+	lane := readsGoThroughLane()
+	v, err := readMachine("device-approvals", readOpts{}, readDeviceApprovals)
+	if err != nil {
+		return laneRefusalError("device-approvals", err)
 	}
-	fmt.Printf("approve one:  privatae-bastion device-approve <id>      all of the above:  privatae-bastion device-approve all\n")
+	if asJSON {
+		return printJSON(os.Stdout, v)
+	}
+	printDeviceApprovals(os.Stdout, v, lane)
+	if !lane {
+		shown := []string{}
+		for _, a := range v.Asks {
+			shown = append(shown, a.ID)
+		}
+		if p, err := deviceShownPath(); err == nil {
+			raw, _ := json.Marshal(shown)
+			_ = atomicWrite(p, raw)
+		}
+	}
 	return nil
+}
+
+// printDeviceApprovals prints the asks; lane: they were read from the
+// machine's bastion, so they are answered as its administrator.
+func printDeviceApprovals(w io.Writer, v deviceApprovalsRead, lane bool) {
+	for _, a := range v.Asks {
+		fmt.Fprintf(w, "[%s]  on %s, asked %s\n%s\n\n", a.ID[:min(8, len(a.ID))], a.Server, a.At, a.Words)
+	}
+	switch {
+	case len(v.Asks) == 0:
+		fmt.Fprintln(w, "nothing is waiting for your approval")
+	case lane:
+		fmt.Fprintln(w, "These wait on the machine's bastion. As the administrator:  sudo -H privatae-bastion device-approvals, "+
+			"then device-approve <id> or device-approve all")
+	default:
+		fmt.Fprintln(w, "approve one:  privatae-bastion device-approve <id>      all of the above:  privatae-bastion device-approve all")
+	}
 }
 
 func cmdDeviceApprove(prefix string) error { return cmdDeviceApproveCode(prefix, "") }

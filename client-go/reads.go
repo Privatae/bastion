@@ -11,9 +11,12 @@ package main
 // kernel which account connected. Asked for a read by the account recorded as
 // the machine's owner (owner_account.go), the daemon builds it with the
 // machine's own view and answers with it. That is what the owner's console
-// lane (consolelane.go) already shows that account, with one difference:
-// posture, which the console has no page for, adds the machine's firewall
-// checks, read as the administrator. The delegation tag an agent carries,
+// lane (consolelane.go) already shows that account, and more that the console
+// has no page for: posture (the machine's firewall checks, read as the
+// administrator); the ops and op grants each Host holds here, its backup
+// requests and the folders shared with it; this bastion's backup keys (public
+// halves only); and doctor. All of it is about the owner's own machine, and
+// the lane answers no other account. The delegation tag an agent carries,
 // which the console never shows, is in no read at all (readAgents).
 // Any other account is refused; where a read means something with its own
 // permissions (the agents, schedules and tool servers it can see), it gets
@@ -31,6 +34,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -73,16 +77,23 @@ type machineRead struct {
 
 // machineReads are what the daemon answers over ask.sock, by name.
 var machineReads = map[string]machineRead{
-	"status":        {build: func(o readOpts) (any, error) { return readStatus(o) }},
-	"agents":        {build: func(o readOpts) (any, error) { return readAgents(o) }},
-	"schedules":     {build: func(o readOpts) (any, error) { return readSchedules(o) }},
-	"tool-servers":  {build: func(o readOpts) (any, error) { return readToolServers(o) }},
-	"posture":       {build: func(o readOpts) (any, error) { return readPosture(o) }, heavy: true},
-	"baseline":      {build: func(o readOpts) (any, error) { return readBaseline(o) }},
-	"baseline-diff": {build: func(o readOpts) (any, error) { return readBaselineDiff(o) }, heavy: true},
-	"activity":      {build: func(o readOpts) (any, error) { return readActivity(o) }},
-	"report":        {build: func(o readOpts) (any, error) { return readReport(o) }, heavy: true},
-	"approvals":     {build: func(o readOpts) (any, error) { return readApprovals(o) }},
+	"status":           {build: func(o readOpts) (any, error) { return readStatus(o) }},
+	"agents":           {build: func(o readOpts) (any, error) { return readAgents(o) }},
+	"schedules":        {build: func(o readOpts) (any, error) { return readSchedules(o) }},
+	"tool-servers":     {build: func(o readOpts) (any, error) { return readToolServers(o) }},
+	"posture":          {build: func(o readOpts) (any, error) { return readPosture(o) }, heavy: true},
+	"baseline":         {build: func(o readOpts) (any, error) { return readBaseline(o) }},
+	"baseline-diff":    {build: func(o readOpts) (any, error) { return readBaselineDiff(o) }, heavy: true},
+	"activity":         {build: func(o readOpts) (any, error) { return readActivity(o) }},
+	"report":           {build: func(o readOpts) (any, error) { return readReport(o) }, heavy: true},
+	"approvals":        {build: func(o readOpts) (any, error) { return readApprovals(o) }},
+	"switches":         {build: func(o readOpts) (any, error) { return readSwitches(o) }},
+	"ops":              {build: func(o readOpts) (any, error) { return readOps(o) }},
+	"device-approvals": {build: func(o readOpts) (any, error) { return readDeviceApprovals(o) }},
+	"backup-keys":      {build: func(o readOpts) (any, error) { return readBackupKeys(o) }},
+	"backup-requests":  {build: func(o readOpts) (any, error) { return readBackupRequests(o) }},
+	"backup-shares":    {build: func(o readOpts) (any, error) { return readBackupShares(o) }},
+	"doctor":           {build: func(o readOpts) (any, error) { return readDoctor(o) }, heavy: true},
 }
 
 // readsGoThroughLane: the machine's bastion is a system service this account
@@ -170,6 +181,9 @@ func readViaSock(name string, o readOpts, v any) error {
 	if err := json.NewDecoder(io.LimitReader(c, readMaxBytes)).Decode(&r); err != nil {
 		return &laneError{down: true, why: "the machine's bastion did not answer the read (" + err.Error() + ")"}
 	}
+	if !r.OK && r.Failed {
+		return errors.New(r.Why)
+	}
 	if !r.OK {
 		return &laneError{why: r.Why}
 	}
@@ -183,10 +197,14 @@ func readViaSock(name string, o readOpts, v any) error {
 // ── the answering side (the daemon) ─────────────────────────────────────────
 
 type agentReadReply struct {
-	OK   bool            `json:"ok"`
-	Why  string          `json:"why,omitempty"`
-	User string          `json:"user,omitempty"`
-	View json.RawMessage `json:"view,omitempty"`
+	OK  bool   `json:"ok"`
+	Why string `json:"why,omitempty"`
+	// Failed: the read was answered for this account and could not be
+	// built (Why says why): the administrator would be told the same, so it
+	// is not a refusal. A bastion older than this field says it as one.
+	Failed bool            `json:"failed,omitempty"`
+	User   string          `json:"user,omitempty"`
+	View   json.RawMessage `json:"view,omitempty"`
 }
 
 // readLaneRefusal says why account uid may not read through the lane, or "".
@@ -252,7 +270,7 @@ func serveRead(uid uint32, user string, req agentAskRequest) agentReadReply {
 	o := readOpts{Since: req.Since, Prompts: req.Prompts, Host: req.Host, Machine: req.Machine}
 	view, err := runMachineRead(req.Read, spec, o)
 	if err != nil {
-		r.Why = err.Error()
+		r.Why, r.Failed = err.Error(), true
 		return r
 	}
 	if len(view) > readMaxBytes-readEnvelope {
@@ -267,7 +285,16 @@ func serveRead(uid uint32, user string, req agentAskRequest) agentReadReply {
 }
 
 func runMachineRead(name string, spec machineRead, o readOpts) ([]byte, error) {
-	build := func() ([]byte, error) {
+	build := func() (b []byte, err error) {
+		// A read runs inside the daemon that serves every pairing, from code
+		// written for a command's own process: one that panics is that read's
+		// failure, never the daemon's end.
+		defer func() {
+			if p := recover(); p != nil {
+				uilogf("read %s panicked: %v\n%s", name, p, debug.Stack())
+				b, err = nil, fmt.Errorf("the read %s failed inside this bastion (%v); its log has the trace", name, p)
+			}
+		}()
 		v, err := spec.build(o)
 		if err != nil {
 			return nil, err
