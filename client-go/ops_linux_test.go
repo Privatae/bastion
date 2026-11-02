@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // ── the upper-dir reader (no sandbox needed) ────────────────────────────────
@@ -99,6 +101,42 @@ func TestUpperChangesReadCreatedModifiedAndLinks(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// A kernel whose overlay has index, redirect_dir or metacopy on marks each
+// new folder under an existing one opaque. Over nothing the machine holds,
+// such a folder is created and what it holds is read; over a folder the
+// machine holds, opaque is a replaced tree, and refused.
+func TestAnOpaqueNewFolderIsCreatedAndAReplacedOneIsRefused(t *testing.T) {
+	lower := t.TempDir()
+	upper := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(lower, "srv/kept"), 0o755)
+	_ = os.WriteFile(filepath.Join(lower, "srv/kept/old.txt"), []byte("old\n"), 0o644)
+	for _, d := range []string{"srv/new", "srv/kept"} {
+		_ = os.MkdirAll(filepath.Join(upper, d), 0o755)
+		if err := unix.Setxattr(filepath.Join(upper, d), "trusted.overlay.opaque", []byte("y"), 0); err != nil {
+			t.Skipf("cannot set an overlay attribute here (%v): needs root on a filesystem with trusted attributes", err)
+		}
+	}
+	_ = os.WriteFile(filepath.Join(upper, "srv/new/hello.txt"), []byte("hi\n"), 0o644)
+	changes, err := opUpperChanges(upper, lower)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range changes {
+		got[strings.TrimPrefix(c.Path, lower)] = c.Kind
+	}
+	if got["/srv/new"] != "created_dir" || got["/srv/new/hello.txt"] != "created" {
+		t.Fatalf("an opaque folder over nothing is created, with what it holds: %v", got)
+	}
+	if got["/srv/kept"] != "opaque" {
+		t.Fatalf("an opaque folder over one the machine holds is a replaced tree: %v", got)
+	}
+	m := &opManifest{Effects: opEffects{Files: []string{lower + "/srv/"}}}
+	if why := opEffectsViolation(m, &opReport{Changes: changes}); !strings.Contains(why, "opaque") {
+		t.Fatalf("the replaced tree is refused even inside the effects: %q", why)
 	}
 }
 

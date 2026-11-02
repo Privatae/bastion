@@ -22,6 +22,16 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.61.1
+
+- **An op that creates a folder runs on every Linux kernel.** Where the
+  kernel's overlay keeps an index (or has `redirect_dir` or `metacopy` on, as
+  Azure's kernel does), it marks each new folder opaque, and the bastion took
+  that for a replaced folder: every op that created one was refused as "a path
+  outside the effects in disguise". A new folder is now read as created, with
+  what it holds; a folder that replaces one the machine holds is still
+  refused.
+
 ## 0.61.0
 
 - **An agent on the machine reads the rest of it.** `agents show <pid|session>`

@@ -53,6 +53,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/user"
@@ -648,7 +649,12 @@ func opUpperChanges(upper, hostRoot string) ([]opChange, error) {
 			out = append(out, opChange{Path: real, Kind: "special"})
 			return nil
 		case mode.IsDir():
-			if opaque, _ := opXattrOpaque(p); opaque {
+			// Opaque hides what the lower holds at this path: a replaced
+			// tree, refused. With nothing there it hides nothing. A kernel
+			// whose overlay has index, redirect_dir or metacopy on marks every
+			// new folder under an existing one opaque, so such a folder is
+			// created, and its contents are read like any other.
+			if opaque, _ := opXattrOpaque(p); opaque && !errors.Is(lowerErr, fs.ErrNotExist) {
 				out = append(out, opChange{Path: real, Kind: "opaque"})
 				return filepath.SkipDir
 			}
