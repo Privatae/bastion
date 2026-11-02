@@ -19,10 +19,15 @@ $dir = Join-Path ([IO.Path]::GetTempPath()) ("o'brien-o$([char]0x2019)neil  two-
 New-Item -ItemType Directory -Path $dir | Out-Null
 $env:LOCALAPPDATA = $dir
 $env:TMPDIR = $dir
+$env:ProgramFiles = $dir
 function Write-Host { param($Object) $script:out += "$Object`n" }
 
 function Run-Case([string]$answer, [bool]$installed, [string]$pair) {
     $script:out = ''; $script:cmd = ''; $script:pairSeen = ''
+    $script:tray = ''
+    # The tray is started again from the new program after a yes (Restart-Tray,
+    # run by testdata/install_ps1_swap.ps1).
+    function Restart-Tray { param($exe) $script:tray = $exe; return $true }
     $Service = $true; $isAdmin = $false; $serviceInstalled = $installed; $Shared = $false
     $elevatedDone = $false; $fellBack = $false; $Pair = $pair
     $installScript = 'https://privatae.ai/bastion/install.ps1'
@@ -58,7 +63,7 @@ function Run-Case([string]$answer, [bool]$installed, [string]$pair) {
     $threw = $null
     try { . $block } catch { $threw = $_.Exception.Message }
     return @{ threw = $threw; out = $script:out; cmd = $script:cmd; pairSeen = $script:pairSeen;
-              service = $Service; done = $elevatedDone; fellBack = $fellBack }
+              service = $Service; done = $elevatedDone; fellBack = $fellBack; tray = $script:tray }
 }
 function Fail([string]$why) { Write-Output "FAIL: $why"; exit 1 }
 
@@ -69,9 +74,11 @@ if ($r.pairSeen -ne 'skp_INVENTEDCODE') { Fail "the elevated step could not read
 if ($r.cmd -notmatch "-Personal -OwnerSid 'S-1-5-21-1-2-3-1001'") { Fail "kind or owner: $($r.cmd)" }
 if ($r.cmd -notmatch "o''brien-o$([char]0x2019)$([char]0x2019)neil") { Fail "the temp folder's quotes are not doubled: $($r.cmd)" }
 if ($r.out -notmatch 'Installed: C:\\Program Files') { Fail "the elevated step's output is not shown: $($r.out)" }
+if ($r.tray -ne (Join-Path $dir 'Privatae\privatae-bastion.exe')) { Fail "the tray was not started again from the installed program: '$($r.tray)'" }
 if (Get-ChildItem -LiteralPath $dir -Filter 'privatae-bastion-pair-*' -ErrorAction SilentlyContinue) { Fail 'the code file was left behind' }
 
 $r = Run-Case 'no' $false ''
+if ($r.tray) { Fail 'a declined install restarted the tray' }
 if ($r.threw -or $r.done -or $r.service -or -not $r.fellBack -or $r.out -notmatch 'installed for your account only') { Fail "a no must fall back to this account: $($r.threw) $($r.out)" }
 
 $r = Run-Case 'no' $true ''

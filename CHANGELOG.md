@@ -22,6 +22,29 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.62.1
+
+Windows, the installer for the whole machine:
+
+- **Installing over a running bastion works.** The tray runs from the
+  service's own program in every signed-in session, and Windows will not
+  replace a running program, so a reinstall or upgrade stopped with "Cannot
+  create a file when that file already exists." The installer now moves the
+  program in place aside (the bastion removes it at its next start) and puts
+  the new one in its name, as the bastion's own self-update does.
+- **A failed install never leaves the bastion stopped.** The service the
+  installer stopped is started again before the failure is reported, and the
+  message says what failed and whether the bastion is running.
+- **Your tray is the new version too.** After the install, the tray in your
+  session is started again from the new program. Run from an Administrator
+  terminal by hand, the installer says an open tray changes at your next
+  sign-in. The trays of other people signed in are left running the earlier
+  program until their next sign-in, never stopped as an earlier install.
+- **A reinstall for your account alone runs the new version.** With no
+  pairing code, it said the bastion was running while the copy already
+  running was still the earlier program; it now stops that copy before
+  starting the new one.
+
 ## 0.62.0
 
 Windows, with the bastion installed for the whole machine (the

@@ -74,6 +74,70 @@ if ($PairFile) {
 $arch = if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64') {'arm64'} else {'amd64'}
 $key  = "windows-$arch.exe"
 
+# Puts the verified download $new at $target. The program already there may be
+# running, and not only as the service: a whole-machine install starts the tray
+# from the same file in every signed-in session (`"<exe>" tray`, tray.go
+# trayRunValue). Windows will not replace or delete a running program, but it
+# will rename one, so the old file is moved aside to <exe>.old and the new one
+# takes its name, as the bastion's own self-update does (update.go
+# swapBinaryAt). The bastion removes the .old at its next start
+# (cleanupStaleBinaries). Without this, an install beside an open tray stopped
+# with "Cannot create a file when that file already exists." If the new file
+# cannot be moved in, the old one is put back, so there is always a program.
+function Install-Program([string]$new, [string]$target) {
+    $aside = $null
+    if (Test-Path -LiteralPath $target) {
+        # An .old still running (a tray from before the last update) cannot be
+        # removed; .bak is the other name the bastion clears at its start.
+        foreach ($name in @("$target.old", "$target.bak")) {
+            Remove-Item -Force -LiteralPath $name -ErrorAction SilentlyContinue
+            if (-not (Test-Path -LiteralPath $name)) { $aside = $name; break }
+        }
+        if (-not $aside) {
+            throw "$target.old and $target.bak are both still in use by a running bastion, so the program could not be moved aside."
+        }
+        Move-Item -LiteralPath $target -Destination $aside
+    }
+    try {
+        Move-Item -LiteralPath $new -Destination $target
+    } catch {
+        if ($aside) { Move-Item -LiteralPath $aside -Destination $target -ErrorAction SilentlyContinue }
+        throw
+    }
+}
+
+# A failed install never leaves the machine's bastion stopped: the service this
+# installer stopped is started again before the failure is reported.
+function Stop-InstallFailed([bool]$stopped, [string]$why) {
+    if ($stopped) {
+        try {
+            Start-Service -Name 'PrivataeBastion' -ErrorAction Stop
+            $why += " The bastion's service is running again."
+        } catch {
+            $why += (" The bastion could not be started again ($($_.Exception.Message)); " +
+                     "start it from an Administrator terminal:  Start-Service PrivataeBastion")
+        }
+    }
+    throw $why
+}
+
+# After an install for the whole machine, the tray in this person's session is
+# still the earlier program (it holds the file the install moved aside). It is
+# stopped and started again from the new one, so the tray and the service are
+# the same version. Only this session's trays, found by their command line.
+function Restart-Tray([string]$exe) {
+    $session = (Get-Process -Id $PID).SessionId
+    $paths = @($exe, "$exe.old", "$exe.bak")
+    Get-CimInstance Win32_Process -Filter "Name='privatae-bastion.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $session -and $_.ExecutablePath -and ($paths -contains $_.ExecutablePath) -and
+                       ($_.CommandLine -match '\stray\s*$') } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Wait-Process -Id $_.ProcessId -Timeout 5 -ErrorAction SilentlyContinue
+        }
+    try { Start-Process -FilePath $exe -ArgumentList 'tray' | Out-Null; return $true } catch { return $false }
+}
+
 # Checked before anything is downloaded. Never echoed: it holds the token.
 if ($Pair -and -not $Pair.StartsWith('skp_')) {
     throw "-Pair takes the pairing code from your Host's card, which starts skp_. Nothing was installed."
@@ -141,6 +205,9 @@ if ($Service -and -not $isAdmin) {
             Remove-Item -Force -LiteralPath $own -ErrorAction SilentlyContinue
             Write-Host "Removed $own, an earlier copy for your account alone."
         }
+        $installedExe = Join-Path $env:ProgramFiles 'Privatae\privatae-bastion.exe'
+        if (Restart-Tray $installedExe) { Write-Host "The tray was started again from the new program." }
+        else { Write-Host "The tray could not be started now; it starts at your next sign-in." }
         $elevatedDone = $true
     } elseif ($serviceInstalled) {
         throw ("This machine's bastion is installed for the whole machine, and updating it needs an administrator's yes. " +
@@ -180,6 +247,7 @@ if (-not $elevatedDone) {
     # the system. Made here, it has the folder's permissions from the start.
     $tmpDir = if ($Service) { $dest } else { [System.IO.Path]::GetTempPath() }
     $tmp = Join-Path $tmpDir ("privatae-bastion-" + [System.Guid]::NewGuid().ToString() + ".exe")
+    $stoppedService = $false
     try {
         # Take the URL FROM THE MANIFEST, never build one. The manifest's url now
         # carries ?v=<version>, which is what stops Cloudflare handing back the
@@ -198,12 +266,19 @@ if (-not $elevatedDone) {
                    "The downloaded binary is not the one the platform published. Nothing was installed.")
         }
         Write-Host "Checksum verified ($expected)."
-        # A running service holds its program open, and Windows will not replace an
-        # open program. Stop it first; `service install` below starts it again.
+        # The service is stopped so that it restarts on the new program;
+        # `service install` below starts it again. Its program, and any tray's,
+        # is moved aside rather than replaced (Install-Program).
         if ($Service -and (Get-Service -Name 'PrivataeBastion' -ErrorAction SilentlyContinue)) {
             Stop-Service -Name 'PrivataeBastion' -Force -ErrorAction SilentlyContinue
+            $stoppedService = $true
         }
-        Move-Item -Force -Path $tmp -Destination $exe
+        try {
+            Install-Program $tmp $exe
+        } catch {
+            Stop-InstallFailed $stoppedService ("The new program could not be put in place of $exe ($($_.Exception.Message)). " +
+                                                "Nothing was installed.")
+        }
     } finally {
         if (Test-Path $tmp) { Remove-Item -Force $tmp -ErrorAction SilentlyContinue }
     }
@@ -244,11 +319,22 @@ if (-not $elevatedDone) {
     if ($Service) {
         $task = Get-ScheduledTask -TaskName 'PrivataeBastion' -ErrorAction SilentlyContinue
         if ($task) {
-            Unregister-ScheduledTask -TaskName 'PrivataeBastion' -Confirm:$false
+            # The service is stopped by now, so a failure here starts it again
+            # before it is reported (Stop-InstallFailed).
+            try { Unregister-ScheduledTask -TaskName 'PrivataeBastion' -Confirm:$false }
+            catch {
+                Stop-InstallFailed $stoppedService ("The logon task from an earlier install could not be removed " +
+                                                    "($($_.Exception.Message)), and it would start a second bastion beside the service.")
+            }
             Write-Host "Removed the logon task from an earlier install; the service replaces it."
         }
+        # Not the program Install-Program moved aside: every session's tray
+        # runs from it now, and Windows may report a running program under the
+        # name it was renamed to. Those trays are not an earlier install; they
+        # go on as the earlier program until their next sign-in.
+        $asideNames = @("$exe.old", "$exe.bak")
         Get-Process -Name 'privatae-bastion' -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -and ($_.Path -ne $exe) } |
+            Where-Object { $_.Path -and ($_.Path -ne $exe) -and ($asideNames -notcontains $_.Path) } |
             ForEach-Object {
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
                 # Stop-Process returns before the process is gone, and its run
@@ -261,7 +347,9 @@ if (-not $elevatedDone) {
         # as the machine's owner below.
         $owner = if ($OwnerSid) { $OwnerSid } else { ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value }
         & $exe service install --from-account $owner
-        if ($LASTEXITCODE -ne 0) { throw "could not register the Windows service (exit $LASTEXITCODE)" }
+        if ($LASTEXITCODE -ne 0) {
+            Stop-InstallFailed $stoppedService "The Windows service could not be registered (exit $LASTEXITCODE; the reason is above)."
+        }
     } else {
     try {
         $taskName = 'PrivataeBastion'
@@ -342,6 +430,12 @@ if (-not $elevatedDone) {
         if ($LASTEXITCODE -ne 0) { Write-Host "NOTE: your account was not recorded as this machine's owner (the reason is above)." }
         Write-Host ""
         Write-Host "The bastion runs for the whole machine as the Windows service 'PrivataeBastion' (LocalSystem), and starts with Windows."
+        # Run elevated by hand, there is no ordinary-account step afterwards to
+        # start the tray again (Restart-Tray), and this window would start it
+        # elevated, so an open tray goes on as the earlier program until sign-in.
+        if (-not $OwnerSid) {
+            Write-Host "  A tray already open keeps running the earlier program until you next sign in; it then starts from the new one."
+        }
         if (-not $Pair -and $Shared) {
         Write-Host "Next, anchor this machine to the Host that should govern it:"
         Write-Host "  privatae-bastion claim-anchor"
@@ -360,6 +454,13 @@ if (-not $elevatedDone) {
         elseif ($fellBack) { Write-Host "  To install it for the whole machine, run this installer again and answer Windows' prompt with an administrator's yes." }
         if (-not $Pair) {
             # Started now, not only at the next sign-in: it watches with no Host.
+            # A copy already running is the old program (moved aside above), and
+            # starting a task that is already running does nothing, so every copy
+            # is stopped first, as for -Pair below.
+            Stop-ScheduledTask -TaskName 'PrivataeBastion' -ErrorAction SilentlyContinue
+            Get-Process -Name 'privatae-bastion' -ErrorAction SilentlyContinue | ForEach-Object {
+                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
             try { Start-ScheduledTask -TaskName 'PrivataeBastion'; $now = 'It is running now, and' } catch { $now = 'It' }
             Write-Host "$now starts each time you sign in. Open a NEW terminal, then:  privatae-bastion ui"
             Write-Host "Connect a Host, if you run one (optional):  privatae-bastion pair <token>"
