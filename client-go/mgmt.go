@@ -347,7 +347,11 @@ func runMgmtWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls
 	}
 	for i := 0; i < n; i++ {
 		go func() {
+			hold := laneHoldFor(self)
 			for pctx.Err() == nil {
+				if !hold.waitClear(pctx) {
+					return
+				}
 				ctx, cancel := context.WithTimeout(pctx, 25*time.Second)
 				ws, _, err := dialer.DialContext(ctx, wsURL, http.Header{})
 				cancel()
@@ -360,6 +364,7 @@ func runMgmtWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls
 					sleepCtx(pctx, time.Second)
 					continue
 				}
+				held := watchHeldClose(ws)
 				stopKA := armWSKeepalive(ws) // ping/read-deadline: a dead tunnel unblocks the park
 				// A revoke while parked: closing the socket is what unblocks the read.
 				unpark := context.AfterFunc(pctx, func() { _ = ws.Close() })
@@ -367,6 +372,9 @@ func runMgmtWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls
 				unpark()
 				stopKA()
 				_ = ws.Close()
+				if held() {
+					hold.refused(self) // the Host holds this machine (lanehold.go)
+				}
 			}
 		}()
 	}

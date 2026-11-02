@@ -616,7 +616,11 @@ func runServeWorkers(pctx context.Context, self, dcnDir, wsURL string, tlsCfg *t
 	spawn = func() {
 		go func() {
 			wait := 3 * time.Second
+			hold := laneHoldFor(self)
 			for pctx.Err() == nil {
+				if !hold.waitClear(pctx) {
+					return
+				}
 				ctx, cancel := context.WithTimeout(pctx, 25*time.Second)
 				ws, resp, err := dialer.DialContext(ctx, wsURL, http.Header{})
 				cancel()
@@ -635,6 +639,7 @@ func runServeWorkers(pctx context.Context, self, dcnDir, wsURL string, tlsCfg *t
 					sleepCtx(pctx, time.Second)
 					continue
 				}
+				held := watchHeldClose(ws)
 				stopKA := armWSKeepalive(ws)
 				unpark := context.AfterFunc(pctx, func() { _ = ws.Close() })
 				took := serveJob(ws, self, dcnDir, spawn)
@@ -643,6 +648,10 @@ func runServeWorkers(pctx context.Context, self, dcnDir, wsURL string, tlsCfg *t
 				_ = ws.Close()
 				if took {
 					return
+				}
+				if held() {
+					hold.refused(self) // the Host holds this machine (lanehold.go)
+					continue
 				}
 				// Closed while parked (a Host restart), or the job refused: not
 				// straight back, so a Host that closes or misuses every worker is

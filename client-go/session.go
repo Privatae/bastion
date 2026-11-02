@@ -83,7 +83,11 @@ func runSessionWorkers(pctx context.Context, self string, wsURL string, tlsCfg *
 	}
 	for i := 0; i < n; i++ {
 		go func() {
+			hold := laneHoldFor(self)
 			for pctx.Err() == nil {
+				if !hold.waitClear(pctx) {
+					return
+				}
 				ctx, cancel := context.WithTimeout(pctx, 25*time.Second)
 				ws, _, err := dialer.DialContext(ctx, wsURL, http.Header{})
 				cancel()
@@ -96,6 +100,7 @@ func runSessionWorkers(pctx context.Context, self string, wsURL string, tlsCfg *
 					sleepCtx(pctx, time.Second)
 					continue
 				}
+				held := watchHeldClose(ws)
 				stopKA := armWSKeepalive(ws)
 				// A revoked pairing closes the socket under the session, which ends the
 				// shell through the same path a host disconnect takes.
@@ -104,6 +109,9 @@ func runSessionWorkers(pctx context.Context, self string, wsURL string, tlsCfg *
 				unpark()
 				stopKA()
 				_ = ws.Close()
+				if held() {
+					hold.refused(self) // the Host holds this machine (lanehold.go)
+				}
 			}
 		}()
 	}

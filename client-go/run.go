@@ -646,6 +646,8 @@ func runPairing(ctx context.Context, cfg *Config) error {
 					// silence path reads this — 14 days with no 2xx from the
 					// anchor host lets root re-anchor without its consent.
 					recordPairingOK(cfg.HostName)
+					// A Host that holds this machine says so; its lanes wait (lanehold.go).
+					laneHoldFor(cfg.HostName).fromBeat(cfg.HostName, beatSaysQuarantined(body))
 				}
 				// Box-wide directives (update, contain, mirror) are anchor-only
 				// on an anchored box — each takes this pairing's identity and
@@ -891,6 +893,7 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 			}
 			if resp.StatusCode < 300 {
 				recordPairingOK(cfg.HostName)
+				laneHoldFor(cfg.HostName).fromBeat(cfg.HostName, beatSaysQuarantined(body))
 			}
 			maybeSelfUpdate(cfg.HostName, cfg.dcnDir(), body)
 			maybeContain(cfg.HostName, cfg.dcnDir(), body)

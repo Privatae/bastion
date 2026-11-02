@@ -22,6 +22,18 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
+## 0.61.2
+
+- **A machine a Host holds stops dialling it.** When a Host's owner
+  quarantines this machine there, the Host refuses each of the bastion's lane
+  connections, and three of the five lanes dialled again at once, the other
+  two a second later: tens of connections a second, each a TLS handshake.
+  Now a refusal holds all of that pairing's lanes for 5 seconds, twice as long
+  after each further refusal up to 5 minutes; and while the Host's heartbeat
+  reply says the machine is quarantined, the lanes do not dial at all. The
+  first reply that no longer says so brings them back. Other Hosts the
+  machine is paired with are not slowed.
+
 ## 0.61.1
 
 - **An op that creates a folder runs on every Linux kernel.** Where the

@@ -3,7 +3,7 @@
 [![License: GPL v3+](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Go 1.26+](https://img.shields.io/badge/go-1.26%2B-00ADD8.svg)](client-go/go.mod)
 [![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-lightgrey.svg)](#supported-platforms)
-[![ci](https://git.privatae.ai/privatae/privatae-bastion/actions/workflows/ci.yml/badge.svg?branch=main)](https://git.privatae.ai/privatae/privatae-bastion/actions)
+[![ci](https://github.com/Privatae/bastion/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Privatae/bastion/actions/workflows/ci.yml)
 
 **See every AI agent running on your computer, what each one is doing and what it can reach, and stop any of them. One program, no account, no AI of its own.**
 

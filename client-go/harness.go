@@ -114,7 +114,11 @@ func runHarnessWorkers(pctx context.Context, self, dcnDir string, wsURL string, 
 	}
 	for i := 0; i < n; i++ {
 		go func() {
+			hold := laneHoldFor(self)
 			for pctx.Err() == nil {
+				if !hold.waitClear(pctx) {
+					return
+				}
 				ctx, cancel := context.WithTimeout(pctx, 25*time.Second)
 				ws, _, err := dialer.DialContext(ctx, wsURL, http.Header{})
 				cancel()
@@ -127,12 +131,16 @@ func runHarnessWorkers(pctx context.Context, self, dcnDir string, wsURL string, 
 					sleepCtx(pctx, time.Second)
 					continue
 				}
+				held := watchHeldClose(ws)
 				stopKA := armWSKeepalive(ws) // ping/read-deadline: a dead tunnel unblocks the park
 				unpark := context.AfterFunc(pctx, func() { _ = ws.Close() })
 				handleHarnessConn(ws, self, dcnDir) // blocks until a job, serves it, then returns
 				unpark()
 				stopKA()
 				_ = ws.Close()
+				if held() {
+					hold.refused(self) // the Host holds this machine (lanehold.go)
+				}
 			}
 		}()
 	}
