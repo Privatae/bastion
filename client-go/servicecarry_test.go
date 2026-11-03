@@ -94,32 +94,6 @@ func TestAServiceInstallCarriesTheAccountsPairingsIntoTheService(t *testing.T) {
 	}
 }
 
-// A service that already serves a Host is never merged into, and the
-// account's state stays where it was.
-func TestACarryNeverMergesIntoAServiceThatServesAHost(t *testing.T) {
-	from, to := carryTree(t)
-	p := filepath.Join(to, "pairings", "box-two.example.test.json")
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(p, []byte(`{"host_name":"box-two.example.test"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	res, err := carryStateInto(from, to)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Hosts) != 0 || !strings.Contains(res.Note, "box-two.example.test") {
-		t.Fatalf("carried into a serving service: %+v", res)
-	}
-	if _, err := os.Stat(filepath.Join(from, "pairings", "box-one.example.test.json")); err != nil {
-		t.Errorf("the account's pairing was touched: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(to, "pairings", "box-one.example.test.json")); err == nil {
-		t.Error("the account's pairing was merged in")
-	}
-}
-
 // Not while a bastion still runs from the folder: its next write would be
 // lost, and two bastions would hold the same keys.
 func TestACarryWaitsForTheAccountsBastionToStop(t *testing.T) {
@@ -349,5 +323,197 @@ func TestACarryWhoseSourceCannotBeRemovedStillSucceeds(t *testing.T) {
 	}
 	if line := carryReport(res, from); !strings.Contains(line, "delete that folder") {
 		t.Errorf("the install does not say the account's copy is still there: %q", line)
+	}
+}
+
+// writeCarryFile writes body at rel under dir.
+func writeCarryFile(t *testing.T, dir, rel, body string) {
+	t.Helper()
+	p := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// addHostsTree is carryTree with the account's pairing on the first control
+// port, and a service that already serves box-two on that same port.
+func addHostsTree(t *testing.T) (from, to string) {
+	t.Helper()
+	from, to = carryTree(t)
+	writeCarryFile(t, from, "pairings/box-one.example.test.json", `{"host_name":"box-one.example.test","bearer":"mcp_test",`+
+		`"listen_addr":"127.0.0.1:7878","git_proxy_addr":"127.0.0.1:7978",`+
+		`"context_root":"`+filepath.ToSlash(filepath.Join(from, "context", "box-one.example.test"))+`",`+
+		`"dcn_dir":"`+filepath.ToSlash(filepath.Join(from, "dcn", "box-one.example.test"))+`"}`)
+	writeCarryFile(t, to, "pairings/box-two.example.test.json", `{"host_name":"box-two.example.test",`+
+		`"listen_addr":"127.0.0.1:7878","git_proxy_addr":"127.0.0.1:7978"}`)
+	writeCarryFile(t, to, "ui.secret", "service secret")
+	return from, to
+}
+
+// With no question asked, the account's pairing for a Host the service does
+// not serve is added beside the service's: its keys as they were, its
+// folders the service's, a control port of its own. Nothing machine-wide of
+// the account's takes the service's place; it is kept beside it.
+//
+// MUTATION: leave the account's pairings where they are when the service
+// serves a Host (the 0.62 rule). RESULT: red. Keep the account's listen_addr
+// in carriedPairing. RESULT: red (two
+// pairings on 127.0.0.1:7878). Write the account's other files without
+// carryAsideSuffix. RESULT: red (the account's ui.secret becomes the service's).
+func TestAMoveAddsTheAccountsOtherHostBesideTheServices(t *testing.T) {
+	from, to := addHostsTree(t)
+	writeCarryFile(t, from, "mode.json", `{"mode":"networked"}`)
+	res, err := carryStateInto(from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(to, "mode.json")); err == nil {
+		t.Error("the account's mode became the machine's, which had none of its own")
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "mode.json"+carryAsideSuffix)); !strings.Contains(string(b), "networked") {
+		t.Errorf("the account's mode was not kept beside: %q", b)
+	}
+	if strings.Join(res.Hosts, ",") != "box-one.example.test" || strings.Join(res.Beside, ",") != "box-two.example.test" {
+		t.Fatalf("added %v beside %v (%s)", res.Hosts, res.Beside, res.Note)
+	}
+	raw, err := os.ReadFile(filepath.Join(to, "pairings", "box-one.example.test.json"))
+	if err != nil {
+		t.Fatalf("the added pairing is not in the service: %v", err)
+	}
+	var c Config
+	if err := json.Unmarshal(raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Bearer != "mcp_test" || c.State != "" {
+		t.Errorf("the pairing changed on the way: %+v", c)
+	}
+	if c.ListenAddr == "127.0.0.1:7878" || c.ListenAddr == "" || c.GitProxyAddr == "127.0.0.1:7978" || c.GitProxyAddr == c.ListenAddr {
+		t.Errorf("the added pairing shares a port with the service's: listen %q, git %q", c.ListenAddr, c.GitProxyAddr)
+	}
+	if !samePath(c.ContextRoot, filepath.Join(to, "context", "box-one.example.test")) {
+		t.Errorf("the added pairing's context is still the account's: %q", c.ContextRoot)
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "dcn", "box-one.example.test", "grants.json")); !strings.Contains(string(b), "notes") {
+		t.Errorf("the added pairing's grants did not come along: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "pairings", "box-two.example.test.json")); !strings.Contains(string(b), "7878") {
+		t.Errorf("the service's own pairing changed: %s", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "ui.secret")); string(b) != "service secret" {
+		t.Errorf("the service's own secret was replaced: %q", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "ui.secret"+carryAsideSuffix)); string(b) != "account secret" {
+		t.Errorf("the account's secret was not kept beside the service's: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(to, "run.holder.json")); err == nil {
+		t.Error("a running bastion's file came along")
+	}
+	if _, err := os.Stat(from); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the account's folder, whose pairings all moved, is still there: %v", err)
+	}
+	if line := carryReport(res, from); !strings.Contains(line, "Added box-one.example.test to the service, beside box-two.example.test") {
+		t.Errorf("the report: %q", line)
+	}
+}
+
+// On an anchored machine an added pairing waits for the anchor, as any new
+// pairing there does; the account's grant was another anchor's and is kept
+// beside, never as this machine's.
+//
+// MUTATION: drop the pending state in carriedPairing. RESULT: red.
+func TestAnAddedHostWaitsForTheAnchor(t *testing.T) {
+	from, to := addHostsTree(t)
+	writeCarryFile(t, to, "anchor.json", `{"owner":"box-two","anchor_host":"box-two.example.test"}`)
+	writeCarryFile(t, from, "pairings/box-one.example.test"+pairingGrantSuffix, `{"grant":"another anchor's"}`)
+	res, err := carryStateInto(from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(to, "pairings", "box-one.example.test.json"))
+	var c Config
+	_ = json.Unmarshal(raw, &c)
+	if c.State != pairingPending || !res.Pending || c.Origin != pairingOriginCarried {
+		t.Errorf("the added pairing does not wait for the anchor as a carried one: state %q origin %q, %+v", c.State, c.Origin, res)
+	}
+	if line := carryReport(res, from); !strings.Contains(line, "waits until box-two.example.test, the Host in charge of this machine, admits it") {
+		t.Errorf("the report does not say who admits it: %q", line)
+	}
+	if _, err := os.Stat(filepath.Join(to, "pairings", "box-one.example.test"+pairingGrantSuffix)); err == nil {
+		t.Error("another anchor's grant became this machine's")
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "anchor.json")); !strings.Contains(string(b), "box-two") {
+		t.Errorf("the machine's anchor changed: %s", b)
+	}
+}
+
+// The account's pairing for a Host the service already serves stays, and so
+// does everything that is not an added Host's: only what was added leaves.
+func TestAnAddLeavesThePairingForAHostTheServiceServes(t *testing.T) {
+	from, to := addHostsTree(t)
+	writeCarryFile(t, from, "pairings/box-two.example.test.json", `{"host_name":"box-two.example.test","bearer":"mcp_account"}`)
+	res, err := carryStateInto(from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(res.Hosts, ",") != "box-one.example.test" || strings.Join(res.Stayed, ",") != "box-two.example.test" {
+		t.Fatalf("%+v", res)
+	}
+	if b, _ := os.ReadFile(filepath.Join(to, "pairings", "box-two.example.test.json")); strings.Contains(string(b), "mcp_account") {
+		t.Error("the account's pairing replaced the service's for the same Host")
+	}
+	for _, rel := range []string{"pairings/box-two.example.test.json", "ui.secret"} {
+		if _, err := os.Stat(filepath.Join(from, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("%s left the account's folder: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{"pairings/box-one.example.test.json", "dcn/box-one.example.test", "context/box-one.example.test"} {
+		if _, err := os.Stat(filepath.Join(from, filepath.FromSlash(rel))); err == nil {
+			t.Errorf("%s, which moved, is still in the account's folder", rel)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(to, "ui.secret"+carryAsideSuffix)); err == nil {
+		t.Error("the account's other files moved while a pairing of its stays")
+	}
+}
+
+// A pairing that keeps its state in a folder every pairing shares (before
+// 0.10.0) is not moved: that folder is not its alone.
+func TestAnAddRefusesAPairingInTheSharedFolders(t *testing.T) {
+	from := filepath.Join(t.TempDir(), "privatae-bastion")
+	raw := []byte(`{"host_name":"old.example.test","context_root":"` + filepath.ToSlash(filepath.Join(from, "context")) + `"}`)
+	if _, err := carryHostRoots(raw, from, "old.example.test"); err == nil {
+		t.Error("a pairing in the shared context folder would be moved")
+	}
+	raw = []byte(`{"host_name":"new.example.test","backup_root":"/mnt/nas","runs_dir":"` +
+		filepath.ToSlash(filepath.Join(from, "runs", "new")) + `"}`)
+	roots, err := carryHostRoots(raw, from, "new.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(roots, ","), filepath.Join("runs", "new")) || strings.Contains(strings.Join(roots, ","), "nas") {
+		t.Errorf("roots %v", roots)
+	}
+}
+
+// Under an organisation's policy, a carried Host it does not name waits for the
+// one it names, even on a machine nobody holds yet.
+//
+// MUTATION: drop the policy clause in carriedPairing. RESULT: red.
+func TestACarriedHostWaitsForTheHostAPolicyNames(t *testing.T) {
+	prev := readAnchorPolicy
+	readAnchorPolicy = func() *anchorPolicy { return &anchorPolicy{Host: "corp.example.test", Source: "test"} }
+	t.Cleanup(func() { readAnchorPolicy = prev })
+	from, to := addHostsTree(t)
+	if _, err := carryStateInto(from, to); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(to, "pairings", "box-one.example.test.json"))
+	var c Config
+	_ = json.Unmarshal(raw, &c)
+	if c.State != pairingPending {
+		t.Errorf("a Host the policy does not name came in %q", c.State)
 	}
 }

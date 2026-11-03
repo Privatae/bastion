@@ -114,11 +114,7 @@ func (c *wsConn) SetWriteDeadline(t time.Time) error { return c.ws.SetWriteDeadl
 func runEgressWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer string,
 	dialOut egressDialer, n int) (wait func()) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	var wg sync.WaitGroup
 	for i := 0; i < n; i++ {
 		wg.Add(1)

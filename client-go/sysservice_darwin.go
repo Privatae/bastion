@@ -167,3 +167,7 @@ func writeRootFile(p string, data []byte, mode os.FileMode) error {
 	}
 	return os.Rename(tmp, p)
 }
+
+// systemServiceRunning: the launchd daemon runs `run` at once, whose console
+// answers for it (pair.go pairDaemonRunning).
+func systemServiceRunning() bool { return false }

@@ -144,7 +144,28 @@ func cmdUninstall(deleteData bool) error {
 	cfgs, _ := loadPairings()
 	hadHosts := len(cfgs) > 0
 	failed := 0
-	for _, st := range uninstallSteps(runtime.GOOS, whole, home, os.Getuid()) {
+	// The door's own firewall rules (doorfw.go): once the first step has
+	// stopped the service, so nothing adds one back, and while the program a
+	// rule names is still in place.
+	fwDone := false
+	removeFirewall := func() {
+		if fwDone {
+			return
+		}
+		fwDone = true
+		fwSaid, fwErr := doorFirewallRemoveAll()
+		for _, l := range fwSaid {
+			fmt.Println("  " + l)
+		}
+		if fwErr != nil {
+			fmt.Fprintf(os.Stderr, "  could not remove the bastion's own firewall rule: %v\n", fwErr)
+			failed++
+		}
+	}
+	for i, st := range uninstallSteps(runtime.GOOS, whole, home, os.Getuid()) {
+		if i == 1 {
+			removeFirewall()
+		}
 		switch {
 		case st.Call == "system-service":
 			if err := uninstallSystemService(); err != nil {
@@ -171,6 +192,7 @@ func cmdUninstall(deleteData bool) error {
 			fmt.Println("  " + st.Say)
 		}
 	}
+	removeFirewall() // a platform with one step
 	if deleteData {
 		if err := os.RemoveAll(dataDir); err != nil {
 			return fmt.Errorf("the bastion is removed, but its state could not be deleted: %w", err)

@@ -106,8 +106,9 @@ func runCommandHintFor(goos string) string {
 	return "systemctl start privatae-bastion"
 }
 
-// restartHint is how to bring the daemon back on THIS machine after a change
-// that only takes at startup.
+// restartHintFor is how to bring the daemon back after a change that only
+// takes at startup, on goos (claim-anchor and pair no longer need it: a
+// running bastion follows the anchor and the pairing files by itself).
 //
 // It said `systemctl restart privatae-bastion` unconditionally — the third
 // Linux instruction printed at a Windows user inside one command's output,
@@ -116,7 +117,7 @@ func runCommandHintFor(goos string) string {
 // service: deploy/install.ps1 installs the exe and registers a logon task. So
 // the honest instruction there is to start it again. A networked install on
 // macOS or Windows runs as a system service (sysservice.go), and for that
-// machine restartHint names the service manager's own restart instead.
+// machine serviceRestartHintFor names the service manager's own restart instead.
 //
 // TAKES THE PLATFORM AS AN ARGUMENT, and that is the point. The first version
 // branched on runtime.GOOS directly, so the only machine that could test the
@@ -124,13 +125,6 @@ func runCommandHintFor(goos string) string {
 // passed clean on the Linux builder. That is the same hole that let 'darwin'
 // match 'win' in the dashboard: a platform branch nothing off-platform can
 // reach is a platform branch nothing checks.
-func restartHint() string {
-	if systemService.installed && (runtime.GOOS == "darwin" || runtime.GOOS == "windows") {
-		return serviceRestartHintFor(runtime.GOOS)
-	}
-	return restartHintFor(runtime.GOOS)
-}
-
 func restartHintFor(goos string) string {
 	if goos == "windows" {
 		return "Start the bastion again so the change takes:  privatae-bastion run\n" +

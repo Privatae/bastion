@@ -21,9 +21,13 @@ import (
 type heldHost struct {
 	hellos atomic.Int32
 	hold   atomic.Bool
-	tls    *tls.Config
-	dial   func(ctx context.Context) (net.Conn, error)
-	url    string
+	// together: a held socket is closed only once this many hellos came in
+	// (or after barrierWait), so every worker of a pool has dialled before
+	// the first refusal starts the hold. 0 closes each at once.
+	together atomic.Int32
+	tls      *tls.Config
+	dial     func(ctx context.Context) (net.Conn, error)
+	url      string
 }
 
 func startHeldHost(t *testing.T) *heldHost {
@@ -42,6 +46,9 @@ func startHeldHost(t *testing.T) *heldHost {
 		}
 		h.hellos.Add(1)
 		if h.hold.Load() {
+			for end := time.Now().Add(barrierWait); h.hellos.Load() < h.together.Load() && time.Now().Before(end); {
+				time.Sleep(5 * time.Millisecond)
+			}
 			_ = c.WriteControl(websocket.CloseMessage,
 				websocket.FormatCloseMessage(laneHeldCloseCode, "this bastion is quarantined"), time.Now().Add(time.Second))
 			return
@@ -65,6 +72,9 @@ func startHeldHost(t *testing.T) *heldHost {
 	h.url = "wss://example.com/lane"
 	return h
 }
+
+// barrierWait bounds how long a held socket waits for the rest of its pool.
+const barrierWait = 15 * time.Second
 
 // shortHolds makes the holds short enough for a test. Set before any worker
 // runs, and never from a parallel subtest.
@@ -109,6 +119,17 @@ func lanePools(dir string) map[string]func(ctx context.Context, host string, h *
 // worker of any lane dials it again before the hold is over: one hello per
 // worker, where a pool used to dial again at once or a second later, 30 to 80
 // times a second from one held machine.
+//
+// The Host closes the sockets only once every worker has said hello
+// (together). Closing the first at once made the test race the pool's own
+// start: a worker not yet past its first waitClear when another was refused
+// rightly waited out the hold before dialling, and the count read one of two
+// (a full gate, 2026-11-03). The hold is timed from the refusals, which come
+// after the last hello, so the 2 s look is inside the 3 s hold however slowly
+// the workers start.
+//
+// MUTATION: drop hold.refused from a lane's worker (mgmt.go). RESULT: red,
+// that lane dials again within the hold.
 func TestEveryLanePoolWaitsOutAHostThatHoldsThisMachine(t *testing.T) {
 	shortHolds(t, 3*time.Second, time.Minute)
 	for lane, run := range lanePools(t.TempDir()) {
@@ -117,10 +138,17 @@ func TestEveryLanePoolWaitsOutAHostThatHoldsThisMachine(t *testing.T) {
 			host := "held-" + lane + ".example.test"
 			ownHold(t, host)
 			h := startHeldHost(t)
+			const n = 2
+			h.together.Store(n)
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
-			const n = 2
 			go run(ctx, host, h, n)
+			for end := time.Now().Add(barrierWait); h.hellos.Load() < n && time.Now().Before(end); {
+				time.Sleep(5 * time.Millisecond)
+			}
+			if got := h.hellos.Load(); got < n {
+				t.Fatalf("only %d of %d workers dialled the Host in %s", got, n, barrierWait)
+			}
 			time.Sleep(2 * time.Second)
 			if got := h.hellos.Load(); got != n {
 				t.Fatalf("%d dials within the hold from %d workers; want one each", got, n)

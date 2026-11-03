@@ -195,16 +195,18 @@ func pairPrecheck(cfgs []*Config, handle string, replace, forceActive bool) (exi
 	if boxMode() == modeLocal && len(cfgs) > 0 {
 		return nil, "", &localSecondHostError{serving: cfgs[0].HostName}
 	}
-	return pairPrecheckState(forceActive)
+	return pairPrecheckState(forceActive, handle)
 }
 
 // pairPrecheckState is the state a new pairing gets once pairPrecheck's walls
-// are passed: active for claim-anchor, pending behind an anchor, else "".
-func pairPrecheckState(forceActive bool) (*Config, string, error) {
+// are passed: active for claim-anchor, pending behind an anchor (or, on a
+// machine an organisation's policy governs and no Host holds yet, behind the
+// Host the policy names: anchor_local.go), else "".
+func pairPrecheckState(forceActive bool, handle string) (*Config, string, error) {
 	if forceActive {
 		return nil, pairingActive, nil
 	}
-	if currentAnchor() != nil {
+	if currentAnchor() != nil || pendingUnderPolicy(handle) {
 		return nil, pairingPending, nil
 	}
 	return nil, "", nil
@@ -280,29 +282,29 @@ func cmdPair(token, redeemURL, hostCAFile string, replace bool) error {
 	if err != nil {
 		return err
 	}
-	// A networked machine is a server. Left unanchored it refuses every op to
-	// every host (capsAllowIn: unanchoredNetworkedRefusal) until someone runs
-	// claim-anchor, a step people missed. So the first pairing on a networked
-	// box with no anchor anchors it, as `claim-anchor` with no token would, and
-	// from then on every terminal and write waits for the person's approval and
-	// every later pairing for this host's. Only with machine authority, which
-	// claim-anchor needs anyway.
+	// A networked machine is a server, with one Host in charge of it: the
+	// anchor (anchor.go). Left unanchored it refuses every op to every host
+	// (capsAllowIn: unanchoredNetworkedRefusal) until someone runs
+	// claim-anchor, a step people missed. So with machine authority, which
+	// claim-anchor needs anyway, `pair` puts the right Host in charge by
+	// itself (anchor_local.go anchorAfterPair): the Host an organisation's
+	// policy names, else a Host on this machine, else the first Host paired.
 	// The pairing itself succeeded, so a failed anchor is reported, not
 	// returned: `pair` failing here would read as "could not pair" to a caller
 	// (npx cseries exits on it) when the pairing exists. claim-anchor, which
 	// such a caller runs next, reports the anchor's own failure.
-	anchored, err := anchorFirstNetworkedPairing(cfg, all)
+	took, err := anchorAfterPair(cfg, all)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
 	}
-	if anchored {
+	if took.Taken {
 		if fresh, lerr := loadPairings(); lerr == nil {
 			if c := pairingFor(fresh, cfg.HostName); c != nil {
 				cfg, all = c, fresh
 			}
 		}
 	}
-	pairReport(os.Stdout, cfg, all, anchored)
+	pairReport(os.Stdout, cfg, all, took)
 	return nil
 }
 
@@ -327,45 +329,77 @@ func pairOptsFor(token, redeemURL, hostCAFile string, replace bool) (string, pai
 }
 
 // pairReport is what `pair` prints once the pairing stands. Whatever the form
-// (anchored just now, over TCP, over a unix socket, pending, or over the
-// tunnel), it ends by saying to enrol a second factor when this pairing has
-// none and no approval device is pinned: without one, a local machine installs
-// a folder grant on the host's signed grant alone, and an anchored one has no
-// way to approve anything the host asks for.
-func pairReport(w io.Writer, cfg *Config, all []*Config, anchored bool) {
+// (put in charge just now, over TCP, over a unix socket, waiting to be
+// admitted, or over the tunnel), it ends by saying to enrol a second factor
+// when this pairing has none and no approval device is pinned: without one, a
+// local machine installs a folder grant on the host's signed grant alone, and
+// an anchored one has no way to approve anything the host asks for.
+//
+// It never tells the person to start a bastion that is already running: a
+// running bastion serves a new pairing by itself within supervisePeriod
+// (run.go superviseLoop), and on a machine whose bastion is a system service
+// the command that starts it is the service manager's (pairServeNote).
+func pairReport(w io.Writer, cfg *Config, all []*Config, took anchorTake) {
 	enrol := ""
 	if !secondFactorAvailable(cfg.dcnDir()) {
 		enrol = stepupEnrollHint(cfg.HostName, len(all))
 	}
 	defer func() { pairEnrolNote(w, cfg.HostName, enrol) }()
-	if anchored {
-		fmt.Fprintf(w, "\nThis machine is networked and anchored to %s: every terminal and every write\n", cfg.HostName)
-		fmt.Fprintln(w, "waits for your approval, and any later host waits for this one to approve it.")
+	if took.Taken {
+		fmt.Fprintf(w, "\n%s is now the Host in charge of this machine: %s.\n", cfg.HostName, took.Why)
+		if took.Replaced != "" {
+			fmt.Fprintf(w, "%s was in charge before. It is told so, and waits for %s to admit it, as any other Host does.\n",
+				took.Replaced, cfg.HostName)
+		}
+		if others := without(took.Waiting, took.Replaced); len(others) > 0 {
+			fmt.Fprintf(w, "Waiting for %s to admit them: %s.\n", cfg.HostName, strings.Join(others, ", "))
+		}
+		fmt.Fprintln(w, "Every terminal and every write waits for your approval, and any other Host waits")
+		fmt.Fprintf(w, "until %s admits it: %s asks you to approve it.\n", cfg.HostName, cfg.HostName)
 		if enrol != "" {
 			fmt.Fprintf(w, "Enrol your second factor now, so you can approve here:\n  %s\n\n", enrol)
 			enrol = ""
 		}
 	}
-	if cfg.tcpTransport() && cfg.active() {
+	if !cfg.active() {
+		who := admitter()
+		if who == "" {
+			fmt.Fprintf(w, "Paired with %s — PENDING. Nothing runs for it until it is admitted.\n", cfg.HostName)
+			return
+		}
+		why := "the Host in charge of this computer"
+		if p := currentAnchorPolicy(); p != nil && boxMode() == modeNetworked && policyNames(p, who) {
+			why += ", named by an organisation's policy (" + p.Source + ")"
+		}
+		fmt.Fprintf(w, "Paired with %s — WAITING for %s to admit it.\n\n", cfg.HostName, who)
+		fmt.Fprintf(w, "The code was used: %s now lists this computer, but nothing runs for it yet (no lanes).\n", cfg.HostName)
+		fmt.Fprintf(w, "%s is %s, and it admits every other Host:\n", who, why)
+		fmt.Fprintf(w, "%s asks you to approve %s. Once you do, %s is served at once, with no restart.\n", who, cfg.HostName, cfg.HostName)
+		fmt.Fprintf(w, "Until then `privatae-bastion status` shows it as waiting for %s.\n", who)
+		return
+	}
+	if cfg.hostDials() {
+		fmt.Fprintf(w, "Paired with %s. Your Host connects to this server; this server never connects to it.\n\n", cfg.HostName)
+		fmt.Fprintf(w, "  lanes:     over the connections your Host opens to port %s (mutual TLS, the Host's CA pinned, name %s)\n  coder runs: none over TCP\n",
+			doorPort(cfg.doorAddr()), tcpServerName)
+		fmt.Fprintf(w, "  firewall:  this server needs TCP port %s reachable inbound; the bastion keeps its own rule for it in a firewall it manages "+
+			"here (status shows it), and nothing on your Host's network needs opening\n", doorPort(cfg.doorAddr()))
+		fmt.Fprintf(w, "  local:     http://%s\n\n%s\n", cfg.ListenAddr, pairServeNote())
+		return
+	}
+	if cfg.tcpTransport() {
 		fmt.Fprintf(w, "Paired with %s over TCP.\n\n", cfg.HostName)
 		fmt.Fprintf(w, "  lanes:     %s (mutual TLS, the Host's CA pinned, name %s)\n  coder runs: none over TCP\n", cfg.LaneAddr, tcpServerName)
-		fmt.Fprintf(w, "  local:     http://%s\n\nStart (or restart) the bastion:\n  privatae-bastion run\n", cfg.ListenAddr)
+		fmt.Fprintf(w, "  local:     http://%s\n\n%s\n", cfg.ListenAddr, pairServeNote())
 		return
 	}
-	if cfg.unixTransport() && cfg.active() {
+	if cfg.unixTransport() {
 		fmt.Fprintf(w, "Paired with %s, a Host on this machine.\n\n", cfg.HostName)
 		fmt.Fprintf(w, "  lanes:     %s (mutual TLS, the Host's CA pinned)\n  coder runs: a socket per run in %s\n", cfg.LaneSocket, cfg.RunsDir)
-		fmt.Fprintf(w, "  local:     http://%s\n\nStart (or restart) the bastion:\n  privatae-bastion run\n", cfg.ListenAddr)
+		fmt.Fprintf(w, "  local:     http://%s\n\n%s\n", cfg.ListenAddr, pairServeNote())
 		return
 	}
-	if !cfg.active() {
-		fmt.Fprintf(w, "Paired with %s — PENDING.\n\n", cfg.HostName)
-		fmt.Fprintln(w, "This machine is anchored, so a new host waits until the anchor host approves it.")
-		fmt.Fprintln(w, "Nothing is started for it yet: no tunnel, no lanes. It shows on the anchor host's")
-		fmt.Fprintln(w, "Network app as a pending pairing; once approved the daemon opens its lanes by itself.")
-		return
-	}
-	fmt.Fprintf(w, "Paired with %s.\n\nOne `privatae-bastion run` serves every pairing:\n", cfg.HostName)
+	fmt.Fprintf(w, "Paired with %s.\n\nOne bastion serves every pairing:\n", cfg.HostName)
 	for _, c := range all {
 		// The listen address is the CLI's loopback control port for that host
 		// (add-folder, git-credential). The local secret that guards it is read
@@ -373,8 +407,35 @@ func pairReport(w io.Writer, cfg *Config, all []*Config, anchored bool) {
 		// operator client to hand it to since the MCP relay was removed.
 		fmt.Fprintf(w, "\n  %s\n    local: http://%s\n", c.HostName, c.ListenAddr)
 	}
-	fmt.Fprintf(w, "\nStart (or restart) the tunnels:\n  privatae-bastion run\n")
+	fmt.Fprintf(w, "\n%s\n", pairServeNote())
 	fmt.Fprintf(w, "\ngit to your forge goes through this bastion — one-time setup:\n  privatae-bastion git-setup\n")
+}
+
+// pairDaemonRunning: a bastion is serving on this machine (its console
+// answers, or the system service runs, waiting for its first pairing). A seam
+// for the suite.
+var pairDaemonRunning = func() bool { return uiDaemonListening() || systemServiceRunning() }
+
+// pairServeNote is `pair`'s last line about serving the new pairing: a running
+// bastion picks it up by itself; otherwise the command that starts this
+// machine's bastion (the service manager's on a service machine).
+func pairServeNote() string {
+	if pairDaemonRunning() {
+		return fmt.Sprintf("The bastion running on this machine serves it within %d seconds; nothing needs restarting.",
+			int(supervisePeriod.Seconds()))
+	}
+	return "Start the bastion so it serves it:\n  " + runCommandHint()
+}
+
+// without is list less drop.
+func without(list []string, drop string) []string {
+	var out []string
+	for _, s := range list {
+		if s != drop {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // pairEnrolNote says what a pairing with no second factor means on this kind
@@ -391,19 +452,6 @@ func pairEnrolNote(w io.Writer, host, hint string) {
 	fmt.Fprintf(w, "\nNo second factor is enrolled here for %s. Until you enrol one, a folder grant or a\n"+
 		"move plan from it installs on its signed grant alone, and model pulls and root\n"+
 		"sessions are refused. Enrol it now, so each needs a code from this machine:\n  %s\n", host, hint)
-}
-
-// anchorFirstNetworkedPairing anchors a networked machine that has no anchor
-// to the pairing just made, when it is the machine's only one and the caller
-// holds machine authority (see cmdPair). Reports whether it anchored.
-func anchorFirstNetworkedPairing(cfg *Config, all []*Config) (bool, error) {
-	if boxMode() != modeNetworked || currentAnchor() != nil || len(all) != 1 || !machineAuthorityHeld() {
-		return false, nil
-	}
-	if err := cmdClaimAnchor("", false, "", cfg.HostName); err != nil {
-		return false, fmt.Errorf("paired with %s, but anchoring this networked machine to it failed: %w\n  anchor it with: %s", cfg.HostName, err, anchorCommandHint())
-	}
-	return true, nil
 }
 
 // redeemURLBase is the platform's enrollment ingress. A variable so a test can
@@ -509,7 +557,7 @@ func pairWith(token string, opts pairOpts) (*Config, []*Config, error) {
 		if !yes {
 			return nil, nil, fmt.Errorf("nothing was paired: %s stays the only Host this computer serves", second.serving)
 		}
-		existing, state, err = pairPrecheckState(forceActive)
+		existing, state, err = pairPrecheckState(forceActive, handle)
 	}
 	// The CA this pair trusts, as a fingerprint: the pairing code's, or that
 	// of the --host-ca file. "" for a platform or unix-socket pairing, whose
@@ -738,8 +786,9 @@ func commitPairing(cfg, existing *Config, replace bool, state string) (*Config, 
 	// host renamed when its address moved). unpair() is deliberately not
 	// reused: it refuses to remove the anchor's own pairing, which is exactly
 	// the case here — the anchor is re-paired like every other host. The anchor
-	// RECORD is untouched by design; anchor.json still names the old host and
-	// only `claim-anchor --rotate` may re-sign it.
+	// RECORD is untouched here; anchor.json still names the old host until
+	// `claim-anchor --repin` re-signs it, or, for a Host paired again through a
+	// window under its pinned CA, carryAnchorToNewName (pair_window.go) does.
 	if replace && existing != nil && existing.HostName != cfg.HostName {
 		if err := removeStalePairingFile(existing.HostName); err != nil {
 			return nil, nil, fmt.Errorf("paired as %s, but the superseded pairing file for %s "+

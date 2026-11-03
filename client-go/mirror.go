@@ -502,11 +502,7 @@ const mirrorForwardMaxConns = 8
 // inventing a framing layer for no gain.
 func serveMirrorForward(ctx context.Context, gw, subnet, wsURL string,
 	tlsCfg *tls.Config, dialHost func(ctx context.Context) (net.Conn, error), bearer string) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	var allowed *net.IPNet
 	if subnet != "" {
 		if _, n, err := net.ParseCIDR(subnet); err == nil {

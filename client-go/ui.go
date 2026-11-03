@@ -78,6 +78,9 @@ type uiPairing struct {
 	TunnelIP   string
 	FirstSeen  string
 	IsAnchor   bool
+	// WaitingFor: pending, waiting for this Host (the one in charge of the
+	// machine) to admit it; nothing runs for it until then.
+	WaitingFor string
 }
 
 // uiApproval is one thing a host has asked this machine to allow, waiting for
@@ -240,7 +243,8 @@ func collectUIStatus() uiStatus {
 		s.StateNote = err.Error()
 		return s
 	}
-	running := 0
+	running, servable, waiting := 0, 0, 0
+	who := admitter()
 	for _, c := range cfgs {
 		p := uiPairing{
 			Host: c.HostName,
@@ -253,30 +257,44 @@ func collectUIStatus() uiStatus {
 			FirstSeen:  c.FirstSeen,
 			IsAnchor:   s.AnchorHost != "" && c.HostName == s.AnchorHost,
 		}
-		if p.Listening {
-			running++
+		if c.invalid == "" && c.State == pairingPending && who != "" {
+			p.WaitingFor = who
+			waiting++
+		}
+		if c.active() {
+			servable++
+			if p.Listening {
+				running++
+			}
 		}
 		s.Pairings = append(s.Pairings, p)
 		s.Approvals = append(s.Approvals, pendingApprovals(c)...)
 	}
 
+	wait := ""
+	if waiting > 0 {
+		wait = fmt.Sprintf(" %d more wait(s) for %s to admit them: %s asks you to approve each.", waiting, who, who)
+	}
 	switch {
 	case len(cfgs) == 0:
 		// No Host is a steady state, not a fault (run.go): the bastion watches
 		// this machine on its own.
 		s.State, s.StateClass = "ON ITS OWN", "ok"
 		s.StateNote = "No Host is connected. The bastion watches the AI agents on this machine on its own."
-	case running == len(cfgs):
+	case servable == 0 && waiting > 0:
+		s.State, s.StateClass = "WAITING", "warn"
+		s.StateNote = strings.TrimSpace(fmt.Sprintf("No Host is served yet.%s", wait))
+	case servable > 0 && running == servable:
 		s.State, s.StateClass = "RUNNING", "ok"
-		s.StateNote = fmt.Sprintf("Serving %d host(s) from this machine.", len(cfgs))
-		s.NoConsoleNote = runtime.GOOS == "windows"
+		s.StateNote = fmt.Sprintf("Serving %d host(s) from this machine.%s", servable, wait)
+		s.NoConsoleNote = runtime.GOOS == "windows" && !systemService.installed
 	case running > 0:
 		s.State, s.StateClass = "PARTLY RUNNING", "warn"
-		s.StateNote = fmt.Sprintf("%d of %d hosts are being served; the rest are not answering.",
-			running, len(cfgs))
+		s.StateNote = fmt.Sprintf("%d of %d hosts are being served; the rest are not answering.%s",
+			running, servable, wait)
 	default:
 		s.State, s.StateClass = "NOT RUNNING", "bad"
-		s.StateNote = "Nothing is serving these pairings. Start it with `" + runCommandHint() + "`."
+		s.StateNote = "Nothing is serving these pairings. Start it with `" + runCommandHint() + "`." + wait
 	}
 	return s
 }

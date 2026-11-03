@@ -267,11 +267,20 @@ func readDoctor(readOpts) (doctorRead, error) {
 			Fix: asAdmin("quarantine clear --asker " + account)})
 	}
 
+	for _, c := range doorFirewallChecks(s.Firewall) {
+		add(c)
+	}
+	if s.LLM != nil {
+		add(doctorCheck{Name: "model server", OK: true, Detail: sentenceCase(s.LLM.words()) + "."})
+	}
 	for _, p := range s.Pairings {
 		switch {
 		case p.Problem != "":
 			add(doctorCheck{Name: "host " + p.Host, Problem: "The pairing with " + p.Host + " is not usable: " +
 				p.Problem + ".", Fix: "The bastion's log says more: " + logHint()})
+		case p.WaitingFor != "":
+			add(doctorCheck{Name: "host " + p.Host, OK: true, Detail: p.Host + " waits for " + p.WaitingFor +
+				" to admit it; " + p.WaitingFor + " asks you to approve it."})
 		case !p.Answering && s.Running != "no":
 			add(doctorCheck{Name: "host " + p.Host, Problem: "The bastion is not serving " + p.Host +
 				" (nothing answers on " + p.Local + ").", Fix: "The bastion's log says why: " + logHint()})

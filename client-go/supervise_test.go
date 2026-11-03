@@ -143,9 +143,10 @@ func TestARunThatEndedWritesNothing(t *testing.T) {
 	if !startPairing(cfg) {
 		t.Fatal("setup: the pairing was not started")
 	}
-	select {
-	case <-errc: // runPairing refused the address and returned
-	case <-time.After(5 * time.Second):
+	// runPairing refused the address and returned; that pairing alone stopped
+	// (pairing_retry.go).
+	_ = errc
+	if waitPairingFailure(t, host) == "" {
 		t.Fatal("setup: the run did not end")
 	}
 	cfg.Endpoint = "203.0.113.99:1"
@@ -181,12 +182,25 @@ func TestSuperviseRestartsAPairingMadeAgainWithItsNewFile(t *testing.T) {
 	if old.Err() == nil {
 		t.Fatal("the run holding the replaced key is still up")
 	}
-	select {
-	case err := <-errc:
-		if !strings.Contains(err.Error(), `"from-the-new-file"`) {
-			t.Fatalf("a run started, but not from the new file: %v", err)
-		}
-	case <-time.After(5 * time.Second):
+	_ = errc
+	switch got := waitPairingFailure(t, host); {
+	case got == "":
 		t.Fatal("no run was started with the new file")
+	case !strings.Contains(got, `"from-the-new-file"`):
+		t.Fatalf("a run started, but not from the new file: %v", got)
 	}
+}
+
+// waitPairingFailure waits (bounded) for host's run to stop on an error, and
+// returns it; "" when none came. A run's error stops that pairing alone and is
+// recorded (pairing_retry.go), no longer sent to the daemon's fatal channel.
+func waitPairingFailure(t *testing.T, host string) string {
+	t.Helper()
+	t.Cleanup(func() { pairingRecovered(host) })
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if f, ok := loadPairingFailures()[host]; ok {
+			return f.Error
+		}
+	}
+	return ""
 }

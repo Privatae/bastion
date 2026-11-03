@@ -340,11 +340,7 @@ func refuseMgmt(ws *websocket.Conn, why string) {
 // the identity the pairing_* ops are gated on.
 func runMgmtWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer, ctxRoot, dcnDir, backupRoot string, n int) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	for i := 0; i < n; i++ {
 		go func() {
 			hold := laneHoldFor(self)

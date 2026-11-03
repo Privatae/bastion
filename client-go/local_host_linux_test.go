@@ -423,17 +423,30 @@ func startLaneHost(t *testing.T, sock string, cert tls.Certificate, clientCA *te
 // socket, or a Host's lane port (local_host_tcp_linux_test.go).
 func startLaneHostOn(t *testing.T, raw net.Listener, cert tls.Certificate, clientCA *testCA) *laneHost {
 	t.Helper()
+	h, mux, tc := newLaneHost(cert, clientCA)
+	ln := tls.NewListener(countingListener{raw, &h.accepted}, tc)
+	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return h
+}
+
+// newLaneHost is a lane Host's routes and its TLS server configuration,
+// served on a listener (startLaneHostOn) or over connections it opens itself
+// (hostdoor_linux_test.go). It speaks the lane protocol name a Host that
+// connects to a server chooses (laneALPN); a bastion that dials offers none.
+func newLaneHost(cert tls.Certificate, clientCA *testCA) (*laneHost, http.Handler, *tls.Config) {
 	h := &laneHost{jobs: make(chan []byte, 4), replies: make(chan string, 4)}
 	pool := x509.NewCertPool()
 	pool.AddCert(clientCA.cert)
-	ln := tls.NewListener(countingListener{raw, &h.accepted}, &tls.Config{Certificates: []tls.Certificate{cert},
+	tc := &tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{laneALPN},
 		ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			h.mu.Lock()
 			h.sni = append(h.sni, cs.ServerName)
 			h.mu.Unlock()
 			return nil
-		}})
+		}}
 	up := websocket.Upgrader{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/network/bastions/heartbeat", func(w http.ResponseWriter, r *http.Request) {
@@ -496,10 +509,7 @@ func startLaneHostOn(t *testing.T, raw net.Listener, cert tls.Certificate, clien
 	for _, p := range []string{"/bastion-harness", "/bastion-mgmt", "/bastion-egress", "/bastion-serve"} {
 		mux.HandleFunc(p, ws)
 	}
-	srv := &http.Server{Handler: mux, ErrorLog: log.New(io.Discard, "", 0)}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() { _ = srv.Close() })
-	return h
+	return h, mux, tc
 }
 
 func (h *laneHost) snapshot() (hellos, beats []string) {

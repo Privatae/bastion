@@ -436,7 +436,27 @@ if (-not $elevatedDone) {
         if (-not $OwnerSid) {
             Write-Host "  A tray already open keeps running the earlier program until you next sign in; it then starts from the new one."
         }
-        if (-not $Pair -and $Shared) {
+        # What the service serves now, and what waits for the Host in charge
+        # to admit it, from the service's own state (`status --json`, read
+        # with this terminal's machine authority): the move above carries
+        # every pairing this account's bastion had, and on a machine with a
+        # Host in charge (the anchor) each carried one waits for it.
+        $served = @(); $waits = @()
+        if (-not $Pair) {
+            try {
+                $st = (& $exe status --json 2>$null | Out-String) | ConvertFrom-Json
+                foreach ($p in @($st.pairings)) {
+                    if ($p.waiting_for) { $waits += "$($p.host) waits for $($p.waiting_for) to admit it; $($p.waiting_for) asks you to approve it." }
+                    elseif ($p.state -eq 'active') { $served += [string]$p.host }
+                }
+            } catch { }
+        }
+        if ($served -or $waits) {
+            if ($served) { Write-Host "It serves $($served -join ', ') from this computer, and watches the AI agents on it." }
+            else { Write-Host "It watches the AI agents on this computer. No Host is served yet:" }
+            foreach ($w in $waits) { Write-Host "  $w Once you do, it is served at once, with no restart." }
+            Write-Host "  Its approvals open from the tray. See what it serves any time:  privatae-bastion status"
+        } elseif (-not $Pair -and $Shared) {
         Write-Host "Next, anchor this machine to the Host that should govern it:"
         Write-Host "  privatae-bastion claim-anchor"
         Write-Host "  (add --host <name> if this machine already serves several Hosts)"

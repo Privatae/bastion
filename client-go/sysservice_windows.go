@@ -158,7 +158,7 @@ func (bastionService) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- s
 				s <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
 				s <- svc.Status{State: svc.StopPending}
-				requestShutdown()
+				requestShutdownFor(shutdownFromService)
 				select {
 				case <-done:
 				case <-time.After(20 * time.Second):
@@ -439,4 +439,13 @@ func printSystemServiceStatus() error {
 		fmt.Printf("System service %s: %s.\n", winServiceName, state)
 	}
 	return nil
+}
+
+// systemServiceRunning: the service runs now. A service waiting for its first
+// pairing has no console yet, and still serves a pairing written beside it
+// within moments (runSystemService waitForPairing), so `pair` asks this as
+// well as the console.
+func systemServiceRunning() bool {
+	pid, err := bastionServicePID()
+	return err == nil && pid != 0
 }

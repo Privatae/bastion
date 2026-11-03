@@ -253,6 +253,7 @@ func takeHostFlag(args []string) (string, []string) {
 
 const pairUsage = "usage: privatae-bastion pair [--replace] [--redeem-url unix:///<socket> | --redeem-url https://<host>:<port>/<path> --host-ca <pem file>] <token> | -\n" +
 	"       privatae-bastion pair <pairing code skp_…> | -\n" +
+	"       privatae-bastion pair --open [--port 8812]   (on a server: your Host connects to it with the code this shows)\n" +
 	"  - reads the token or pairing code from standard input, so it stays out of the process list and shell history\n" +
 	"  exit status: 0 paired, 3 already paired with this Host (nothing changed), anything else a failure"
 
@@ -315,6 +316,16 @@ func main() {
 	case "service":
 		err = cmdService(os.Args[2:])
 	case "pair":
+		// pair --open: a pairing window for a Host that connects to this
+		// server (pair_window.go).
+		if addr, open, oerr := parsePairOpenArgs(os.Args[2:]); open {
+			if oerr != nil {
+				fmt.Fprintln(os.Stderr, oerr)
+				os.Exit(2)
+			}
+			err = cmdPairOpen(addr, os.Stdout)
+			break
+		}
 		token, redeemURL, hostCA, replace, perr := parsePairArgs(os.Args[2:])
 		if perr == nil {
 			token, perr = pairToken(token, os.Stdin, stdinIsConsole(), os.Stderr)

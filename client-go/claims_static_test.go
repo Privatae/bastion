@@ -377,6 +377,12 @@ func TestEveryListenerThisPackageOpensIsInTheTable(t *testing.T) {
 		"ops_action_linux.go:opActionProbeUnit:net.Listen": {"tcp", 1, "the action-op probe, 127.0.0.1:0, open while one probe unit dials it"},
 		"coders_linux.go:coderListenUnix:net.Listen":       {"unix", 1, "a coder run's egress.sock, a unix socket file in its run dir, not a network port"},
 		"coders_other.go:coderListenUnix:net.Listen":       {"unix", 1, "the same, off Linux (coder mode refuses there)"},
+		// The one listener on every address, by design: the door a Host that
+		// this server can't reach connects to (hostdoor.go). Bound only while
+		// such a pairing is served or a pairing window is open; it keeps only
+		// connections whose certificate verifies under a served pairing's
+		// pinned CA, and forwards nothing (TestTheDoorRefusesAnythingButItsPinnedHost).
+		"hostdoor.go:listenDoor:lc.Listen": {"tcp", 1, "the door your Host connects to, every address, TCP 8812 (docs/host-connects.md)"},
 		// Beside a Windows system service: the tray's own approvals window,
 		// and the service's approvals pipe (approvalpipe.go), which takes no
 		// remote client (PIPE_REJECT_REMOTE_CLIENTS) and, by its ACL, only

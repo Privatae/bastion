@@ -31,4 +31,11 @@ var agentTokenEnvNames = []string{"PRIVATAE_AGENT_TOKEN", "SKEMA_AGENT_TOKEN"}
 // written.
 func piiTarget() string { return os.Getenv("PRIVATAE_PII_ADDR") }
 
-func llmTarget() string { return os.Getenv("PRIVATAE_LLM_ADDR") }
+// llmTarget is PRIVATAE_LLM_ADDR, or, unset, the OpenAI-compatible server
+// found on this machine's loopback (llmlocal.go), "" when there is none.
+func llmTarget() string {
+	if v := os.Getenv("PRIVATAE_LLM_ADDR"); v != "" {
+		return v
+	}
+	return discoveredLLM().Addr
+}

@@ -219,20 +219,8 @@ func tcpAnswerRefusal(rr tcpRedeemResp, redeem *url.URL, hostCA, opKey string, e
 	if !sameCAs(rr.caCert(), hostCA) {
 		return errors.New("the Host answered with a CA other than the --host-ca it was paired with — refusing")
 	}
-	pair, err := tls.X509KeyPair([]byte(rr.operatorCert()), []byte(opKey))
-	if err != nil {
-		return fmt.Errorf("the Host's operator_cert is not for this bastion's key: %v", err)
-	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return fmt.Errorf("the Host's operator_cert does not parse: %v", err)
-	}
-	pool := x509.NewCertPool()
-	for _, c := range pemCerts(hostCA) {
-		pool.AddCert(c)
-	}
-	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
-		return fmt.Errorf("the Host's operator_cert is not signed by its CA for client use: %v", err)
+	if err := operatorCertRefusal(rr.operatorCert(), hostCA, opKey); err != nil {
+		return err
 	}
 	// Again here: the pairing the answer's name lands on may not be the one
 	// the token's handle found before the redeem.
@@ -246,6 +234,27 @@ func tcpAnswerRefusal(rr tcpRedeemResp, redeem *url.URL, hostCA, opKey string, e
 		if o.tcpTransport() && o.LaneAddr == rr.LaneAddress {
 			return fmt.Errorf("%s already uses the lane at %s; each Host needs its own", o.HostName, rr.LaneAddress)
 		}
+	}
+	return nil
+}
+
+// operatorCertRefusal: the operator certificate a Host answered with is for
+// this bastion's key, and its CA signed it for client use.
+func operatorCertRefusal(certPEM, hostCA, opKey string) error {
+	pair, err := tls.X509KeyPair([]byte(certPEM), []byte(opKey))
+	if err != nil {
+		return fmt.Errorf("the Host's operator_cert is not for this bastion's key: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("the Host's operator_cert does not parse: %v", err)
+	}
+	pool := x509.NewCertPool()
+	for _, c := range pemCerts(hostCA) {
+		pool.AddCert(c)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		return fmt.Errorf("the Host's operator_cert is not signed by its CA for client use: %v", err)
 	}
 	return nil
 }
@@ -328,6 +337,9 @@ func tcpLaneDialer(cfg *Config) (func(ctx context.Context) (net.Conn, error), *t
 // localLaneDialer is the lane transport of a pairing with a Host that has no
 // platform: the lane socket or the lane port.
 func localLaneDialer(cfg *Config) (func(ctx context.Context) (net.Conn, error), *tls.Config, error) {
+	if cfg.hostDials() {
+		return hostDialsLaneDialer(cfg)
+	}
 	if cfg.tcpTransport() {
 		return tcpLaneDialer(cfg)
 	}
@@ -336,6 +348,9 @@ func localLaneDialer(cfg *Config) (func(ctx context.Context) (net.Conn, error), 
 
 // laneWhere is where a local pairing's lanes go, for the log and status.
 func (c *Config) laneWhere() string {
+	if c.hostDials() {
+		return "connections your Host opens to this server's port " + doorPort(c.doorAddr())
+	}
 	if c.tcpTransport() {
 		return c.LaneAddr
 	}

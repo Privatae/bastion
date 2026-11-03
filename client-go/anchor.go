@@ -799,12 +799,45 @@ func lastOK(host string) time.Time {
 
 // pairingEntry is one pairing on this box as told to the ANCHOR host: name,
 // handle, state, since. Same privacy line as peers.go — never keys or grants.
+//
+// For a pairing that waits to be admitted it also says what the anchor Host
+// needs to raise the approval prompt for the person (C-Series: the Network
+// app's pending pairing, approved with approve_pairing):
+//
+//	waiting_for   the Host that admits it: the anchor, which reads its own
+//	              name here (anchor_local.go admitter)
+//	transport     how its lanes would run: "tunnel" (WireGuard through the
+//	              relay, a Cloud Host), "tcp" (a Host's lane port) or "unix"
+//	              (a socket on this machine)
+//	same_machine  its Host runs on this machine (anchor_local.go
+//	              sameMachineHost)
+//	origin        how it came: "paired" (a code redeemed at this machine),
+//	              "carried" (moved in from an account's own bastion when the
+//	              machine moved to the system service, servicecarry.go), or
+//	              "former_anchor" (it was in charge of this machine until a
+//	              Host the rules put first took over, anchor_local.go)
+//
+// The approval itself is unchanged: pairing_grant_sync with terms the anchor
+// signs, {kind: pairing_grant, server: the beat's hostname, anchor: this
+// beat's anchor.anchor_host, subject: host_name, subject_handle: handle, caps,
+// issued_at, expires}, over the anchor's own mgmt lane (pairing_ops.go).
 type pairingEntry struct {
-	HostName string `json:"host_name"`
-	Handle   string `json:"handle"`
-	State    string `json:"state"`
-	Since    string `json:"since,omitempty"`
+	HostName    string `json:"host_name"`
+	Handle      string `json:"handle"`
+	State       string `json:"state"`
+	Since       string `json:"since,omitempty"`
+	WaitingFor  string `json:"waiting_for,omitempty"`
+	Transport   string `json:"transport,omitempty"`
+	SameMachine bool   `json:"same_machine,omitempty"`
+	Origin      string `json:"origin,omitempty"`
 }
+
+// The origins pairingEntry reports.
+const (
+	pairingOriginPaired       = "paired"
+	pairingOriginCarried      = "carried"
+	pairingOriginFormerAnchor = "former_anchor"
+)
 
 // pairingsReport lists EVERY pairing on the box, including the one asking.
 // "since" is first_seen — when the host was first paired here — kept across
@@ -821,13 +854,41 @@ func pairingsReport() []pairingEntry {
 	if err != nil {
 		return nil
 	}
+	who := admitter()
+	replaced := ""
+	if p, err := anchorReplacedPath(); err == nil {
+		if raw, err := os.ReadFile(p); err == nil {
+			var r anchorReplaced
+			if json.Unmarshal(raw, &r) == nil {
+				replaced = r.Host
+			}
+		}
+	}
 	out := make([]pairingEntry, 0, len(cfgs))
 	for _, c := range cfgs {
 		if c.HostName == "" || c.invalid != "" {
 			continue
 		}
-		out = append(out, pairingEntry{HostName: c.HostName, Handle: handleOf(c.HostName),
-			State: c.stateName(), Since: sinceOf(c)})
+		e := pairingEntry{HostName: c.HostName, Handle: handleOf(c.HostName),
+			State: c.stateName(), Since: sinceOf(c)}
+		if c.State == pairingPending {
+			e.WaitingFor = who
+			e.Transport = "tunnel"
+			if c.unixTransport() {
+				e.Transport = "unix"
+			} else if c.tcpTransport() {
+				e.Transport = "tcp"
+			}
+			e.SameMachine = sameMachineHost(c)
+			e.Origin = pairingOriginPaired
+			if c.Origin == pairingOriginCarried {
+				e.Origin = pairingOriginCarried
+			}
+			if replaced != "" && replaced == c.HostName {
+				e.Origin = pairingOriginFormerAnchor
+			}
+		}
+		out = append(out, e)
 	}
 	return out
 }
@@ -855,7 +916,7 @@ func unapprovedAttempts(now time.Time) []peerAnnounce {
 		if err != nil || now.Sub(since) < unapprovedAfter {
 			continue
 		}
-		out = append(out, peerAnnounce(e))
+		out = append(out, peerAnnounce{HostName: e.HostName, Handle: e.Handle, State: e.State, Since: e.Since})
 	}
 	return out
 }
@@ -874,6 +935,16 @@ func pairingEnforcing(self string) map[string]any {
 		return out
 	}
 	out["pairing_state"] = c.stateName()
+	// A Host the rules put first took the anchor from this one (anchor_local.go):
+	// {by, at, why, waiting_for}. Its last beat before its lanes stop carries it.
+	if note := anchorReplacedNote(self); note != nil {
+		out["anchor_replaced"] = note
+	}
+	if c.State == pairingPending {
+		if who := admitter(); who != "" {
+			out["waiting_for"] = who
+		}
+	}
 	// The name THIS pairing is known by on this box — what a reach grant must
 	// name as its subject (service_reach.go). A host can hold more than one name
 	// (a legacy one and the current one); this says which one the box enforces.
@@ -1001,7 +1072,7 @@ func anchorAlreadyHolds(cfgs []*Config, prev *anchorClaim, host string) bool {
 // pickPairing resolves --host against this box's pairings. It accepts the full
 // host_name the box reports, or just the handle in front of it, because the
 // name the user is looking at depends on which surface they read it from —
-// `8abb770bbfde71d0` in Circles, `8abb770bbfde71d0.host.privatae.ai` in the
+// `1b2c3d4e5f607182` in Circles, `1b2c3d4e5f607182.host.privatae.ai` in the
 // claim-anchor error. Refusing the short form would mean refusing the thing the
 // user most obviously typed.
 func pickPairing(cfgs []*Config, want string) (*Config, error) {
@@ -1041,6 +1112,12 @@ func cmdClaimAnchor(token string, rotate bool, owner, host string) error {
 		return err
 	}
 	prev := currentAnchor()
+	// Which Host is in charge (anchor_local.go): the one an organisation's
+	// policy names, else a Host on this machine. Either decides here, before
+	// the paths below, which know only "the box's pairings".
+	if handled, err := claimAnchorByRule(cfgs, prev, token, rotate, owner, host); handled {
+		return err
+	}
 	// Already anchored to the host this asks for (no token, no other host
 	// named), and that host's pairing is active: done, not an error. `pair`
 	// anchors a networked box to its first host by itself, and an installer
@@ -1236,9 +1313,20 @@ func cmdClaimAnchor(token string, rotate bool, owner, host string) error {
 	// singleton on each one as it goes, rather than needing a separate pass.
 	_ = maybeWriteMarker()
 	fmt.Printf("anchored to %s (owner %q)\n", cfg.HostName, owner)
-	fmt.Println("  Every host paired from now on waits, pending, until this anchor host approves it.")
-	fmt.Println("  " + restartHint())
+	fmt.Printf("  Every Host paired from now on waits until %s admits it: %s asks you to approve it.\n", cfg.HostName, cfg.HostName)
+	fmt.Println("  " + anchorFollowNote())
 	return nil
+}
+
+// anchorFollowNote says how the change reaches the bastion: a running one
+// reads the anchor on every op and follows the pairing files within
+// supervisePeriod, so nothing is restarted.
+func anchorFollowNote() string {
+	if pairDaemonRunning() {
+		return fmt.Sprintf("The bastion running on this machine follows within %d seconds; nothing needs restarting.",
+			int(supervisePeriod.Seconds()))
+	}
+	return "Start the bastion so it serves it:  " + runCommandHint()
 }
 
 // writeAnchor signs and installs anchor.json under the box key. A fresh anchor

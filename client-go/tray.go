@@ -33,11 +33,29 @@ const trayRefresh = 5 * time.Second
 var (
 	shutdownOnce sync.Once
 	shutdownCh   = make(chan struct{})
+	// shutdownWhy is who asked, as cmdRun logs it; set once, with the close.
+	shutdownWhy = "asked from the tray"
 )
 
-// requestShutdown asks cmdRun to stop, exactly as Ctrl-C or SIGTERM does. Once
-// only — closing a closed channel panics, and a menu item can be clicked twice.
-func requestShutdown() { shutdownOnce.Do(func() { close(shutdownCh) }) }
+// The askers requestShutdownFor names.
+const (
+	shutdownFromTray    = "asked from the tray"
+	shutdownFromService = "the Windows service manager asked it to stop (Stop-Service, Restart-Service, an update or Windows shutting down)"
+)
+
+// requestShutdown asks cmdRun to stop, exactly as Ctrl-C or SIGTERM does, for
+// the tray's "Stop the bastion". Once only — closing a closed channel panics,
+// and a menu item can be clicked twice.
+func requestShutdown() { requestShutdownFor(shutdownFromTray) }
+
+// requestShutdownFor is requestShutdown for another asker, named in the log
+// (the service manager's stop was logged as the tray's).
+func requestShutdownFor(why string) {
+	shutdownOnce.Do(func() {
+		shutdownWhy = why
+		close(shutdownCh)
+	})
+}
 
 // openLocalUI is what every "take me to the page" affordance does: the tray's
 // menu item, and a click on an approval notification (notify_windows.go).
@@ -74,16 +92,27 @@ func trayStateLine(s uiStatus) string {
 	case s.AnchorRequired:
 		return "Not anchored — answering nothing"
 	default:
-		n := 0
+		n, servable, waiting, who := 0, 0, 0, ""
 		for _, p := range s.Pairings {
-			if p.Listening {
-				n++
+			if p.WaitingFor != "" {
+				waiting, who = waiting+1, p.WaitingFor
+				continue
+			}
+			if p.State == "" || p.State == pairingActive {
+				servable++
+				if p.Listening {
+					n++
+				}
 			}
 		}
-		if n == len(s.Pairings) {
-			return fmt.Sprintf("Serving %d host(s)", n)
+		line := fmt.Sprintf("Serving %d of %d hosts", n, servable)
+		if n == servable {
+			line = fmt.Sprintf("Serving %d host(s)", n)
 		}
-		return fmt.Sprintf("Serving %d of %d hosts", n, len(s.Pairings))
+		if waiting > 0 {
+			line += fmt.Sprintf("; %d waiting for %s", waiting, who)
+		}
+		return line
 	}
 }
 

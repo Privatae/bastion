@@ -62,14 +62,15 @@
     <div class="host-name">
       {{.Host}}
       {{if .IsAnchor}}<span class="tag ok">anchor</span>{{end}}
-      {{if eq .State "pending"}}<span class="tag warn">waiting for approval</span>{{end}}
+      {{if eq .State "pending"}}<span class="tag warn">{{if .WaitingFor}}waiting for {{.WaitingFor}} to admit it{{else}}waiting for approval{{end}}</span>{{end}}
       {{if eq .State "revoked"}}<span class="tag bad">revoked</span>{{end}}
       {{if eq .State "invalid"}}<span class="tag bad">invalid, not served</span>{{end}}
     </div>
     <dl class="host-facts">
       <dt>Local port</dt>
       <dd>{{.ListenAddr}}
-        {{if .Listening}}<span class="tag ok">answering</span>
+        {{if .WaitingFor}}<span class="tag warn">not served until {{.WaitingFor}} admits it ({{.WaitingFor}} asks you to approve it)</span>
+        {{else if .Listening}}<span class="tag ok">answering</span>
         {{else}}<span class="tag bad">not answering</span>{{end}}</dd>
       {{if .TunnelIP}}<dt>Tunnel address</dt><dd>{{.TunnelIP}}</dd>{{end}}
       {{if .FirstSeen}}<dt>Paired since</dt><dd>{{.FirstSeen}}</dd>{{end}}

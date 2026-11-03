@@ -41,11 +41,7 @@ const gitForgeHost = "git.privatae.ai"
 // runGitLane serves the loopback git proxy: one host WebSocket per local connection.
 func runGitLane(ln net.Listener, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer string) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	for {
 		local, err := ln.Accept()
 		if err != nil {

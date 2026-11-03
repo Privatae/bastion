@@ -107,11 +107,7 @@ type harnessSpec struct {
 // instead of re-dialing a closed tunnel for the life of the process.
 func runHarnessWorkers(pctx context.Context, self, dcnDir string, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer string, n int) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	for i := 0; i < n; i++ {
 		go func() {
 			hold := laneHoldFor(self)

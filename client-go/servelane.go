@@ -607,11 +607,7 @@ func serveTargetNoticeClear(self string, s serveService) {
 // pairing's workers exit.
 func runServeWorkers(pctx context.Context, self, dcnDir, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer string, n int) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	var spawn func()
 	spawn = func() {
 		go func() {

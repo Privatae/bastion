@@ -18,3 +18,7 @@ func installSystemService() error { return errLinuxServiceIsTheUnit }
 func uninstallSystemService() error { return errLinuxServiceIsTheUnit }
 
 func printSystemServiceStatus() error { return errLinuxServiceIsTheUnit }
+
+// systemServiceRunning: no service manager of ours here; the console answers
+// for a running bastion (pair.go pairDaemonRunning).
+func systemServiceRunning() bool { return false }

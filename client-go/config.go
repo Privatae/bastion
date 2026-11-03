@@ -52,6 +52,11 @@ type Config struct {
 	// pairing's age and not the time its credentials were last rotated (the
 	// file's mtime, which is what pairings from before this field fall back to).
 	FirstSeen string `json:"first_seen,omitempty"`
+	// Origin: how the pairing came to this bastion, for the Host that admits
+	// it (pairingsReport). "" was paired here; "carried" was moved in from an
+	// account's own bastion when the machine moved to the system service
+	// (servicecarry.go).
+	Origin string `json:"origin,omitempty"`
 
 	// How this pairing reaches its host (lane_socket.go). "" is WireGuard
 	// through the relay to the host's tunnel address on :8443, which is every
@@ -66,6 +71,12 @@ type Config struct {
 	LaneSocket string `json:"lane_socket,omitempty"`
 	RunsDir    string `json:"runs_dir,omitempty"`
 	LaneAddr   string `json:"lane_addr,omitempty"`
+	// HostDials marks a "tcp" pairing whose Host opens the connections
+	// (hostdoor.go): a Host this server can't reach, behind a home router,
+	// connects to this server's door at DoorAddr, and the lanes run over the
+	// connections it opens. LaneAddr is empty: nothing here ever dials it.
+	HostDials bool   `json:"host_dials,omitempty"`
+	DoorAddr  string `json:"door_addr,omitempty"`
 
 	// retired is set, under saveMu, once the run holding this copy has been
 	// stopped or has ended (retireRun, run.go), and is never cleared; from then
@@ -101,8 +112,12 @@ const (
 // unixTransport says whether this pairing's lanes go over a local socket.
 func (c *Config) unixTransport() bool { return c.Transport == transportUnix }
 
-// tcpTransport says whether this pairing's lanes go to a Host's lane port.
+// tcpTransport says whether this pairing's lanes go to a Host's lane port,
+// or come from a Host that connects to this server (hostDials).
 func (c *Config) tcpTransport() bool { return c.Transport == transportTCP }
+
+// hostDials: a tcp pairing whose Host connects to this server (hostdoor.go).
+func (c *Config) hostDials() bool { return c.tcpTransport() && c.HostDials }
 
 // localTransport: a Host with no platform, over either local transport. Its
 // lanes run without a WireGuard device (run.go runUnixPairing).
@@ -419,6 +434,9 @@ func cmdUnpair(key string) error {
 	if err != nil {
 		return err
 	}
+	// With the daemon running, its door's close does this too; stopped, it
+	// is done here, so the rule never outlives the last pairing that used it.
+	doorFirewallReleaseUnused()
 	fmt.Printf("unpaired %s — its tunnel and lanes are down; the context store and DCN state stay on disk\n", host)
 	return nil
 }

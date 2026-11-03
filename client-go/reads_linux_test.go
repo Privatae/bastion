@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -19,16 +20,10 @@ func laneSock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go askSockServe(c)
-		}
-	}()
+	// The globals are set before the server goroutine starts and restored only
+	// after it and every connection it served have returned: a client's
+	// connect is no happens-before edge the race detector sees, so a server
+	// that read them unordered with these writes is a data race under -race.
 	prevPath, prevLane, prevID := readSockPath, readsGoThroughLane, askPeerIdentityFn
 	t.Cleanup(func() { readSockPath, readsGoThroughLane, askPeerIdentityFn = prevPath, prevLane, prevID })
 	readSockPath = func() string { return sock }
@@ -42,6 +37,20 @@ func laneSock(t *testing.T) {
 		}
 		return uid, who, err
 	}
+	var served sync.WaitGroup
+	served.Add(1)
+	t.Cleanup(func() { _ = ln.Close(); served.Wait() })
+	go func() {
+		defer served.Done()
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			served.Add(1)
+			go func() { defer served.Done(); askSockServe(c) }()
+		}
+	}()
 }
 
 const laneTestUID = 1000

@@ -35,7 +35,7 @@ func TestLegacyConfigMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := map[string]string{
-		"host_name":   "tenant-3.host.privatae.ai",
+		"host_name":   "tenant-9003.host.privatae.ai",
 		"bearer":      "mcp_x",
 		"listen_addr": "127.0.0.1:7878",
 	}
@@ -48,7 +48,7 @@ func TestLegacyConfigMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadPairings: %v", err)
 	}
-	if len(cfgs) != 1 || cfgs[0].HostName != "tenant-3.host.privatae.ai" {
+	if len(cfgs) != 1 || cfgs[0].HostName != "tenant-9003.host.privatae.ai" {
 		t.Fatalf("migrated pairings = %+v, want the one legacy host", cfgs)
 	}
 	if got, want := cfgs[0].ContextRoot, filepath.Join(cd, "context"); got != want {
@@ -57,7 +57,7 @@ func TestLegacyConfigMigration(t *testing.T) {
 	if got, want := cfgs[0].DCNDir, filepath.Join(cd, "dcn"); got != want {
 		t.Errorf("DCNDir = %q, want the explicit legacy default %q", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(cd, "pairings", "tenant-3.host.privatae.ai.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(cd, "pairings", "tenant-9003.host.privatae.ai.json")); err != nil {
 		t.Errorf("pairings/<host>.json missing after migration: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cd, "config.json")); !os.IsNotExist(err) {
@@ -76,27 +76,27 @@ func TestLegacyConfigMigration(t *testing.T) {
 // existing pairing — both checked pre-redeem so a refusal can't burn the token.
 func TestCheckPairConflict(t *testing.T) {
 	cfgs := []*Config{
-		{HostName: "tenant-3.host.privatae.ai"},
-		{HostName: "tenant-122.host.privatae.ai"},
+		{HostName: "tenant-9003.host.privatae.ai"},
+		{HostName: "tenant-9122.host.privatae.ai"},
 	}
 
-	if _, err := checkPairConflict(cfgs, "tenant-122", false); err == nil {
+	if _, err := checkPairConflict(cfgs, "tenant-9122", false); err == nil {
 		t.Fatal("pairing an already-paired host must be refused without --replace")
 	}
-	got, err := checkPairConflict(cfgs, "tenant-122", true)
-	if err != nil || got == nil || got.HostName != "tenant-122.host.privatae.ai" {
+	got, err := checkPairConflict(cfgs, "tenant-9122", true)
+	if err != nil || got == nil || got.HostName != "tenant-9122.host.privatae.ai" {
 		t.Fatalf("--replace on a paired host = (%v, %v), want its existing pairing", got, err)
 	}
-	if got, err := checkPairConflict(cfgs, "tenant-9", false); err != nil || got != nil {
+	if got, err := checkPairConflict(cfgs, "tenant-9500", false); err != nil || got != nil {
 		t.Fatalf("a NEW host must pair cleanly, got (%v, %v)", got, err)
 	}
-	if _, err := checkPairConflict(cfgs, "tenant-9", true); err == nil {
+	if _, err := checkPairConflict(cfgs, "tenant-9500", true); err == nil {
 		t.Fatal("--replace on an unpaired host must be refused (nothing to replace)")
 	}
-	// "tenant-1" is a prefix of tenant-122's host name but a different handle —
+	// "tenant-91" is a prefix of tenant-9122's host name but a different handle —
 	// it must NOT collide.
-	if got, err := checkPairConflict(cfgs, "tenant-1", false); err != nil || got != nil {
-		t.Fatalf("handle 'tenant-1' must not match tenant-122, got (%v, %v)", got, err)
+	if got, err := checkPairConflict(cfgs, "tenant-91", false); err != nil || got != nil {
+		t.Fatalf("handle 'tenant-91' must not match tenant-9122, got (%v, %v)", got, err)
 	}
 }
 
@@ -124,13 +124,13 @@ func TestNextListenAddr(t *testing.T) {
 // prefix; ambiguity is an error, not a guess.
 func TestFindPairingHostFlag(t *testing.T) {
 	cfgs := []*Config{
-		{HostName: "tenant-3.host.privatae.ai"},
-		{HostName: "tenant-122.host.privatae.ai"},
+		{HostName: "tenant-9003.host.privatae.ai"},
+		{HostName: "tenant-9122.host.privatae.ai"},
 	}
-	for _, key := range []string{"tenant-3.host.privatae.ai", "tenant-3", "tenant-3."} {
+	for _, key := range []string{"tenant-9003.host.privatae.ai", "tenant-9003", "tenant-9003."} {
 		c, err := findPairing(cfgs, key)
-		if err != nil || c == nil || c.HostName != "tenant-3.host.privatae.ai" {
-			t.Errorf("findPairing(%q) = (%v, %v), want tenant-3", key, c, err)
+		if err != nil || c == nil || c.HostName != "tenant-9003.host.privatae.ai" {
+			t.Errorf("findPairing(%q) = (%v, %v), want tenant-9003", key, c, err)
 		}
 	}
 	if c, err := findPairing(cfgs, "nope"); err != nil || c != nil {
@@ -145,8 +145,8 @@ func TestFindPairingHostFlag(t *testing.T) {
 // a pin synced for one host may never verify (or even be visible to) another's ops.
 func TestPerHostDcnDirs(t *testing.T) {
 	cd := isolateConfigDir(t)
-	a := &Config{HostName: "tenant-3.host.privatae.ai"}
-	b := &Config{HostName: "tenant-122.host.privatae.ai"}
+	a := &Config{HostName: "tenant-9003.host.privatae.ai"}
+	b := &Config{HostName: "tenant-9122.host.privatae.ai"}
 	dirA, dirB := a.dcnDir(), b.dcnDir()
 	if dirA == "" || dirB == "" || dirA == dirB {
 		t.Fatalf("per-host dcn dirs must differ: %q vs %q", dirA, dirB)

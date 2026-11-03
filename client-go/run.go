@@ -153,6 +153,10 @@ func cmdRun() error {
 	go superviseLoop(ctx)
 	// The machine owner's approved stops (stop_local.go), Host or no Host.
 	go localStopLoop(ctx)
+	// The door's own firewall rules (doorfw.go): one left by a `pair --open`
+	// that was killed, or a pairing that went while nothing ran, is removed
+	// here once nothing uses its port.
+	go doorFirewallSweep(ctx)
 	// The local UI (ui.go): ONE per machine, not one per pairing, because it
 	// shows the whole box. Started last so it renders a daemon that is already
 	// up, and non-fatal by construction — a machine that cannot bind the UI port
@@ -168,13 +172,15 @@ func cmdRun() error {
 	select {
 	case <-sig:
 		fmt.Println("\nshutting down")
+		tellReplacedAnchorsBeforeStop()
 		cancel() // closes every pairing's server + WG device via runPairing's exits
 		return nil
 	case <-shutdownCh:
 		// "Stop the bastion" in the tray menu. Deliberately the SAME path as a
 		// signal rather than an os.Exit: a machine that stops serving must tear
 		// its tunnels down, not vanish and leave the host waiting for a beat.
-		fmt.Println("\nstopping — asked from the tray")
+		fmt.Println("\nstopping — " + shutdownWhy)
+		tellReplacedAnchorsBeforeStop()
 		cancel()
 		return nil
 	case err := <-errc:
@@ -245,10 +251,13 @@ func startPairing(cfg *Config) bool {
 	pctx, pcancel := context.WithCancel(supervisor.ctx)
 	run := &pairingRun{cancel: pcancel, done: make(chan struct{}), cfg: cfg}
 	supervisor.runs[cfg.HostName] = run
-	errc := supervisor.errc
 	go func() {
 		defer close(run.done)
+		started := time.Now()
+		// A run that stays up has recovered from any failure before it.
+		up := time.AfterFunc(retryResetAfter, func() { pairingRecovered(cfg.HostName) })
 		err := runPairing(pctx, cfg)
+		up.Stop()
 		// Retired BEFORE it leaves the registry: leaving is what lets the
 		// pairing start again, and this run's heartbeat may still be running.
 		retireRun(cfg)
@@ -257,12 +266,15 @@ func startPairing(cfg *Config) bool {
 			delete(supervisor.runs, cfg.HostName)
 		}
 		supervisor.Unlock()
-		// nil is a clean exit (ctx cancelled: shutdown or a revoke) and must not
-		// take the process down. Anything else is fatal for the whole daemon, as
-		// before: the supervisor restarts all lanes together, never half-homed.
-		if err != nil && errc != nil {
-			errc <- fmt.Errorf("[%s] %w", cfg.HostName, err)
+		// nil is a clean exit (ctx cancelled: shutdown or a revoke). Anything
+		// else stops THIS pairing only: it is reported, and superviseOnce
+		// starts it again after a pause (pairing_retry.go). It used to stop the
+		// whole daemon, and every other Host with it.
+		if err != nil && pctx.Err() == nil {
+			pairingFailed(cfg.HostName, err, time.Since(started))
+			return
 		}
+		pairingRecovered(cfg.HostName)
 	}()
 	return true
 }
@@ -311,6 +323,9 @@ func superviseOnce() {
 		c, ok := onDisk[h]
 		switch {
 		case !ok || !c.active():
+			if ok {
+				tellReplacedAnchor(h)
+			}
 			fmt.Printf("[%s] no longer active on disk — stopping its tunnel and lanes\n", h)
 			stopPairing(h)
 		case r.cfg != nil && c.WGPrivateKey != r.cfg.WGPrivateKey:
@@ -324,10 +339,106 @@ func superviseOnce() {
 		}
 	}
 	for _, c := range cfgs {
-		if c.active() {
+		if c.active() && pairingRetryDue(c.HostName) {
 			startPairing(c) // no-op when already running
 		}
 	}
+}
+
+// tellReplacedAnchor: the anchor a Host the rules put first replaced
+// (anchor_local.go) is told so on one last beat, its enforcing report saying
+// who is in charge now and that it waits to be admitted, before its lanes stop.
+func tellReplacedAnchor(h string) {
+	if anchorReplacedNote(h) != nil && lastBeat(h) {
+		fmt.Printf("[%s] no longer in charge of this machine — told it on a last heartbeat\n", h)
+	}
+}
+
+// tellReplacedAnchorsBeforeStop is tellReplacedAnchor for every running
+// pairing the files on disk no longer serve, when the daemon stops: an
+// installer that pairs a Host on this machine and restarts the service at
+// once stops the replaced anchor before superviseOnce would have seen it.
+func tellReplacedAnchorsBeforeStop() {
+	cfgs, err := loadPairings()
+	if err != nil {
+		return
+	}
+	supervisor.Lock()
+	var running []string
+	for h := range supervisor.runs {
+		running = append(running, h)
+	}
+	supervisor.Unlock()
+	for _, h := range running {
+		if c := pairingFor(cfgs, h); c != nil && c.HostName == h && !c.active() {
+			tellReplacedAnchor(h)
+		}
+	}
+}
+
+// runBeats are the running pairings' beats, for one last beat before a
+// pairing stops (superviseOnce).
+var runBeats = struct {
+	sync.Mutex
+	m map[string]*runBeat
+}{m: map[string]*runBeat{}}
+
+// runBeat is one run's beat, serialised. lastBeat beats from superviseOnce's
+// goroutine while the run's own loop (runBeatLoop) may be beating or failing
+// over, and neither is safe to run beside the other: maybeRotateEndpoint and
+// maybeFailover both write cfg.Endpoints and the WG device. Before lastBeat
+// every beat of a run came from its one loop, so nothing locked them.
+type runBeat struct {
+	mu   sync.Mutex
+	beat func()
+}
+
+// do runs f with no beat of this run beside it.
+func (r *runBeat) do(f func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	f()
+}
+
+// run is one beat.
+func (r *runBeat) run() { r.do(r.beat) }
+
+// registerRunBeat records host's beat while its run lasts. The run beats
+// through the returned runBeat from then on; the func takes it out.
+func registerRunBeat(host string, beat func()) (*runBeat, func()) {
+	mine := &runBeat{beat: beat}
+	runBeats.Lock()
+	runBeats.m[host] = mine
+	runBeats.Unlock()
+	return mine, func() {
+		runBeats.Lock()
+		if runBeats.m[host] == mine { // a later run of host keeps its own
+			delete(runBeats.m, host)
+		}
+		runBeats.Unlock()
+	}
+}
+
+// lastBeatWait bounds the last beat: a Host that does not answer does not hold
+// the stop.
+var lastBeatWait = 10 * time.Second
+
+// lastBeat beats host once more, now, and waits for it (bounded). False when
+// host has no running beat.
+func lastBeat(host string) bool {
+	runBeats.Lock()
+	b := runBeats.m[host]
+	runBeats.Unlock()
+	if b == nil {
+		return false
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); b.run() }()
+	select {
+	case <-done:
+	case <-time.After(lastBeatWait):
+	}
+	return true
 }
 
 // stopPairing cancels one running pairing and waits (bounded) for its tunnel,
@@ -687,13 +798,15 @@ func runPairing(ctx context.Context, cfg *Config) error {
 		// box costs 2.9 s because it hashes every executable once, and no beat
 		// may ever wait on that.
 		go runDeltaRefresh(ctx)
-		beat() // first beat: flip online + bind fp now, don't wait a full interval
+		rb, unregisterBeat := registerRunBeat(cfg.HostName, beat)
+		defer unregisterBeat()
+		rb.run() // first beat: flip online + bind fp now, don't wait a full interval
 		// Every 60 s, and at once after a pairing on this box changes state
 		// (beatnow.go), so this Host learns of it without waiting for the tick.
 		// Path failover BEFORE a ticked beat: if the current relay entry has gone
 		// dead (no handshake for RejectAfterTime) the beat could not reach the
 		// host anyway; move to the next candidate first, no platform round trip.
-		runBeatLoop(ctx, 60*time.Second, func() { maybeFailover(cfg, dev, startedAt) }, beat)
+		runBeatLoop(ctx, 60*time.Second, func() { rb.do(func() { maybeFailover(cfg, dev, startedAt) }) }, rb.run)
 	}()
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux}
@@ -769,11 +882,17 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	// A Host that connects to this server: its door is open while it is
+	// served (hostdoor.go), and closed after the last such pairing stops.
+	if cfg.hostDials() {
+		closeDoor, err := doorOpen(cfg)
+		if err != nil {
+			return err
+		}
+		defer closeDoor()
+	}
 	lane := cfg.laneWhere()
-	upstream := &http.Client{Transport: &http.Transport{
-		DialContext:     func(ctx context.Context, _, _ string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig: laneTLS.Clone(),
-	}}
+	upstream := &http.Client{Transport: laneHTTPTransport(dialHost, laneTLS)}
 
 	// Coder runs: the box-wide loop, then a unix pairing's run sockets, which
 	// are registered before the harness workers come up so a run-up that
@@ -908,10 +1027,12 @@ func runUnixPairing(ctx context.Context, cfg *Config) error {
 		go runAlertsRefresh(ctx)
 		go runOtherBastionRefresh(ctx)
 		go runDeltaRefresh(ctx)
-		beat()
+		rb, unregisterBeat := registerRunBeat(cfg.HostName, beat)
+		defer unregisterBeat()
+		rb.run()
 		// Every 60 s, and at once after a pairing on this box changes state
 		// (beatnow.go).
-		runBeatLoop(ctx, 60*time.Second, nil, beat)
+		runBeatLoop(ctx, 60*time.Second, nil, rb.run)
 	}()
 
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: mux}
@@ -1105,6 +1226,12 @@ type statusRead struct {
 	Pairings     []statusPairing `json:"pairings"`
 	Mode         string          `json:"mode,omitempty"`
 	Anchor       *statusAnchor   `json:"anchor,omitempty"`
+	// LLM: the OpenAI-compatible model server the llm lane serves
+	// (llmlocal.go): set, found on this machine, or none.
+	LLM *statusLLM `json:"llm,omitempty"`
+	// Firewall: the door's way in through this machine's firewall
+	// (doorfw.go): the bastion's own rules, and what it could not do.
+	Firewall *statusFirewall `json:"firewall,omitempty"`
 }
 
 type statusPairing struct {
@@ -1121,6 +1248,14 @@ type statusPairing struct {
 	Endpoint  string `json:"endpoint,omitempty"`
 	Local     string `json:"local"`
 	Answering bool   `json:"answering"`
+	// WaitingFor: a pending pairing waits for this Host, the one in charge of
+	// the machine, to admit it (anchor_local.go admitter). Nothing runs for
+	// it until then, so it is never "not answering".
+	WaitingFor string `json:"waiting_for,omitempty"`
+	// Failing: the run last stopped on this error and is tried again by
+	// itself (pairing_retry.go); the other pairings are served meanwhile.
+	// Cleared once a run has stayed up for retryResetAfter.
+	Failing *pairingFailure `json:"failing,omitempty"`
 }
 
 type statusAnchor struct {
@@ -1134,27 +1269,45 @@ func readStatus(readOpts) (statusRead, error) {
 	if err != nil {
 		return statusRead{}, fmt.Errorf("this machine's pairings cannot be read: %w", err)
 	}
-	s := statusRead{Version: clientVersion, Running: "no", Pairings: []statusPairing{}}
+	s := statusRead{Version: clientVersion, Running: "no", Pairings: []statusPairing{}, Firewall: readDoorFirewallStatus()}
 	if len(cfgs) == 0 {
 		// With no Host the only thing listening is the console, so that is
 		// what says whether the daemon is up.
 		if uiDaemonListening() {
 			s.Running = "yes"
 		}
+		s.LLM = llmStatus()
 		return s, nil
 	}
-	running := 0
+	running, served := 0, 0
+	who := admitter()
+	failures := loadPairingFailures()
 	for _, cfg := range cfgs {
 		p := statusPairing{Host: cfg.HostName, State: cfg.stateName(), Local: cfg.ListenAddr,
 			Answering: bastionListening(cfg.ListenAddr)}
-		if p.Answering {
-			running++
+		if cfg.invalid == "" && cfg.State == pairingPending && who != "" {
+			p.WaitingFor = who
+		}
+		// Until a run has stayed up for retryResetAfter, its last failure is
+		// shown, whether or not the port answers now.
+		if f, ok := failures[cfg.HostName]; ok && cfg.active() {
+			p.Failing = &f
+		}
+		// Only a pairing that is served counts: one waiting to be admitted
+		// has nothing to answer with.
+		if cfg.active() {
+			served++
+			if p.Answering {
+				running++
+			}
 		}
 		switch {
 		case cfg.invalid != "":
 			p.Problem = cfg.invalid
 		case cfg.unixTransport():
 			p.Transport, p.Lanes, p.Runs = "local", cfg.LaneSocket, cfg.RunsDir
+		case cfg.hostDials():
+			p.Transport, p.Lanes = "tcp", cfg.laneWhere()
 		case cfg.tcpTransport():
 			p.Transport, p.Lanes = "tcp", cfg.LaneAddr
 		default:
@@ -1163,12 +1316,18 @@ func readStatus(readOpts) (statusRead, error) {
 		s.Pairings = append(s.Pairings, p)
 	}
 	switch {
-	case running == len(cfgs):
+	case served == 0:
+		// Nothing to serve yet: the console says whether the daemon is up.
+		if uiDaemonListening() {
+			s.Running = "yes"
+		}
+	case running == served:
 		s.Running = "yes"
 	case running > 0:
 		s.Running = "partly"
 	}
 	s.Mode = boxMode()
+	s.LLM = llmStatus()
 	if a := currentAnchor(); a != nil {
 		s.Anchor = &statusAnchor{Host: a.AnchorHost, Owner: a.Owner, Since: a.ClaimedAt}
 	}
@@ -1214,6 +1373,10 @@ func printStatus(w io.Writer, s statusRead) {
 		} else {
 			fmt.Fprintf(w, "NOT RUNNING, and no Host is connected. Start it with `%s`.\n", runCommandHint())
 		}
+		if s.LLM != nil {
+			fmt.Fprintf(w, "model server: %s\n", s.LLM.words())
+		}
+		printDoorFirewallStatus(w, s.Firewall)
 		return
 	}
 	// IS IT RUNNING, AND WHERE — the first thing status should answer and the
@@ -1225,22 +1388,41 @@ func printStatus(w io.Writer, s statusRead) {
 	// a self-update the bastion has NO console at all — it is serving, and there
 	// is nothing on screen that says so. status printed pairings and mode and
 	// never once said whether a daemon was alive.
-	served := 0
+	served, servable := 0, 0
+	waiting := map[string][]string{}
+	var admitters []string
 	for _, p := range s.Pairings {
-		if p.Answering {
-			served++
+		if p.WaitingFor != "" {
+			if len(waiting[p.WaitingFor]) == 0 {
+				admitters = append(admitters, p.WaitingFor)
+			}
+			waiting[p.WaitingFor] = append(waiting[p.WaitingFor], p.Host)
+			continue
+		}
+		if p.State == pairingActive {
+			servable++
+			if p.Answering {
+				served++
+			}
 		}
 	}
-	switch s.Running {
-	case "yes":
-		fmt.Fprintf(w, "RUNNING — serving %d host(s) on this machine.\n", len(s.Pairings))
-	case "partly":
-		fmt.Fprintf(w, "PARTLY RUNNING — %d of %d hosts are being served; the rest are not answering.\n",
-			served, len(s.Pairings))
-	default:
+	switch {
+	case s.Running == "no":
 		fmt.Fprintf(w, "NOT RUNNING — nothing is serving these pairings. Start it with `%s`.\n", runCommandHint())
+	case servable == 0:
+		fmt.Fprintln(w, "RUNNING — no Host is served yet.")
+	case s.Running == "partly":
+		fmt.Fprintf(w, "PARTLY RUNNING — %d of %d hosts are being served; the rest are not answering.\n",
+			served, servable)
+	default:
+		fmt.Fprintf(w, "RUNNING — serving %d host(s) on this machine.\n", servable)
 	}
-	if served > 0 && runtime.GOOS == "windows" {
+	for _, who := range admitters {
+		hosts := waiting[who]
+		fmt.Fprintf(w, "  Waiting for %s to admit it: %s. %s asks you to approve it; it is served from then on.\n",
+			who, strings.Join(hosts, ", "), who)
+	}
+	if served > 0 && runtime.GOOS == "windows" && !systemService.installed {
 		fmt.Fprintln(w, "  (No window? After a self-update it restarts itself detached, so it")
 		fmt.Fprintln(w, "   has no console. Task Manager → privatae-bastion.exe is where it lives.)")
 	}
@@ -1251,7 +1433,10 @@ func printStatus(w io.Writer, s statusRead) {
 			continue
 		}
 		live := "not answering"
-		if p.Answering {
+		switch {
+		case p.WaitingFor != "":
+			live = "waiting for " + p.WaitingFor + " to admit it"
+		case p.Answering:
 			live = "answering"
 		}
 		switch p.Transport {
@@ -1265,11 +1450,19 @@ func printStatus(w io.Writer, s statusRead) {
 			fmt.Fprintf(w, "paired with: %s  [%s]\n  tunnel:   %s  ->  %s  via  %s\n  local:    http://%s  (%s)\n",
 				p.Host, p.State, p.BastionIP, p.HostIP, p.Endpoint, p.Local, live)
 		}
+		if f := p.Failing; f != nil {
+			fmt.Fprintf(w, "  last stopped: %s (at %s, try %d); tried again by itself from %s, the other Hosts served meanwhile\n",
+				strings.TrimRight(f.Error, "."), uiWhen(f.At), f.Tries, uiWhen(f.NextTry))
+		}
 	}
 	fmt.Fprintf(w, "mode: %s\n", s.Mode)
 	if a := s.Anchor; a != nil {
 		fmt.Fprintf(w, "anchor: %s (owner %q, since %s)\n", a.Host, a.Owner, a.Since)
 	}
+	if s.LLM != nil {
+		fmt.Fprintf(w, "model server: %s\n", s.LLM.words())
+	}
+	printDoorFirewallStatus(w, s.Firewall)
 }
 
 // ollamaModels reports whether a local ollama with the embeddings API answers
@@ -1340,12 +1533,18 @@ func ollamaModelsAt(addrs []string) (bool, []string) {
 const llmForwardPort = 18080
 
 // openAICompatModels detects a non-ollama LLM server (llama.cpp llama-server,
-// vLLM, anything OpenAI-compatible) via GET /v1/models. Only PRIVATAE_LLM_ADDR is
-// probed — unlike ollama there is no conventional default port worth guessing,
-// and the operator setting the env IS the opt-in. Same 200-is-alive rule as
-// /api/tags: a live server with an unparseable list still counts.
+// vLLM, anything OpenAI-compatible) via GET /v1/models at llmTarget:
+// PRIVATAE_LLM_ADDR, or the server found on this machine's loopback
+// (llmlocal.go). Same 200-is-alive rule as /api/tags: a live server with an
+// unparseable list still counts. A found server that no longer answers is
+// asked for again (llmTargetFailed).
 func openAICompatModels() (bool, []string) {
-	return openAICompatModelsAt(llmTarget())
+	t := llmTarget()
+	ok, models := openAICompatModelsAt(t)
+	if !ok {
+		llmTargetFailed(t)
+	}
+	return ok, models
 }
 
 // openAICompatModelsAt is openAICompatModels' probe of one address.
@@ -1393,14 +1592,14 @@ func localOllamaAddr() string {
 
 // serveLLMForward is serveOllamaForward's twin for the OpenAI-compatible
 // server: host dials <bastion tunnel IP>:18080, we proxy raw TCP to
-// PRIVATAE_LLM_ADDR. Only runs when the env is set (the operator's opt-in).
+// llmTarget (PRIVATAE_LLM_ADDR, or the server found on this machine, llmlocal.go).
 // The "llm-openai" heartbeat capability is the host's signal that this
 // listener exists and speaks the /v1 dialect.
 func serveLLMForward(ctx context.Context, self string, tnet *netstack.Net, gwIP netip.Addr) {
-	target := llmTarget()
-	if target == "" {
-		return
-	}
+	// Listening whether or not a server is there now: the one found on this
+	// machine (llmlocal.go) may start after the bastion, and the beat
+	// advertises the lane only while llmTarget names one. Each connection
+	// goes to the server llmTarget names at that moment.
 	ln, err := tnet.ListenTCP(&net.TCPAddr{IP: gwIP.AsSlice(), Port: llmForwardPort})
 	if err != nil {
 		return
@@ -1413,6 +1612,11 @@ func serveLLMForward(ctx context.Context, self string, tnet *netstack.Net, gwIP 
 			return
 		}
 		if refused(in) {
+			continue
+		}
+		target := llmTarget()
+		if target == "" {
+			_ = in.Close()
 			continue
 		}
 		// A pairing whose grant NAMES models gets an HTTP-aware proxy

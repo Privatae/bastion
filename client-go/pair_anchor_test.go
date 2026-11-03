@@ -43,7 +43,7 @@ func TestPairAnchorsANetworkedMachineToItsFirstHost(t *testing.T) {
 		box(t, true)
 		writePairingState(t, tMember, pairingPending)
 		cfg, all := only(t, tMember)
-		anchored, err := anchorFirstNetworkedPairing(cfg, all)
+		anchored, err := anchoredAfterPair(cfg, all)
 		if err != nil || !anchored {
 			t.Fatalf("the first pairing on a networked box must anchor it: anchored=%v err=%v", anchored, err)
 		}
@@ -64,7 +64,7 @@ func TestPairAnchorsANetworkedMachineToItsFirstHost(t *testing.T) {
 		box(t, false)
 		writePairing(t, tMember)
 		cfg, all := only(t, tMember)
-		if anchored, err := anchorFirstNetworkedPairing(cfg, all); anchored || err != nil {
+		if anchored, err := anchoredAfterPair(cfg, all); anchored || err != nil {
 			t.Fatalf("a local machine must not be anchored: %v %v", anchored, err)
 		}
 		if currentAnchor() != nil {
@@ -81,7 +81,7 @@ func TestPairAnchorsANetworkedMachineToItsFirstHost(t *testing.T) {
 		}
 		writePairingState(t, tMember, pairingPending)
 		cfg, all := only(t, tMember)
-		if anchored, err := anchorFirstNetworkedPairing(cfg, all); anchored || err != nil {
+		if anchored, err := anchoredAfterPair(cfg, all); anchored || err != nil {
 			t.Fatalf("an anchored machine must not be re-anchored: %v %v", anchored, err)
 		}
 		if a := currentAnchor(); a == nil || a.AnchorHost != tAnchor {
@@ -98,7 +98,7 @@ func TestPairAnchorsANetworkedMachineToItsFirstHost(t *testing.T) {
 		writePairing(t, tAnchor)
 		writePairingState(t, tMember, pairingPending)
 		cfg, all := only(t, tMember)
-		if anchored, err := anchorFirstNetworkedPairing(cfg, all); anchored || err != nil {
+		if anchored, err := anchoredAfterPair(cfg, all); anchored || err != nil {
 			t.Fatalf("with two pairings the person picks the anchor: %v %v", anchored, err)
 		}
 	})
@@ -109,8 +109,14 @@ func TestPairAnchorsANetworkedMachineToItsFirstHost(t *testing.T) {
 		writePairingState(t, tMember, pairingPending)
 		held = false
 		cfg, all := only(t, tMember)
-		if anchored, err := anchorFirstNetworkedPairing(cfg, all); anchored || err != nil {
+		if anchored, err := anchoredAfterPair(cfg, all); anchored || err != nil {
 			t.Fatalf("without machine authority nothing is anchored: %v %v", anchored, err)
 		}
 	})
+}
+
+// anchoredAfterPair is anchorAfterPair's yes or no.
+func anchoredAfterPair(cfg *Config, all []*Config) (bool, error) {
+	t, err := anchorAfterPair(cfg, all)
+	return t.Taken, err
 }

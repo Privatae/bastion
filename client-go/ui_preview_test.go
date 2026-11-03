@@ -24,9 +24,9 @@ func TestRenderAPreview(t *testing.T) {
 	d, _ := pairingsDir()
 	_ = os.MkdirAll(d, 0o700)
 	for _, p := range []struct{ host, addr, state string }{
-		{"259c83f46775ec66.host.privatae.ai", "127.0.0.1:7878", pairingActive},
-		{"8abb770bbfde71d0.host.privatae.ai", "127.0.0.1:7879", pairingActive},
-		{"99dab9c47d60edff.host.privatae.ai", "127.0.0.1:7880", pairingPending},
+		{"0a1b2c3d4e5f6071.host.privatae.ai", "127.0.0.1:7878", pairingActive},
+		{"1b2c3d4e5f607182.host.privatae.ai", "127.0.0.1:7879", pairingActive},
+		{"2c3d4e5f60718293.host.privatae.ai", "127.0.0.1:7880", pairingPending},
 	} {
 		b := []byte(`{"host_name":"` + p.host + `","listen_addr":"` + p.addr +
 			`","bastion_tunnel_ip":"fd00:9::a:1","state":"` + p.state +
@@ -38,7 +38,7 @@ func TestRenderAPreview(t *testing.T) {
 	// the page that is actually waiting on somebody.
 	dcn := filepath.Join(t.TempDir(), "dcn")
 	_ = os.MkdirAll(dcn, 0o700)
-	first := filepath.Join(d, "259c83f46775ec66.host.privatae.ai.json")
+	first := filepath.Join(d, "0a1b2c3d4e5f6071.host.privatae.ai.json")
 	if b, err := os.ReadFile(first); err == nil {
 		s := strings.TrimSuffix(string(b), "}") + `,"dcn_dir":` + jsonQuote(dcn) + `}`
 		_ = os.WriteFile(first, []byte(s), 0o600)

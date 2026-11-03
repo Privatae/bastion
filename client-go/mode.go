@@ -129,8 +129,9 @@ func cmdSetMode(mode string) error {
 	if mode == modeNetworked {
 		// Platform-correct, for the same reason the refusal text is: telling a
 		// Windows user to run `sudo` is how a real instruction becomes noise.
-		fmt.Printf("  Next: anchor this machine to your host —  %s\n", anchorCommandHint())
-		fmt.Println("  Every host paired after the anchor waits, pending, until the anchor host approves it.")
+		fmt.Println("  Next: pair it with the Host that should be in charge of it. That Host takes charge as it is")
+		fmt.Println("  paired (a Host on this machine always does; so does one an organisation's policy names), and every")
+		fmt.Println("  other Host waits until it admits it. To put a Host already paired in charge:  " + anchorCommandHint())
 	}
 	return nil
 }

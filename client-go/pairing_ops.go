@@ -146,6 +146,9 @@ func handlePairingGrantSync(ws *websocket.Conn, _ string, args []string) {
 		return
 	}
 	anchorMu.Unlock()
+	// A former anchor admitted again has heard it was replaced: its beats
+	// stop saying so (anchor_local.go anchorReplacedNote).
+	clearAnchorReplacedFor(c.HostName)
 	// Open the lanes now: the user approved on the anchor host and expects the
 	// member host to come up, not to wait for someone to restart the service.
 	started := false

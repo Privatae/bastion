@@ -19,7 +19,7 @@ import (
 
 func pairReportOf(cfg *Config, all []*Config, anchored bool) string {
 	var b strings.Builder
-	pairReport(&b, cfg, all, anchored)
+	pairReport(&b, cfg, all, anchorTake{Taken: anchored, Why: "it is the first Host paired with this networked machine"})
 	return b.String()
 }
 

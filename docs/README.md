@@ -20,6 +20,7 @@ Everything below is in `client-go/` and compiled into the one binary.
 - [backups.md](backups.md): this bastion's backup key, restore requests, backups kept here, and restoring a lost host.
 - [audit.md](audit.md): the audit files on this machine and the same rows in its system log.
 - [console.md](console.md): the local console.
+- [host-connects.md](host-connects.md): a server your Host can reach but that can't reach it back: your Host connects to it, on one port, and the wire contract a Host implements for it.
 - [host-on-this-machine.md](host-on-this-machine.md): pairing with a Host on the same machine over unix sockets, or in a VM over forwarded ports.
 
 ## Using and checking it

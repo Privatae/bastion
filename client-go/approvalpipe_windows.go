@@ -441,11 +441,40 @@ func pipeServerIsService(h windows.Handle) error {
 		return fmt.Errorf("cannot tell which process serves the pipe: %w", err)
 	}
 	svcPID, err := bastionServicePID()
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		// The service's default permissions let an INTERACTIVE logon query it,
+		// not a network one (ssh, a remote PowerShell): the owner's own
+		// `status` over ssh was refused as "Access is denied". The pipe's
+		// owner says what the process id would: servePipe sets no owner, so
+		// the pipe's is the creating token's default owner, which for
+		// LocalSystem is BUILTIN\Administrators (seen on Windows Server 2022)
+		// or SYSTEM, and no program of an ordinary account can make an object
+		// either owns. An administrator's own program could; an administrator
+		// already holds the service itself.
+		return pipeOwnedBySystem(h)
+	}
 	if err != nil {
 		return err
 	}
 	if svcPID == 0 || pid != svcPID {
 		return fmt.Errorf("the pipe is served by process %d, not by the %s service; nothing was sent", pid, winServiceName)
+	}
+	return nil
+}
+
+// pipeOwnedBySystem refuses a pipe whose owner is not LocalSystem or the
+// Administrators group, the two owners LocalSystem's objects get.
+func pipeOwnedBySystem(h windows.Handle) error {
+	sd, err := windows.GetSecurityInfo(h, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil {
+		return fmt.Errorf("cannot tell who made the pipe: %w", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return fmt.Errorf("cannot tell who made the pipe: %v", err)
+	}
+	if !owner.IsWellKnown(windows.WinLocalSystemSid) && !owner.IsWellKnown(windows.WinBuiltinAdministratorsSid) {
+		return fmt.Errorf("the pipe was made by %s, not by the %s service; nothing was sent", owner.String(), winServiceName)
 	}
 	return nil
 }

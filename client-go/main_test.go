@@ -59,6 +59,10 @@ func TestMain(m *testing.M) {
 	if len(os.Args) >= 3 && os.Args[1] == opActionChildSubcommand {
 		os.Exit(opActionChildMain(os.Args[2]))
 	}
+	// The suite never asks the build machine's own loopback for a model
+	// server (llmlocal.go): a llama.cpp left running on 8080 there would make
+	// every lane test depend on it. llmlocal_test.go sets its own.
+	llmProbe = func(string) ([]string, bool) { return nil, false }
 	if len(os.Args) >= 3 && os.Args[1] == opActionProbeSubcommand {
 		os.Exit(opActionProbeMain(os.Args[2]))
 	}
@@ -138,6 +142,14 @@ func TestMain(m *testing.M) {
 	// stops every op unit its names match: the suite's names are its own, so
 	// it never stops an op the machine's own bastion is running.
 	opIsolateOpsUnits()
+	// THE FIREWALL IS THE MACHINE'S. A door the suite binds asks for its own
+	// inbound rule (doorfw.go): never in the firewall of the machine running
+	// the suite. The firewall tests stand their own firewalls in.
+	doorFirewallFor = func(string) (doorFirewall, string) { return nil, "" }
+	doorFirewallByID = func(string) doorFirewall { return nil }
+	doorFWExec = func(name string, _ ...string) (string, error) {
+		return "", fmt.Errorf("the suite never runs the machine's firewall (%s)", name)
+	}
 
 	code := m.Run()
 	opIsolatedOpsUnitsDone()

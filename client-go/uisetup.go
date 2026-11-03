@@ -483,9 +483,12 @@ func planPairChange(before []string, after []*Config, cfg *Config) uiPairPlan {
 		}
 	}
 	if !cfg.active() {
-		p.Note = "Paired with " + cfg.HostName + " — PENDING. This machine is anchored, so a " +
-			"new host waits until the anchor host approves it. Nothing is started for it yet: " +
-			"no tunnel, no lanes. It shows as a pending pairing on the anchor host's Network app."
+		p.Note = "Paired with " + cfg.HostName + " — PENDING. Nothing is started for it yet: no tunnel, no lanes."
+		if who := admitter(); who != "" {
+			p.Note = "Paired with " + cfg.HostName + " — PENDING, waiting for " + who + " to admit it. The code was used, " +
+				"but nothing runs for it yet: " + who + " is the Host in charge of this machine, and it asks you to " +
+				"approve " + cfg.HostName + ". Once you do, it is served at once."
+		}
 		p.Class = "warn"
 		return p
 	}

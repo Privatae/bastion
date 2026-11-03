@@ -76,11 +76,7 @@ const sessionWorkerCount = 4
 // self is the pairing this pool belongs to, for the caps gate on an anchored box.
 func runSessionWorkers(pctx context.Context, self string, wsURL string, tlsCfg *tls.Config,
 	dialHost func(ctx context.Context) (net.Conn, error), bearer string, n int, senv sessionEnv) {
-	dialer := &websocket.Dialer{
-		NetDialContext:   func(ctx context.Context, network, addr string) (net.Conn, error) { return dialHost(ctx) },
-		TLSClientConfig:  tlsCfg,
-		HandshakeTimeout: 20 * time.Second,
-	}
+	dialer := laneWSDialer(tlsCfg, dialHost)
 	for i := 0; i < n; i++ {
 		go func() {
 			hold := laneHoldFor(self)

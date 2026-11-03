@@ -22,7 +22,140 @@ From 0.39.1 on, a heading marks a version *not published* or *held* once
 that is settled. The newest entries may not be published yet; the manifest
 says which version is. Older entries are not marked.
 
-## 0.62.1
+## 0.63.1
+
+The same program as 0.63.0; its source is now publishable.
+
+## 0.63.0
+
+One Host is in charge of each machine, every pairing comes along when the
+machine moves to the service, a Host that waits says who admits it, and a Host
+at home governs a server on the internet that can't reach it back.
+
+- **Your Host connects to a server it can reach and that can't reach it
+  back.** A Host on your own computer, behind your home router, now governs a
+  server on the internet with no VPS and nothing opened at home. On the
+  server, `privatae-bastion pair --open` shows a code, good once and for 15
+  minutes; give your Host the server's address and the code. Your Host then
+  opens the connections, to TCP 8812 on the server, and every lane runs over
+  them as before: the bastion is still the TLS client, the Host's CA still
+  the only one it trusts, its own certificate still presented. The code is
+  proved by each side to the other over the Host's certificate on that
+  connection and never sent; a wrong one costs a wait that doubles, and the
+  fifth closes the window. The port is open only while such a Host is served
+  or a window is open, keeps nothing but its own Hosts' connections, and
+  forwards nothing; the audit records the window, each Host connecting and
+  going away, and refused connections. The wire contract a Host implements is
+  [docs/host-connects.md](docs/host-connects.md).
+
+- **Nobody touches a firewall for it.** While that port is in use, the
+  bastion keeps its own rule allowing it inbound, and removes the rule when
+  the last such Host and window are gone, and on `uninstall`: in Windows
+  Firewall (inbound TCP 8812, every profile, for the bastion's own program
+  only), and on Linux in ufw or firewalld when one of them is on. It never
+  turns a firewall on or off or changes anything else in it, and leaves alone
+  a rule of the machine's own that already allows the port. A firewall it does
+  not manage (nftables or iptables rules, ufw for an account that can't change
+  it, macOS set to block all incoming) is said once, with what to allow, in
+  `status` and `doctor`. Each rule added or removed is in the audit. A cloud
+  provider's firewall still needs the port allowed.
+- **Your own Host gets back in while strangers flood the port.** Of the 256
+  connections the port takes in their handshake at once, 64 are kept for
+  addresses a Host proved itself from in the last 7 days, so your Host gets in
+  at its first try however many addresses flood it. Any other address is
+  refused at random once 64 are running, more often as it fills, and always
+  at 192 (as OpenSSH's `MaxStartups` does), so a new Host still pairs on a
+  quiet port. The addresses are kept in memory only, never written anywhere;
+  a bastion that has just restarted knows none until its Hosts connect again.
+- **A server you add has your Host in charge.** `pair --open`, run with
+  machine authority on a server no Host is in charge of, puts the Host that
+  pairs through it in charge (the anchor), so your Host counts the server as
+  yours. A local server becomes networked for it, unless it already serves
+  another Host you said yes to. A Host on the server itself still wins, and an
+  organisation's policy that names another Host still decides. With a Host in
+  charge, each terminal and write on the server waits for your approval, as on
+  any server a Host is in charge of: enrol a second factor there
+  (`stepup-enroll`), as `pair --open` says.
+- **Adding the same server again just works.** The same Host pairing the
+  same server again through a fresh `pair --open` code replaces its pairing
+  in place, with no `unpair` first: new credentials, the same state, its grants
+  and its place in charge kept (also under a new name). It is the same Host
+  when its connection presents the CA the pairing already holds; another
+  Host with the same name is still refused.
+- **`pair --open` right after `unpair`.** The running bastion lets go of
+  port 8812 only once it sees the pairing gone, within 15 seconds; `pair
+  --open` now waits up to 25 seconds for that, and says so, instead of
+  failing with "address already in use".
+- **The tests can't touch a live bastion.** `scripts/e2e-host-connects.sh`
+  hid `/run/privatae` but not `/run/privatae-bastion`, and on a machine
+  running a real bastion it replaced that bastion's local sockets. It now puts
+  an empty mount over all of `/run` and `/tmp` and the bastion's state, and
+  refuses to start while it can still see the machine's bastion; a test holds
+  every namespace script in `scripts/` to that. A lane test that raced its
+  own workers' start no longer fails now and then.
+
+- **The Host on your own computer is the one in charge of it.** A Host that
+  runs on the same machine as the bastion (over a socket, or on a loopback
+  lane port, as `npx cseries` sets up) takes charge when it is paired from an
+  Administrator terminal, also from a remote Host that held it before, and
+  never "whichever paired first". The Host it replaced is told so on its
+  last heartbeat, keeps its pairing, and waits for the Host on your computer
+  to admit it, as any other Host does. The change is recorded in the
+  machine's pairing audit. `claim-anchor` with no host picks the Host on
+  this machine, and naming another while one is paired is refused with the
+  reason.
+- **An organisation's policy can name the Host in charge, and only that
+  overrides it.** On a machine an organisation manages, a policy it deploys
+  names the Host: on Windows the `AnchorHost` value under
+  `HKLM\SOFTWARE\Policies\Privatae\Bastion` (Group Policy, Intune), on macOS
+  the `AnchorHost` key of the managed preference `ai.privatae.bastion` (a
+  configuration profile), on Linux `anchor_host` in the root-owned
+  `/etc/privatae-bastion/policy.json`. That Host takes charge when it is
+  paired, every other Host waits for it, and `claim-anchor` for any other is
+  refused in words that say an organisation manages the machine. Joining a
+  domain is not a policy.
+- **A Host that waits says who admits it.** `pair` on a machine with a Host
+  in charge says the code was used, that the new Host waits for that Host to
+  admit it, and that it asks you to approve it. `status`, `status --json`
+  (`waiting_for`), `doctor`, the console and the tray say "waiting for
+  <Host> to admit it", never "not answering". The heartbeat to the Host in
+  charge lists each waiting pairing with `waiting_for`, `transport`,
+  `same_machine` and `origin` (paired here, carried from your account, or the
+  Host that was in charge before), what that Host needs to ask you.
+- **Moving to the service keeps every pairing, with no question.** The move
+  from your account's bastion to the bastion for the whole machine carries
+  every pairing your account had, also when the service already served a Host
+  of its own: each comes across with its keys and folders and a control port
+  of its own. Into a machine with a Host in charge each waits for that Host to
+  admit it; into one with none it is served as it was. The installer's last
+  words say what the service serves and what waits, instead of "no Host is
+  needed".
+- **Each pairing runs on its own.** One Host's lanes failing (a port taken,
+  a certificate that does not read) stopped the whole bastion, and every other
+  Host with it. Now that pairing alone stops: it is said in the log, the
+  machine's events and `status`, and it is tried again by itself after a
+  pause that grows from 15 seconds to 5 minutes.
+- **The model server on your machine is found by itself.** With
+  `PRIVATAE_LLM_ADDR` unset, the bastion looks on this machine's loopback, and
+  nowhere else, for an OpenAI-compatible server on its usual port: 8080
+  (llama.cpp), 8000 (vLLM), 1234 (LM Studio), in that order, and serves the
+  first whose `/v1/models` answers with a list of models; on Linux only one
+  run by root, the bastion's own account or the machine's owner, never another
+  account's. It asks again every
+  minute and as soon as the one it found stops answering, so what the
+  heartbeat says is served is what the lane reaches. The variable still
+  overrides it. The log says once what was found, or that nothing was, and
+  `status` and `doctor` show it.
+- **Smaller ones, from a replay of a Windows desktop.** The service's log
+  names the Windows service manager when it stops the bastion, not the tray.
+  The owner's `status` and the other reads work over a network sign-in (ssh,
+  remote PowerShell), which the service's permissions refused with "Access is
+  denied". `pair` and `claim-anchor` no longer tell you to run or restart the
+  bastion when one is running: it serves a new pairing within 15 seconds.
+
+## 0.62.1 (not published)
+
+Superseded by 0.63.0, which carries these changes.
 
 Windows, the installer for the whole machine:
 
